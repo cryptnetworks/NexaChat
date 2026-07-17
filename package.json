@@ -22,7 +22,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
-    "@eslint/js": "9.31.0",
+    "@eslint/js": "10.0.1",
     "@types/node": "24.0.15",
     "@types/ws": "8.18.1",
     "eslint": "9.31.0",
