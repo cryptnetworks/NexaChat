@@ -1,0 +1,104 @@
+import { randomUUID } from 'node:crypto';
+import Fastify, { type FastifyInstance } from 'fastify';
+import {
+  createCommunitySchema,
+  createDevAccountSchema,
+  createMessageSchema,
+  createSpaceSchema,
+} from '@nexa/api-contracts';
+import { DomainError, InMemoryCommunityService } from '@nexa/domain';
+import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
+
+export function buildApp(
+  service = new InMemoryCommunityService(),
+): FastifyInstance {
+  const app = Fastify({
+    logger: {
+      redact: ['req.headers.authorization', 'req.headers.cookie', 'body.body'],
+    },
+    genReqId: () => randomUUID(),
+  });
+
+  app.get('/health/live', () => ({ status: 'ok' }));
+  app.get('/health/ready', () => ({
+    status: 'ready',
+    storage: 'development-memory',
+  }));
+
+  app.post('/v1/dev/accounts', async (request, reply) => {
+    if (
+      process.env.NODE_ENV !== 'development' ||
+      process.env.NEXA_ENABLE_DEV_AUTH !== 'true'
+    ) {
+      return reply.code(404).send({ error: 'not_found' });
+    }
+    const input = createDevAccountSchema.parse(request.body);
+    return reply.code(201).send(service.createAccount(input.displayName));
+  });
+
+  app.post('/v1/communities', async (request, reply) => {
+    const input = createCommunitySchema.parse(request.body);
+    return reply
+      .code(201)
+      .send(service.createCommunity(input.ownerId, input.name));
+  });
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/spaces',
+    async (request, reply) => {
+      const input = createSpaceSchema.parse(request.body);
+      return reply
+        .code(201)
+        .send(
+          service.createTextSpace(
+            request.params.communityId,
+            input.actorId,
+            input.name,
+          ),
+        );
+    },
+  );
+
+  app.post<{ Params: { spaceId: string } }>(
+    '/v1/spaces/:spaceId/messages',
+    async (request, reply) => {
+      const input = createMessageSchema.parse(request.body);
+      const message = service.postMessage(
+        request.params.spaceId,
+        input.authorId,
+        input.body,
+      );
+      const event: RealtimeEnvelope = {
+        version: 1,
+        id: randomUUID(),
+        type: 'message.created',
+        occurredAt: new Date().toISOString(),
+        correlationId: request.id,
+        payload: { message },
+      };
+      app.websocketHub?.broadcast(request.params.spaceId, event);
+      return reply.code(201).send(message);
+    },
+  );
+
+  app.setErrorHandler((error, request, reply) => {
+    request.log.warn(
+      { err: error, correlationId: request.id },
+      'request rejected',
+    );
+    if (error instanceof DomainError) {
+      return reply
+        .code(error.code === 'forbidden' ? 403 : 404)
+        .send({ error: error.code, correlationId: request.id });
+    }
+    if (error instanceof Error && error.name === 'ZodError')
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', correlationId: request.id });
+    return reply
+      .code(500)
+      .send({ error: 'internal_error', correlationId: request.id });
+  });
+
+  return app;
+}

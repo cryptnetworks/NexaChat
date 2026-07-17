@@ -1,0 +1,15 @@
+name: Architecture proposal
+description: Propose a consequential technical decision
+body:
+  - type: textarea
+    id: context
+    attributes: { label: Context and constraints }
+    validations: { required: true }
+  - type: textarea
+    id: options
+    attributes: { label: Options and tradeoffs }
+    validations: { required: true }
+  - type: textarea
+    id: decision
+    attributes: { label: Recommended decision and reversibility }
+    validations: { required: true }

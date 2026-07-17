@@ -1,0 +1,13 @@
+name: Security-sensitive report guidance
+description: Guidance only; do not disclose vulnerabilities publicly
+body:
+  - type: markdown
+    attributes:
+      value: 'Do not submit vulnerability details here. Follow SECURITY.md and use a private channel.'
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Acknowledgement
+      options:
+        - label: I will use the private reporting process and will not submit this public issue.
+          required: true

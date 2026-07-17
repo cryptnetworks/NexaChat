@@ -1,0 +1,25 @@
+name: Feature proposal
+description: Propose a bounded product capability
+body:
+  - type: textarea
+    id: need
+    attributes:
+      {
+        label: User need,
+        description: Describe the problem without prescribing an implementation.,
+      }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Proposed outcome }
+    validations: { required: true }
+  - type: textarea
+    id: effects
+    attributes:
+      {
+        label: Security,
+        privacy,
+        accessibility,
+        migration,
+        and operations effects,
+      }
