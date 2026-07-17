@@ -1,9 +1,17 @@
 import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
+import {
+  websocketServerMessageSchema,
+  type AccountResponse,
+  type CommunityResponse,
+  type SpaceResponse,
+} from '@nexa/api-contracts';
+import {
+  realtimeEnvelopeSchema,
+  type RealtimeEnvelope,
+} from '@nexa/realtime-contracts';
 import './styles.css';
 
-type Entity = { id: string; name?: string; displayName?: string };
 type Message = RealtimeEnvelope['payload']['message'];
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -18,23 +26,23 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 function App() {
-  const [account, setAccount] = useState<Entity>();
-  const [community, setCommunity] = useState<Entity>();
-  const [space, setSpace] = useState<Entity>();
+  const [account, setAccount] = useState<AccountResponse>();
+  const [community, setCommunity] = useState<CommunityResponse>();
+  const [space, setSpace] = useState<SpaceResponse>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState('');
 
   async function begin() {
     try {
       setError('');
-      const nextAccount = await post<Entity>('/v1/dev/accounts', {
+      const nextAccount = await post<AccountResponse>('/v1/dev/accounts', {
         displayName: 'Local Explorer',
       });
-      const nextCommunity = await post<Entity>('/v1/communities', {
+      const nextCommunity = await post<CommunityResponse>('/v1/communities', {
         ownerId: nextAccount.id,
         name: 'Field Notes',
       });
-      const nextSpace = await post<Entity>(
+      const nextSpace = await post<SpaceResponse>(
         `/v1/communities/${nextCommunity.id}/spaces`,
         { actorId: nextAccount.id, name: 'trailhead' },
       );
@@ -43,11 +51,37 @@ function App() {
       setSpace(nextSpace);
       const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
       const socket = new WebSocket(
-        `${protocol}://${location.host}/v1/realtime?spaceId=${nextSpace.id}`,
+        `${protocol}://${location.host}/v1/realtime`,
       );
+      socket.onopen = () => {
+        socket.send(
+          JSON.stringify({
+            type: 'subscribe',
+            spaceId: nextSpace.id,
+            actorId: nextAccount.id,
+          }),
+        );
+      };
       socket.onmessage = (event) => {
-        const envelope = JSON.parse(String(event.data)) as RealtimeEnvelope;
-        setMessages((current) => [...current, envelope.payload.message]);
+        if (typeof event.data !== 'string') {
+          setError('Realtime server returned an invalid message');
+          return;
+        }
+        let raw: unknown;
+        try {
+          raw = JSON.parse(event.data);
+        } catch {
+          setError('Realtime server returned an invalid message');
+          return;
+        }
+        const envelope = realtimeEnvelopeSchema.safeParse(raw);
+        if (envelope.success) {
+          setMessages((current) => [...current, envelope.data.payload.message]);
+          return;
+        }
+        const control = websocketServerMessageSchema.safeParse(raw);
+        if (control.success && control.data.type === 'error')
+          setError(`Realtime connection rejected (${control.data.error})`);
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to start');
@@ -136,7 +170,7 @@ function App() {
                 name="message"
                 maxLength={4000}
                 required
-                placeholder={`Write in ${space.name ?? 'space'}`}
+                placeholder={`Write in ${space.name}`}
               />
               <button>Send</button>
             </form>

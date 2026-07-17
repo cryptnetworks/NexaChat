@@ -19,6 +19,9 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:http": "vitest run apps/server/test/http.integration.test.ts",
+    "test:unit": "vitest run packages/domain/test",
+    "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {

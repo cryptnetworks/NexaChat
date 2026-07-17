@@ -55,4 +55,33 @@ describe('HTTP vertical slice', () => {
     expect(response.statusCode).toBe(404);
     await app.close();
   });
+
+  it.each([
+    { url: '/v1/dev/accounts', payload: { displayName: '' } },
+    { url: '/v1/dev/accounts', payload: { displayName: 'Mira', extra: true } },
+  ])('returns a stable error for invalid input', async ({ url, payload }) => {
+    process.env.NODE_ENV = 'development';
+    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
+    const app = buildApp();
+    const response = await app.inject({ method: 'POST', url, payload });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_request' });
+    expect(JSON.stringify(response.json())).not.toContain('displayName');
+    await app.close();
+  });
+
+  it('returns the same stable error for malformed JSON', async () => {
+    process.env.NODE_ENV = 'development';
+    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
+    const app = buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/dev/accounts',
+      headers: { 'content-type': 'application/json' },
+      payload: '{',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_request' });
+    await app.close();
+  });
 });

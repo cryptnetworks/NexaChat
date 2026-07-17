@@ -78,4 +78,13 @@ export class InMemoryCommunityService {
     ]);
     return message;
   }
+
+  authorizeSpaceSubscription(spaceId: string, actorId: string): void {
+    const space = this.spaces.get(spaceId);
+    if (!space || !this.accounts.has(actorId))
+      throw new DomainError('not_found');
+    const community = this.communities.get(space.communityId);
+    if (!community || community.ownerId !== actorId)
+      throw new DomainError('forbidden');
+  }
 }
