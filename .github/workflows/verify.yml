@@ -20,5 +20,5 @@ jobs:
       - run: npm run build
       - name: Generate software bill of materials
         run: npm sbom --sbom-format cyclonedx > nexa-chat.cdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: sbom, path: nexa-chat.cdx.json }
