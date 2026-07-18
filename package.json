@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "GPL-3.0-only",
+  "packageManager": "npm@11.16.0",
   "engines": {
     "node": "24.x",
     "npm": "11.x"
@@ -15,6 +16,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspace @nexa/server & npm run dev --workspace @nexa/web",
+    "dev:up": "bash scripts/dev-up.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
@@ -29,7 +31,8 @@
     "test:postgres": "vitest run packages/postgres/test apps/server/test/postgres.integration.test.ts",
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "verify:clean-env": "bash scripts/verify-clean-environment.sh"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

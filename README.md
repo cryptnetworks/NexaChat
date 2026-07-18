@@ -6,8 +6,8 @@ Local account registration and login use Argon2id password hashes and revocable 
 
 ## Prerequisites
 
-- Node.js 24.x
-- npm 11.x
+- Node.js 24.18.0 (pinned in `.node-version`, `.nvmrc`, and `.tool-versions`)
+- npm 11.16.0 (pinned by `packageManager`)
 - Docker Engine with Docker Compose, for PostgreSQL and local adapter services
 
 Rust desktop prerequisites are not currently satisfied on the verified development machine. See [Desktop status](#desktop-status).
@@ -17,11 +17,12 @@ Rust desktop prerequisites are not currently satisfied on the verified developme
 From the repository root:
 
 ```sh
-npm ci
-cp .env.example .env
-docker compose up -d
-npm run dev
+npm run dev:up
 ```
+
+The command verifies the pinned toolchain, installs exactly the lockfile,
+creates `.env` only when absent, waits for all Compose dependencies, and starts
+the API and web processes. It never replaces an existing `.env` or volume.
 
 Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`.
 
@@ -47,9 +48,12 @@ npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
 docker compose config --quiet
 npm audit
+npm run verify:clean-env
 ```
 
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
+
+`npm run verify:clean-env` uses the isolated `nexa-chat-clean-verify` Compose project and PostgreSQL port 55432, then removes only that project's test volume. It verifies an empty database migration, readiness, dependency outage, and automatic recovery.
 
 ## Architecture
 

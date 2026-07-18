@@ -53,7 +53,15 @@ export function createPostgresPool(config: PostgresConfig): Pool {
     application_name: 'nexa-chat',
     options: '-c timezone=UTC',
   };
-  return new Pool(poolConfig);
+  const pool = new Pool(poolConfig);
+  pool.on('error', (error) => {
+    const code =
+      typeof (error as Error & { code?: unknown }).code === 'string'
+        ? (error as Error & { code: string }).code
+        : 'unknown';
+    console.error(JSON.stringify({ event: 'postgres.pool.error', code }));
+  });
+  return pool;
 }
 
 interface Queryable {
