@@ -2,7 +2,47 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
-    schedule: { interval: weekly }
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: America/New_York
+    assignees: [cryptnetworks]
+    labels: ['area:dependencies', 'type:chore']
+    open-pull-requests-limit: 5
+    rebase-strategy: disabled
+    commit-message: { prefix: 'chore(dependencies)' }
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+    groups:
+      routine-production:
+        applies-to: version-updates
+        dependency-type: production
+        patterns: ['*']
+        update-types: [minor, patch]
+      routine-development:
+        applies-to: version-updates
+        dependency-type: development
+        patterns: ['*']
+        update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:30'
+      timezone: America/New_York
+    assignees: [cryptnetworks]
+    labels: ['area:dependencies', 'type:chore']
+    open-pull-requests-limit: 3
+    rebase-strategy: disabled
+    commit-message: { prefix: 'chore(actions)' }
+    cooldown: { default-days: 7 }
+    groups:
+      routine-actions:
+        patterns: ['*']
+        update-types: [minor, patch]

@@ -1,0 +1,36 @@
+name: Dependency update escalation
+on:
+  schedule:
+    - cron: '17 14 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+jobs:
+  escalate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Escalate Dependabot pull requests idle for 14 days
+        shell: bash
+        run: |
+          cutoff="$(date -u -d '14 days ago' +%s)"
+          gh pr list --state open --author 'app/dependabot' --limit 100 \
+            --json number,createdAt,labels \
+          | jq -c '.[]' \
+          | while read -r pull_request; do
+              created="$(jq -r '.createdAt' <<<"$pull_request")"
+              created_epoch="$(date -u -d "$created" +%s)"
+              labels="$(jq -r '.labels[].name' <<<"$pull_request")"
+              if (( created_epoch > cutoff )) || grep -Fxq 'status:blocked' <<<"$labels"; then
+                continue
+              fi
+              number="$(jq -r '.number' <<<"$pull_request")"
+              gh pr edit "$number" --add-assignee cryptnetworks --add-label 'status:blocked'
+              gh pr comment "$number" --body \
+                'Dependency update has remained open for 14 days. Owner review is required: investigate failing checks or incompatibilities, document a bounded deferral, or close with a superseding update.'
+            done

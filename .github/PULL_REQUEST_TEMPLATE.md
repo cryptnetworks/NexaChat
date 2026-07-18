@@ -20,3 +20,4 @@
 - [ ] Authorization and untrusted-input boundaries are tested where applicable.
 - [ ] Documentation is updated when behavior changes.
 - [ ] No secrets or private data are included.
+- [ ] Dependency changes include upstream/release-note and lockfile review; major updates document compatibility, migration, rollback, and manual testing.
