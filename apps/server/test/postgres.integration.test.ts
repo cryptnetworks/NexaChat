@@ -21,12 +21,11 @@ const config: PostgresConfig = {
   queryTimeoutMs: 2_000,
   migrationsDirectory: resolve('apps/server/migrations'),
 };
-const authenticationConfig = parseRuntimeConfig({
+const runtimeConfig = parseRuntimeConfig({
   NODE_ENV: 'development',
   DATABASE_URL: config.connectionString,
   NEXA_WEB_ORIGIN: 'http://localhost:5173',
-}).authentication;
-process.env.NEXA_WEB_ORIGIN = 'http://localhost:5173';
+});
 
 beforeAll(async () => {
   const admin = new Pool({ connectionString: adminUrl });
@@ -42,8 +41,17 @@ afterAll(async () => {
 
 describe('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
-    const first = await initializeDatabase(config, authenticationConfig);
-    const firstApp = buildApp(first.service, first.readiness, first.auth);
+    const first = await initializeDatabase(
+      config,
+      runtimeConfig.authentication,
+    );
+    const firstApp = buildApp(
+      first.service,
+      first.readiness,
+      first.auth,
+      first.authorization,
+      runtimeConfig.server,
+    );
     const accountResponse = await firstApp.inject({
       method: 'POST',
       url: '/v1/auth/register',
@@ -55,26 +63,40 @@ describe('PostgreSQL-backed API', () => {
       },
     });
     const account = accountResponse.json<{ id: string }>();
+    const cookie = accountResponse.headers['set-cookie'];
+    expect(cookie).toBeTypeOf('string');
     const communityResponse = await firstApp.inject({
       method: 'POST',
       url: '/v1/communities',
+      headers: { cookie },
       payload: { ownerId: account.id, name: 'Persistent' },
     });
     const community = communityResponse.json<{ id: string }>();
     const spaceResponse = await firstApp.inject({
       method: 'POST',
       url: `/v1/communities/${community.id}/spaces`,
+      headers: { cookie },
       payload: { actorId: account.id, name: 'general' },
     });
     const space = spaceResponse.json<{ id: string }>();
     await firstApp.close();
     await first.pool.end();
 
-    const second = await initializeDatabase(config, authenticationConfig);
-    const secondApp = buildApp(second.service, second.readiness, second.auth);
+    const second = await initializeDatabase(
+      config,
+      runtimeConfig.authentication,
+    );
+    const secondApp = buildApp(
+      second.service,
+      second.readiness,
+      second.auth,
+      second.authorization,
+      runtimeConfig.server,
+    );
     const message = await secondApp.inject({
       method: 'POST',
       url: `/v1/spaces/${space.id}/messages`,
+      headers: { cookie },
       payload: { authorId: account.id, body: 'survived restart' },
     });
     expect(message.statusCode).toBe(201);

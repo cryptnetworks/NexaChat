@@ -258,6 +258,32 @@ describe('PostgreSQL migrations', () => {
     );
   });
 
+  it('upgrades an existing schema version 2 to version 3', async () => {
+    await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
+    const migrations = await readMigrations(migrationsDirectory);
+    await pool.query(`CREATE TABLE nexa_schema_migrations (
+      version integer PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      checksum char(64) NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    for (const migration of migrations.slice(0, 2)) {
+      await pool.query(migration.sql);
+      await pool.query(
+        'INSERT INTO nexa_schema_migrations (version, name, checksum) VALUES ($1,$2,$3)',
+        [migration.version, migration.name, migration.checksum],
+      );
+    }
+    const applied: number[] = [];
+    await expect(
+      migratePostgres(pool, migrationsDirectory, ({ version }) =>
+        applied.push(version),
+      ),
+    ).resolves.toBe(3);
+    expect(applied).toEqual([3]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(3);
+  });
+
   it('rejects missing and incompatible migration history', async () => {
     await expect(
       readMigrations(resolve('packages/postgres/test/empty')),
