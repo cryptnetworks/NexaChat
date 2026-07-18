@@ -6,6 +6,8 @@ import {
   type CommunityResponse,
   type CategoryResponse,
   type SpaceResponse,
+  type CreatedInvitationResponse,
+  type InvitationPreviewResponse,
 } from '@nexa/api-contracts';
 import {
   realtimeDeliverySchema,
@@ -14,6 +16,7 @@ import {
 } from '@nexa/realtime-contracts';
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
+import { invitationTokenFromHash } from './invitations.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -45,10 +48,36 @@ function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [inviteToken] = useState(() => invitationTokenFromHash(location.hash));
+  const [invitePreview, setInvitePreview] =
+    useState<InvitationPreviewResponse>();
+  const [createdInvite, setCreatedInvite] = useState('');
+  const [inviteStatus, setInviteStatus] = useState('');
   const realtimeCursor = useRef({
     sequence: 0,
     seenEventIds: new Set<string>(),
   });
+
+  useEffect(() => {
+    if (inviteToken)
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+  }, [inviteToken]);
+
+  useEffect(() => {
+    if (!inviteToken || !account) return;
+    setInviteStatus('Checking invitation…');
+    void post<InvitationPreviewResponse>('/v1/invitations/preview', {
+      actorId: account.id,
+      token: inviteToken,
+    })
+      .then((preview) => {
+        setInvitePreview(preview);
+        setInviteStatus('');
+      })
+      .catch(() => {
+        setInviteStatus('This invitation is invalid or no longer available.');
+      });
+  }, [account, inviteToken]);
 
   useEffect(() => {
     if (!account || !space) return;
@@ -215,6 +244,40 @@ function App() {
     form.currentTarget.reset();
   }
 
+  async function createInvite(form: React.FormEvent<HTMLFormElement>) {
+    form.preventDefault();
+    if (!account || !community) return;
+    setInviteStatus('Creating invitation…');
+    try {
+      const created = await post<CreatedInvitationResponse>(
+        `/v1/communities/${community.id}/invitations`,
+        {
+          actorId: account.id,
+          expiresInSeconds: 86_400,
+          maxUses: 1,
+        },
+      );
+      setCreatedInvite(created.token);
+      setInviteStatus('Invitation created. Copy it before leaving this page.');
+    } catch {
+      setInviteStatus('Unable to create an invitation. Try again.');
+    }
+  }
+
+  async function acceptInvite() {
+    if (!account || !inviteToken) return;
+    setInviteStatus('Accepting invitation…');
+    try {
+      await post('/v1/invitations/accept', {
+        actorId: account.id,
+        token: inviteToken,
+      });
+      setInviteStatus('Invitation accepted.');
+    } catch {
+      setInviteStatus('This invitation could not be accepted.');
+    }
+  }
+
   return (
     <main>
       <aside>
@@ -343,6 +406,51 @@ function App() {
               />
               <button>Send</button>
             </form>
+            <section aria-labelledby="invitation-heading">
+              <h3 id="invitation-heading">Invitations</h3>
+              {invitePreview && (
+                <div>
+                  <p>
+                    Join <strong>{invitePreview.communityName}</strong> with
+                    this invitation.
+                  </p>
+                  <button onClick={() => void acceptInvite()}>
+                    Accept invitation
+                  </button>
+                </div>
+              )}
+              <form onSubmit={(event) => void createInvite(event)}>
+                <button>Create one-use invitation</button>
+              </form>
+              {createdInvite && (
+                <div>
+                  <label htmlFor="created-invite">New invitation token</label>
+                  <input id="created-invite" value={createdInvite} readOnly />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(createdInvite)
+                        .then(() => {
+                          setInviteStatus('Invitation copied.');
+                        })
+                        .catch(() => {
+                          setInviteStatus(
+                            'Copy failed. Select the invitation manually.',
+                          );
+                        });
+                    }}
+                  >
+                    Copy invitation
+                  </button>
+                </div>
+              )}
+              {inviteStatus && (
+                <p role="status" aria-live="polite">
+                  {inviteStatus}
+                </p>
+              )}
+            </section>
           </>
         )}
       </section>

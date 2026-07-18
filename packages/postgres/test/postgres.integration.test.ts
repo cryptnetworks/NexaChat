@@ -243,6 +243,38 @@ describe('PostgreSQL persistence', () => {
       message,
     );
   });
+
+  it('atomically persists invitation final-use acceptance and audit events', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const service = new CommunityService(persistence);
+    const owner = await service.createAccount('Invite owner');
+    const first = await service.createAccount('Invite first');
+    const second = await service.createAccount('Invite second');
+    const community = await service.createCommunity(owner.id, 'Invitations');
+    const created = await service.createInvitation(owner.id, community.id, {
+      expiresInSeconds: 600,
+      maxUses: 1,
+    });
+    const results = await Promise.allSettled([
+      service.acceptInvitation(first.id, created.token, 'first'),
+      service.acceptInvitation(second.id, created.token, 'second'),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === 'rejected'),
+    ).toHaveLength(1);
+    expect(
+      await persistence.invitations.findById(created.invitation.id),
+    ).toMatchObject({ useCount: 1, version: 2 });
+    expect(await persistence.auditEvents.list(community.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'invitation.create' }),
+        expect.objectContaining({ action: 'invitation.accept' }),
+      ]),
+    );
+  });
 });
 
 describe('PostgreSQL authorization persistence', () => {
@@ -336,7 +368,7 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4, 5]);
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -363,9 +395,9 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(5);
-    expect(applied).toEqual([3, 4, 5]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(5);
+    ).resolves.toBe(6);
+    expect(applied).toEqual([3, 4, 5, 6]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(6);
   });
 
   it('rejects missing and incompatible migration history', async () => {

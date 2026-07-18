@@ -111,6 +111,24 @@ export const updateMessageSchema = z
 export const deleteMessageSchema = z
   .object({ actorId: id, expectedVersion: z.number().int().positive() })
   .strict();
+export const createInvitationSchema = z
+  .object({
+    actorId: id,
+    expiresInSeconds: z.number().int().min(60).max(2_592_000),
+    maxUses: z.number().int().min(1).max(100),
+    targetAccountId: id.nullable().optional(),
+  })
+  .strict();
+export const invitationTokenSchema = z
+  .string()
+  .length(43)
+  .regex(/^[A-Za-z0-9_-]+$/);
+export const invitationActionSchema = z
+  .object({ actorId: id, token: invitationTokenSchema })
+  .strict();
+export const revokeInvitationSchema = z
+  .object({ actorId: id, expectedVersion: z.number().int().positive() })
+  .strict();
 export const permissionSchema = z.enum([
   'community.view',
   'community.manage',
@@ -205,6 +223,27 @@ export const messagePageSchema = z.object({
   items: z.array(messageSchema),
   nextCursor: z.string().nullable(),
 });
+export const invitationSchema = z.object({
+  id,
+  communityId: id,
+  creatorId: id,
+  targetAccountId: id.nullable(),
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  maxUses: z.number().int().positive(),
+  useCount: z.number().int().nonnegative(),
+  revokedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
+export const createdInvitationSchema = z.object({
+  invitation: invitationSchema,
+  token: invitationTokenSchema,
+});
+export const invitationPreviewSchema = z.object({
+  communityId: id,
+  communityName: name,
+  expiresAt: z.string().datetime(),
+});
 
 export const errorResponseSchema = z.object({
   error: z.enum([
@@ -220,6 +259,7 @@ export const errorResponseSchema = z.object({
     'conflict',
     'stale_write',
     'sole_owner',
+    'invitation_unavailable',
   ]),
   correlationId: id.optional(),
 });
@@ -297,6 +337,9 @@ export type MembershipResponse = z.infer<typeof membershipSchema>;
 export type CategoryResponse = z.infer<typeof categorySchema>;
 export type SpaceResponse = z.infer<typeof spaceSchema>;
 export type MessageResponse = z.infer<typeof messageSchema>;
+export type InvitationResponse = z.infer<typeof invitationSchema>;
+export type CreatedInvitationResponse = z.infer<typeof createdInvitationSchema>;
+export type InvitationPreviewResponse = z.infer<typeof invitationPreviewSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type WebsocketClientMessage = z.infer<
   typeof websocketClientMessageSchema

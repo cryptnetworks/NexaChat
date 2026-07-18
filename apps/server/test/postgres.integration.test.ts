@@ -126,7 +126,7 @@ describe('PostgreSQL-backed API', () => {
     expect(ready.json()).toEqual({
       status: 'ready',
       storage: 'postgresql',
-      schemaVersion: 5,
+      schemaVersion: 6,
     });
     await secondApp.close();
     await second.pool.end();

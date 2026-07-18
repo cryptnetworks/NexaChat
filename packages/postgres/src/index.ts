@@ -9,8 +9,10 @@ import {
 } from 'pg';
 import type {
   Account,
+  AuditEvent,
   Category,
   Community,
+  Invitation,
   Membership,
   Message,
   Persistence,
@@ -29,7 +31,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -71,6 +73,8 @@ export class PostgresPersistence implements Persistence {
   readonly spaces;
   readonly messages;
   readonly sessions;
+  readonly invitations;
+  readonly auditEvents;
 
   constructor(
     private readonly pool: Pool,
@@ -83,6 +87,8 @@ export class PostgresPersistence implements Persistence {
     this.spaces = spaceRepository(queryable);
     this.messages = messageRepository(queryable);
     this.sessions = sessionRepository(queryable);
+    this.invitations = invitationRepository(queryable);
+    this.auditEvents = auditEventRepository(queryable);
   }
 
   async transaction<T>(
@@ -554,6 +560,28 @@ type SessionRow = {
   expires_at: Date;
   revoked_at: Date | null;
 };
+type InvitationRow = {
+  id: string;
+  community_id: string;
+  creator_id: string;
+  token_hash: string;
+  target_account_id: string | null;
+  created_at: Date;
+  expires_at: Date;
+  max_uses: number;
+  use_count: number;
+  revoked_at: Date | null;
+  version: number;
+};
+type AuditEventRow = {
+  id: string;
+  actor_id: string;
+  community_id: string | null;
+  invitation_id: string | null;
+  action: AuditEvent['action'];
+  outcome: AuditEvent['outcome'];
+  occurred_at: Date;
+};
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
   return {
@@ -940,6 +968,106 @@ function sessionRepository(db: Queryable): Persistence['sessions'] {
   };
 }
 
+function invitationRepository(db: Queryable): Persistence['invitations'] {
+  const fields =
+    'id, community_id, creator_id, token_hash, target_account_id, created_at, expires_at, max_uses, use_count, revoked_at, version';
+  return {
+    async create(invitation) {
+      const result = await db.query<InvitationRow>(
+        `INSERT INTO invitations
+          (id, community_id, creator_id, token_hash, target_account_id,
+           created_at, expires_at, max_uses, use_count, revoked_at, version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${fields}`,
+        [
+          invitation.id,
+          invitation.communityId,
+          invitation.creatorId,
+          invitation.tokenHash,
+          invitation.targetAccountId,
+          invitation.createdAt,
+          invitation.expiresAt,
+          invitation.maxUses,
+          invitation.useCount,
+          invitation.revokedAt,
+          invitation.version,
+        ],
+      );
+      return mapInvitation(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<InvitationRow>(
+        `SELECT ${fields} FROM invitations WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapInvitation(result.rows[0]) : undefined;
+    },
+    async findByTokenHash(tokenHash) {
+      const result = await db.query<InvitationRow>(
+        `SELECT ${fields} FROM invitations WHERE token_hash=$1`,
+        [tokenHash],
+      );
+      return result.rows[0] ? mapInvitation(result.rows[0]) : undefined;
+    },
+    async list(communityId) {
+      const result = await db.query<InvitationRow>(
+        `SELECT ${fields} FROM invitations
+         WHERE community_id=$1 ORDER BY created_at DESC,id`,
+        [communityId],
+      );
+      return result.rows.map(mapInvitation);
+    },
+    async claim(id, expectedVersion, acceptedAt) {
+      const result = await db.query<InvitationRow>(
+        `UPDATE invitations SET use_count=use_count+1, version=version+1
+         WHERE id=$1 AND version=$2 AND revoked_at IS NULL
+           AND expires_at>$3 AND use_count<max_uses RETURNING ${fields}`,
+        [id, expectedVersion, acceptedAt],
+      );
+      return result.rows[0] ? mapInvitation(result.rows[0]) : undefined;
+    },
+    async revoke(id, expectedVersion, revokedAt) {
+      const result = await db.query<InvitationRow>(
+        `UPDATE invitations SET revoked_at=COALESCE(revoked_at,$3), version=version+1
+         WHERE id=$1 AND version=$2 RETURNING ${fields}`,
+        [id, expectedVersion, revokedAt],
+      );
+      return result.rows[0] ? mapInvitation(result.rows[0]) : undefined;
+    },
+  };
+}
+
+function auditEventRepository(db: Queryable): Persistence['auditEvents'] {
+  const fields =
+    'id, actor_id, community_id, invitation_id, action, outcome, occurred_at';
+  return {
+    async create(event) {
+      const result = await db.query<AuditEventRow>(
+        `INSERT INTO audit_events
+          (id, actor_id, community_id, invitation_id, action, outcome, occurred_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${fields}`,
+        [
+          event.id,
+          event.actorId,
+          event.communityId,
+          event.invitationId,
+          event.action,
+          event.outcome,
+          event.occurredAt,
+        ],
+      );
+      return mapAuditEvent(requiredRow(result.rows));
+    },
+    async list(communityId) {
+      const result = await db.query<AuditEventRow>(
+        `SELECT ${fields} FROM audit_events
+         WHERE community_id=$1 ORDER BY occurred_at,id`,
+        [communityId],
+      );
+      return result.rows.map(mapAuditEvent);
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1035,6 +1163,28 @@ const mapSession = (row: SessionRow): SessionRecord => ({
   lastSeenAt: row.last_seen_at.toISOString(),
   expiresAt: row.expires_at.toISOString(),
   revokedAt: row.revoked_at?.toISOString() ?? null,
+});
+const mapInvitation = (row: InvitationRow): Invitation => ({
+  id: row.id,
+  communityId: row.community_id,
+  creatorId: row.creator_id,
+  tokenHash: row.token_hash,
+  targetAccountId: row.target_account_id,
+  createdAt: row.created_at.toISOString(),
+  expiresAt: row.expires_at.toISOString(),
+  maxUses: row.max_uses,
+  useCount: row.use_count,
+  revokedAt: row.revoked_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapAuditEvent = (row: AuditEventRow): AuditEvent => ({
+  id: row.id,
+  actorId: row.actor_id,
+  communityId: row.community_id,
+  invitationId: row.invitation_id,
+  action: row.action,
+  outcome: row.outcome,
+  occurredAt: row.occurred_at.toISOString(),
 });
 
 interface Migration {
