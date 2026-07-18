@@ -92,7 +92,7 @@ export function registerAuthRoutes(
   });
 }
 
-async function authenticateRequest(
+export async function authenticateRequest(
   request: FastifyRequest,
   runtime: AuthRuntime,
 ): Promise<AuthenticatedSession> {

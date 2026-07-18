@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CURRENT_SCHEMA_VERSION,
   MigrationError,
+  PostgresAuthorizationStore,
   PostgresPersistence,
   createPostgresPool,
   migratePostgres,
@@ -164,6 +165,81 @@ describe('PostgreSQL persistence', () => {
   });
 });
 
+describe('PostgreSQL authorization persistence', () => {
+  it('stores roles, assignments and decisions idempotently and protects ownership from stale transfer', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const authorization = new PostgresAuthorizationStore(pool);
+    const owner = { id: randomUUID(), displayName: 'Owner' };
+    const next = { id: randomUUID(), displayName: 'Next' };
+    await persistence.accounts.create(owner);
+    await persistence.accounts.create(next);
+    const community = {
+      id: randomUUID(),
+      ownerId: owner.id,
+      name: 'Authorization',
+    };
+    await persistence.communities.create(community);
+    const now = new Date().toISOString();
+    await persistence.memberships.create({
+      id: randomUUID(),
+      communityId: community.id,
+      accountId: owner.id,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await persistence.memberships.create({
+      id: randomUUID(),
+      communityId: community.id,
+      accountId: next.id,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const role = await authorization.putRole({
+      id: randomUUID(),
+      communityId: community.id,
+      name: 'member',
+      position: 1,
+      protected: false,
+      version: 0,
+    });
+    const assignment = {
+      roleId: role.id,
+      actorId: next.id,
+      communityId: community.id,
+      version: 1,
+    };
+    await authorization.assignRole(assignment);
+    await authorization.assignRole(assignment);
+    const decision = {
+      roleId: role.id,
+      permission: 'space.view' as const,
+      scope: { type: 'community' as const, id: community.id },
+      effect: 'grant' as const,
+    };
+    await authorization.putDecision(decision);
+    await authorization.putDecision(decision);
+    const snapshot = await authorization.snapshot(next.id, [decision.scope]);
+    expect(snapshot.assignments).toHaveLength(1);
+    expect(snapshot.decisions).toEqual([decision]);
+    const outcomes = await Promise.allSettled([
+      authorization.transaction((store) =>
+        store.transferOwnership(community.id, owner.id, next.id),
+      ),
+      authorization.transaction((store) =>
+        store.transferOwnership(community.id, owner.id, next.id),
+      ),
+    ]);
+    expect(
+      outcomes.filter((outcome) => outcome.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      outcomes.filter((outcome) => outcome.status === 'rejected'),
+    ).toHaveLength(1);
+  });
+});
+
 describe('PostgreSQL migrations', () => {
   it('migrates an empty database exactly once under concurrent startup', async () => {
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
@@ -176,7 +252,7 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2]);
+    expect(applied).toEqual([1, 2, 3]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );

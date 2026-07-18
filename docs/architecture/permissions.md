@@ -25,4 +25,14 @@ Absence of a grant is denial. Category decisions inherit into spaces unless expl
 - Permission changes are transactional, idempotent, and evaluated against current state at commit time.
 - Preview uses the same evaluator as enforcement and explains contributing decisions without exposing protected membership data.
 
-The first slice implements only the owner rule for space creation; broader authorization must not ship until this specification has executable decision-table tests.
+The scoped evaluator now protects every community, space, message, and subscription boundary currently present. Direct conversations and later service boundaries remain out of scope until their domain services exist.
+
+## Version 1 permission catalog
+
+The version-controlled catalog is `community.view`, `community.manage`, `community.transfer`, `membership.view`, `membership.manage`, `category.view`, `category.manage`, `space.view`, `space.manage`, `message.create`, `message.manage`, `invitation.create`, `invitation.manage`, `moderation.ban`, and `moderation.audit`.
+
+Instance decisions can apply to every community but do not grant private-content access implicitly. Community decisions inherit into its categories, spaces, and resources. Category decisions inherit only into its spaces and resources. Space decisions inherit only into resources in that space. Resource decisions affect only the named resource. The evaluator receives the validated ancestry; a decision whose scope is absent from that ancestry cannot contribute.
+
+Evaluation selects the most specific applicable explicit decision. At the same specificity, denial wins across all assigned roles. Owner authority is evaluated after actor/session validity and before role decisions. Preview and command enforcement call the same exported evaluator and return only the permission, outcome, safe reason, and contributing scope. HTTP authorization denial is intentionally normalized to `not_found` so callers cannot probe private resource existence.
+
+Role and permission mutations use idempotent keys and transactions. Role versions reject stale writes; PostgreSQL uses serializable transactions for sensitive authorization changes. Ownership transfer locks and validates an active successor, changes the single `communities.owner_id` value atomically, and rejects stale concurrent transfers. The owner cannot be removed through role assignment because ownership is not represented as an ordinary role.

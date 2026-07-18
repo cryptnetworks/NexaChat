@@ -1,6 +1,7 @@
 import { CommunityService } from '@nexa/domain';
 import {
   PostgresPersistence,
+  PostgresAuthorizationStore,
   createPostgresPool,
   migratePostgres,
   postgresConfigFromEnvironment,
@@ -9,6 +10,7 @@ import {
 } from '@nexa/postgres';
 import type { StorageReadiness } from './app.js';
 import { createAuthRuntime } from './auth-config.js';
+import { AuthorizationService } from '@nexa/authorization';
 
 export async function initializeDatabase(
   config: PostgresConfig = postgresConfigFromEnvironment(),
@@ -29,10 +31,14 @@ export async function initializeDatabase(
     throw new Error(`PostgreSQL startup failed: ${safeErrorMessage(error)}`);
   }
   const persistence = new PostgresPersistence(pool);
+  const authorization = new AuthorizationService(
+    new PostgresAuthorizationStore(pool),
+  );
   const readiness = postgresReadiness(pool);
   return {
     pool,
-    service: new CommunityService(persistence),
+    service: new CommunityService(persistence, authorization),
+    authorization,
     readiness,
     auth: createAuthRuntime(pool),
   };

@@ -53,6 +53,7 @@ npm audit
 - `apps/web` is the React/Vite browser client.
 - `packages/api-contracts` owns shared HTTP request/response schemas and WebSocket client/server control-message schemas. Zod validates untrusted boundary input at runtime.
 - `packages/auth` owns local authentication behavior, password hashing, token protection, expiration, and replaceable rate-limiting ports.
+- `packages/authorization` owns the versioned permission catalog, deny-by-default scoped evaluator, ownership and protected-role rules, and the shared preview/enforcement path.
 - `packages/realtime-contracts` owns versioned server event envelopes and reuses message response schemas from `api-contracts`.
 - `packages/domain` contains storage ports, the community service, authorization rules, and an in-memory test adapter without transport-specific logic.
 - `packages/postgres` implements the storage ports, connection pooling, schema verification, and concurrency-safe migrations.

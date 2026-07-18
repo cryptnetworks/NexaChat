@@ -3,7 +3,12 @@ import { initializeDatabase } from './database.js';
 import { attachWebsocketHub } from './websocket.js';
 
 const database = await initializeDatabase();
-const app = buildApp(database.service, database.readiness, database.auth);
+const app = buildApp(
+  database.service,
+  database.readiness,
+  database.auth,
+  database.authorization,
+);
 const port = Number(process.env.NEXA_SERVER_PORT ?? 3000);
 await app.listen({ host: '0.0.0.0', port });
 app.websocketHub = attachWebsocketHub(app.server, database.service);

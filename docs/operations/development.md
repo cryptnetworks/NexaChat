@@ -26,6 +26,8 @@ Releases must back up before migration. Rollback means deploying the prior schem
 
 The pool defaults to 10 connections with explicit connection, idle, and query timeouts. Adjust the bounded `NEXA_DATABASE_*` values in the environment when deployment capacity requires it. Timestamps are stored as `timestamptz` and sessions store only SHA-256 token hashes, never raw session tokens.
 
+Authorization schema changes are forward-only. Roles use optimistic versions, scoped decisions and assignments use idempotent unique keys, and sensitive mutations run in serializable transactions. A serialization or version conflict is a deterministic stale write and callers must reload current state before retrying. Ownership transfer is atomic and requires the successor to be an active community member.
+
 ## Backup and restore
 
 A production backup must consistently cover PostgreSQL and object storage, encrypt data, record software/schema versions, and be restore-tested. Valkey is reconstructible and is not authoritative. No backup command is claimed until durable storage is implemented.
