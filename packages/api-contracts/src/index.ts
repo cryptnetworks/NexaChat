@@ -246,6 +246,7 @@ export const invitationPreviewSchema = z.object({
 });
 
 export const errorResponseSchema = z.object({
+  version: z.literal(1),
   error: z.enum([
     'forbidden',
     'internal_error',
@@ -260,8 +261,11 @@ export const errorResponseSchema = z.object({
     'stale_write',
     'sole_owner',
     'invitation_unavailable',
+    'payload_too_large',
+    'dependency_unavailable',
   ]),
-  correlationId: id.optional(),
+  correlationId: id,
+  retryable: z.boolean(),
 });
 
 const websocketRequestId = z.string().uuid();

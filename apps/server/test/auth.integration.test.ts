@@ -164,10 +164,17 @@ describe('local authentication HTTP lifecycle', () => {
       headers: { origin },
       payload: { username: 'does-not-exist', password: 'incorrect credential' },
     });
-    expect([incorrect.statusCode, incorrect.body]).toEqual([
-      unknown.statusCode,
-      unknown.body,
-    ]);
+    expect(incorrect.statusCode).toBe(unknown.statusCode);
+    expect(incorrect.json()).toMatchObject({
+      version: 1,
+      error: 'authentication_failed',
+      retryable: false,
+    });
+    expect(unknown.json()).toMatchObject({
+      version: 1,
+      error: 'authentication_failed',
+      retryable: false,
+    });
     await app.close();
   });
 
@@ -196,7 +203,8 @@ describe('local authentication HTTP lifecycle', () => {
         password,
       }),
     });
-    expect(oversized.statusCode).toBe(400);
+    expect(oversized.statusCode).toBe(413);
+    expect(oversized.json()).toMatchObject({ error: 'payload_too_large' });
     const created = await register(app, 'csrfuser');
     expect(
       (

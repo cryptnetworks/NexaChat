@@ -11,6 +11,8 @@ export interface RuntimeConfig {
     bodyLimitBytes: number;
     requestTimeoutMs: number;
     shutdownTimeoutMs: number;
+    rateLimit: number;
+    rateWindowMs: number;
   };
   database: PostgresConfig;
   authentication: {
@@ -57,6 +59,8 @@ const keys = new Set([
   'NEXA_SERVER_BODY_LIMIT_BYTES',
   'NEXA_SERVER_REQUEST_TIMEOUT_MS',
   'NEXA_SERVER_SHUTDOWN_TIMEOUT_MS',
+  'NEXA_SERVER_RATE_LIMIT',
+  'NEXA_SERVER_RATE_WINDOW_SECONDS',
   'NEXA_WEB_ORIGIN',
   'NEXA_SECURE_COOKIES',
   'NEXA_SESSION_ABSOLUTE_SECONDS',
@@ -170,6 +174,21 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
         60_000,
         'NEXA_SERVER_SHUTDOWN_TIMEOUT_MS',
       ),
+      rateLimit: int(
+        env.NEXA_SERVER_RATE_LIMIT,
+        1_000,
+        10,
+        1_000_000,
+        'NEXA_SERVER_RATE_LIMIT',
+      ),
+      rateWindowMs:
+        int(
+          env.NEXA_SERVER_RATE_WINDOW_SECONDS,
+          60,
+          1,
+          3_600,
+          'NEXA_SERVER_RATE_WINDOW_SECONDS',
+        ) * 1_000,
     },
     database: {
       connectionString,
