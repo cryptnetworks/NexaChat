@@ -29,7 +29,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -260,9 +260,14 @@ export class PostgresAuthorizationStore implements AuthorizationStore {
     const communityId = scopes.find((scope) => scope.type === 'community')?.id;
     const [account, ownership, roles, assignments, decisions] =
       await Promise.all([
-        this.db.query<{ status: 'active' | 'suspended' }>(
-          'SELECT status FROM accounts WHERE id = $1',
-          [actorId],
+        this.db.query<{
+          account_status: 'active' | 'suspended';
+          membership_status: Membership['status'] | null;
+        }>(
+          `SELECT a.status AS account_status, m.status AS membership_status
+           FROM accounts a LEFT JOIN memberships m ON m.account_id=a.id AND m.community_id=$2
+           WHERE a.id=$1`,
+          [actorId, communityId ?? null],
         ),
         communityId
           ? this.db.query<{ id: string }>(
@@ -287,7 +292,10 @@ export class PostgresAuthorizationStore implements AuthorizationStore {
       actor: {
         actorId,
         sessionValid: account.rows.length === 1,
-        suspended: account.rows[0]?.status === 'suspended',
+        suspended:
+          account.rows[0]?.account_status === 'suspended' ||
+          (communityId !== undefined &&
+            account.rows[0]?.membership_status !== 'active'),
         ownerOf: ownership.rows.map((row) => row.id),
       },
       roles: roles.rows.map(mapRole),
@@ -378,7 +386,7 @@ export class PostgresAuthorizationStore implements AuthorizationStore {
     );
     if (target.rowCount !== 1) throw new StaleAuthorizationWriteError();
     const changed = await this.db.query(
-      'UPDATE communities SET owner_id=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND owner_id=$2',
+      'UPDATE communities SET owner_id=$3, version=version+1, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND owner_id=$2',
       [communityId, currentOwnerId, nextOwnerId],
     );
     if (changed.rowCount !== 1) throw new StaleAuthorizationWriteError();
@@ -491,7 +499,13 @@ const mapAuthSession = (row: AuthSessionRow): AuthSession => ({
 });
 
 type AccountRow = { id: string; display_name: string };
-type CommunityRow = { id: string; owner_id: string; name: string };
+type CommunityRow = {
+  id: string;
+  owner_id: string;
+  name: string;
+  archived_at: Date | null;
+  version: number;
+};
 type MembershipRow = {
   id: string;
   community_id: string;
@@ -499,6 +513,7 @@ type MembershipRow = {
   status: Membership['status'];
   created_at: Date;
   updated_at: Date;
+  version: number;
 };
 type CategoryRow = {
   id: string;
@@ -506,6 +521,7 @@ type CategoryRow = {
   name: string;
   position: number;
   archived_at: Date | null;
+  version: number;
 };
 type SpaceRow = {
   id: string;
@@ -515,6 +531,7 @@ type SpaceRow = {
   kind: 'text';
   position: number;
   archived_at: Date | null;
+  version: number;
 };
 type MessageRow = {
   id: string;
@@ -553,18 +570,55 @@ function accountRepository(db: Queryable): Persistence['accounts'] {
 }
 
 function communityRepository(db: Queryable): Persistence['communities'] {
+  const fields = 'id, owner_id, name, archived_at, version';
   return {
     async create(community) {
       const result = await db.query<CommunityRow>(
-        'INSERT INTO communities (id, owner_id, name) VALUES ($1, $2, $3) RETURNING id, owner_id, name',
+        `INSERT INTO communities (id, owner_id, name) VALUES ($1, $2, $3) RETURNING ${fields}`,
         [community.id, community.ownerId, community.name],
       );
       return mapCommunity(requiredRow(result.rows));
     },
     async findById(id) {
       const result = await db.query<CommunityRow>(
-        'SELECT id, owner_id, name FROM communities WHERE id = $1',
+        `SELECT ${fields} FROM communities WHERE id = $1`,
         [id],
+      );
+      return result.rows[0] ? mapCommunity(result.rows[0]) : undefined;
+    },
+    async listVisible(accountId, page) {
+      const afterId = decodeCursor(page.cursor);
+      const result = await db.query<CommunityRow>(
+        `SELECT ${fields} FROM communities c
+         WHERE c.archived_at IS NULL AND c.id > $2::uuid
+           AND EXISTS (SELECT 1 FROM accounts a WHERE a.id=$1 AND a.status='active')
+           AND EXISTS (SELECT 1 FROM memberships m WHERE m.community_id=c.id AND m.account_id=$1 AND m.status='active')
+         ORDER BY c.id LIMIT $3`,
+        [accountId, afterId, page.limit + 1],
+      );
+      const items = result.rows.slice(0, page.limit).map(mapCommunity);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          result.rows.length > page.limit && last
+            ? encodeCursor(last.id)
+            : null,
+      };
+    },
+    async update(id, name, expectedVersion) {
+      const result = await db.query<CommunityRow>(
+        `UPDATE communities SET name=$2, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$3 AND archived_at IS NULL RETURNING ${fields}`,
+        [id, name, expectedVersion],
+      );
+      return result.rows[0] ? mapCommunity(result.rows[0]) : undefined;
+    },
+    async archive(id, expectedVersion, archivedAt) {
+      const result = await db.query<CommunityRow>(
+        `UPDATE communities SET archived_at=$2, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$3 AND archived_at IS NULL RETURNING ${fields}`,
+        [id, archivedAt, expectedVersion],
       );
       return result.rows[0] ? mapCommunity(result.rows[0]) : undefined;
     },
@@ -578,7 +632,7 @@ function membershipRepository(db: Queryable): Persistence['memberships'] {
         `INSERT INTO memberships
           (id, community_id, account_id, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, community_id, account_id, status, created_at, updated_at`,
+         RETURNING id, community_id, account_id, status, created_at, updated_at, version`,
         [
           membership.id,
           membership.communityId,
@@ -592,9 +646,25 @@ function membershipRepository(db: Queryable): Persistence['memberships'] {
     },
     async findByCommunityAndAccount(communityId, accountId) {
       const result = await db.query<MembershipRow>(
-        `SELECT id, community_id, account_id, status, created_at, updated_at
+        `SELECT id, community_id, account_id, status, created_at, updated_at, version
          FROM memberships WHERE community_id = $1 AND account_id = $2`,
         [communityId, accountId],
+      );
+      return result.rows[0] ? mapMembership(result.rows[0]) : undefined;
+    },
+    async list(communityId) {
+      const result = await db.query<MembershipRow>(
+        `SELECT id, community_id, account_id, status, created_at, updated_at, version
+         FROM memberships WHERE community_id=$1 ORDER BY created_at, id`,
+        [communityId],
+      );
+      return result.rows.map(mapMembership);
+    },
+    async updateStatus(id, status, expectedVersion, updatedAt) {
+      const result = await db.query<MembershipRow>(
+        `UPDATE memberships SET status=$2, updated_at=$3, version=version+1
+         WHERE id=$1 AND version=$4 RETURNING id, community_id, account_id, status, created_at, updated_at, version`,
+        [id, status, updatedAt, expectedVersion],
       );
       return result.rows[0] ? mapMembership(result.rows[0]) : undefined;
     },
@@ -602,7 +672,8 @@ function membershipRepository(db: Queryable): Persistence['memberships'] {
 }
 
 function categoryRepository(db: Queryable): Persistence['categories'] {
-  const returning = 'RETURNING id, community_id, name, position, archived_at';
+  const fields = 'id, community_id, name, position, archived_at, version';
+  const returning = `RETURNING ${fields}`;
   return {
     async create(category) {
       const result = await db.query<CategoryRow>(
@@ -620,8 +691,23 @@ function categoryRepository(db: Queryable): Persistence['categories'] {
     },
     async findById(id) {
       const result = await db.query<CategoryRow>(
-        'SELECT id, community_id, name, position, archived_at FROM categories WHERE id = $1',
+        `SELECT ${fields} FROM categories WHERE id = $1`,
         [id],
+      );
+      return result.rows[0] ? mapCategory(result.rows[0]) : undefined;
+    },
+    async list(communityId, includeArchived = false) {
+      const result = await db.query<CategoryRow>(
+        `SELECT ${fields} FROM categories WHERE community_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY position,id`,
+        [communityId, includeArchived],
+      );
+      return result.rows.map(mapCategory);
+    },
+    async update(id, input, expectedVersion) {
+      const result = await db.query<CategoryRow>(
+        `UPDATE categories SET name=$2, position=$3, archived_at=$4, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$5 RETURNING ${fields}`,
+        [id, input.name, input.position, input.archivedAt, expectedVersion],
       );
       return result.rows[0] ? mapCategory(result.rows[0]) : undefined;
     },
@@ -643,8 +729,9 @@ function categoryRepository(db: Queryable): Persistence['categories'] {
 }
 
 function spaceRepository(db: Queryable): Persistence['spaces'] {
-  const returning =
-    'RETURNING id, community_id, category_id, name, kind, position, archived_at';
+  const fields =
+    'id, community_id, category_id, name, kind, position, archived_at, version';
+  const returning = `RETURNING ${fields}`;
   return {
     async create(space) {
       const result = await db.query<SpaceRow>(
@@ -665,8 +752,41 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
     },
     async findById(id) {
       const result = await db.query<SpaceRow>(
-        'SELECT id, community_id, category_id, name, kind, position, archived_at FROM spaces WHERE id = $1',
+        `SELECT ${fields} FROM spaces WHERE id = $1`,
         [id],
+      );
+      return result.rows[0] ? mapSpace(result.rows[0]) : undefined;
+    },
+    async list(communityId, page, includeArchived = false) {
+      const [afterPosition, afterId] = decodePositionCursor(page.cursor);
+      const result = await db.query<SpaceRow>(
+        `SELECT ${fields} FROM spaces s WHERE community_id=$1 AND ($2 OR archived_at IS NULL)
+         AND ($2 OR category_id IS NULL OR EXISTS (SELECT 1 FROM categories c WHERE c.id=s.category_id AND c.archived_at IS NULL))
+         AND (position,id) > ($3,$4::uuid) ORDER BY position,id LIMIT $5`,
+        [communityId, includeArchived, afterPosition, afterId, page.limit + 1],
+      );
+      const items = result.rows.slice(0, page.limit).map(mapSpace);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          result.rows.length > page.limit && last
+            ? encodePositionCursor(last.position, last.id)
+            : null,
+      };
+    },
+    async update(id, input, expectedVersion) {
+      const result = await db.query<SpaceRow>(
+        `UPDATE spaces SET name=$2, position=$3, category_id=$4, archived_at=$5, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$6 RETURNING ${fields}`,
+        [
+          id,
+          input.name,
+          input.position,
+          input.categoryId,
+          input.archivedAt,
+          expectedVersion,
+        ],
       );
       return result.rows[0] ? mapSpace(result.rows[0]) : undefined;
     },
@@ -769,6 +889,8 @@ const mapCommunity = (row: CommunityRow): Community => ({
   id: row.id,
   ownerId: row.owner_id,
   name: row.name,
+  archivedAt: row.archived_at?.toISOString() ?? null,
+  version: row.version,
 });
 const mapMembership = (row: MembershipRow): Membership => ({
   id: row.id,
@@ -777,6 +899,7 @@ const mapMembership = (row: MembershipRow): Membership => ({
   status: row.status,
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
+  version: row.version,
 });
 const mapCategory = (row: CategoryRow): Category => ({
   id: row.id,
@@ -784,6 +907,7 @@ const mapCategory = (row: CategoryRow): Category => ({
   name: row.name,
   position: row.position,
   archivedAt: row.archived_at?.toISOString() ?? null,
+  version: row.version,
 });
 const mapSpace = (row: SpaceRow): Space => ({
   id: row.id,
@@ -793,7 +917,39 @@ const mapSpace = (row: SpaceRow): Space => ({
   kind: row.kind,
   position: row.position,
   archivedAt: row.archived_at?.toISOString() ?? null,
+  version: row.version,
 });
+
+const MIN_UUID = '00000000-0000-0000-0000-000000000000';
+function encodeCursor(id: string): string {
+  return Buffer.from(id).toString('base64url');
+}
+function decodeCursor(value?: string): string {
+  if (!value) return MIN_UUID;
+  try {
+    const decoded = Buffer.from(value, 'base64url').toString();
+    return /^[0-9a-f-]{36}$/i.test(decoded) ? decoded : MIN_UUID;
+  } catch {
+    return MIN_UUID;
+  }
+}
+function encodePositionCursor(position: number, id: string): string {
+  return Buffer.from(`${String(position)}:${id}`).toString('base64url');
+}
+function decodePositionCursor(value?: string): [number, string] {
+  if (!value) return [-1, MIN_UUID];
+  try {
+    const [position, id] = Buffer.from(value, 'base64url')
+      .toString()
+      .split(':');
+    return [
+      Number(position),
+      id && /^[0-9a-f-]{36}$/i.test(id) ? id : MIN_UUID,
+    ];
+  } catch {
+    return [-1, MIN_UUID];
+  }
+}
 const mapMessage = (row: MessageRow): Message => ({
   id: row.id,
   spaceId: row.space_id,

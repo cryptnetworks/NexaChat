@@ -65,6 +65,8 @@ Authentication endpoints are `POST /v1/auth/register`, `POST /v1/auth/login`, `P
 
 Runtime configuration is parsed exactly once before database initialization or socket binding. Development values are listed in `.env.example`; production requires an explicit PostgreSQL URL and exact HTTPS web origin, forces secure cookies, rejects development identity, and fails startup with the stable `invalid_configuration` diagnostic. Diagnostics name the invalid key but never include its value.
 
+Community lifecycle endpoints support authenticated community, membership, category, and text-space operations. Names are normalized and scoped for active uniqueness. Collections use bounded stable cursors, version fields reject stale writes, and archival preserves message history. Cookie-authenticated mutations require the exact configured `Origin` and `X-Nexa-CSRF: 1`.
+
 ## Desktop status
 
 The web/domain split is suitable for a thin Tauri shell without duplicating interface or domain logic, but the desktop scaffold is deferred because `rustc`, `cargo`, and the Tauri CLI are not installed locally. Xcode 26.6 is available.
@@ -75,6 +77,7 @@ Before adding `apps/desktop`, install the stable Rust toolchain (including `rust
 
 - PostgreSQL persistence is implemented. Valkey and object storage are not connected to application flows.
 - WebSocket subscription authorization remains development-only. A subscription is limited to the account that owns the space's community and is not yet connected to browser sessions.
+- The web client provides keyboard-accessible community/category/space navigation and loading, empty, and error states; lifecycle administration forms are not yet exposed.
 - There is no desktop application scaffold until the documented toolchain is available.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
