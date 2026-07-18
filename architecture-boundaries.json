@@ -1,0 +1,20 @@
+{
+  "workspaces": {
+    "@nexa/api-contracts": [],
+    "@nexa/auth": [],
+    "@nexa/authorization": [],
+    "@nexa/domain": [],
+    "@nexa/postgres": ["@nexa/auth", "@nexa/authorization", "@nexa/domain"],
+    "@nexa/realtime-contracts": ["@nexa/api-contracts"],
+    "@nexa/server": [
+      "@nexa/api-contracts",
+      "@nexa/auth",
+      "@nexa/authorization",
+      "@nexa/domain",
+      "@nexa/postgres",
+      "@nexa/realtime-contracts"
+    ],
+    "@nexa/web": ["@nexa/api-contracts", "@nexa/realtime-contracts"]
+  },
+  "exceptions": []
+}

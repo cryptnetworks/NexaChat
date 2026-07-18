@@ -1,0 +1,1 @@
+{ "path": "apps/server/src/index.ts", "value": "import '@nexa/authorization';" }

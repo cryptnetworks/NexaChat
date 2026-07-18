@@ -1,0 +1,20 @@
+{
+  "path": "architecture-boundaries.json",
+  "value": {
+    "workspaces": {
+      "@nexa/domain": [],
+      "@nexa/authorization": [],
+      "@nexa/postgres": ["@nexa/domain"],
+      "@nexa/server": []
+    },
+    "exceptions": [
+      {
+        "from": "@nexa/domain",
+        "to": "@nexa/postgres",
+        "owner": "",
+        "rationale": "Temporary exception tracked in #1",
+        "removeAfter": "2026-12-01"
+      }
+    ]
+  }
+}

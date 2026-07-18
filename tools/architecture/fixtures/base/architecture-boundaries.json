@@ -1,0 +1,9 @@
+{
+  "workspaces": {
+    "@nexa/domain": [],
+    "@nexa/authorization": [],
+    "@nexa/postgres": ["@nexa/domain"],
+    "@nexa/server": []
+  },
+  "exceptions": []
+}
