@@ -25,6 +25,24 @@ describe('runtime configuration', () => {
     expect(config.database.maxConnections).toBe(10);
     expect(config.websocket.maxSubscriptions).toBe(32);
     expect(config.server.rateLimit).toBe(1_000);
+    expect(config.objectStorage.enabled).toBe(false);
+  });
+
+  it('parses enabled object storage without retaining endpoint credentials', () => {
+    const config = parseRuntimeConfig({
+      ...development,
+      NEXA_OBJECT_STORAGE_ENABLED: 'true',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'access',
+      S3_SECRET_KEY: 'secret',
+      S3_BUCKET: 'private-objects',
+    });
+    expect(config.objectStorage.config).toMatchObject({
+      endpoint: 'http://localhost:9000',
+      bucket: 'private-objects',
+      createBucket: true,
+      forcePathStyle: true,
+    });
   });
 
   it.each([
@@ -70,6 +88,18 @@ describe('runtime configuration', () => {
       'NEXA_WS_MAX_PAYLOAD_BYTES',
     ],
     [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
+    [{ ...development, NEXA_OBJECT_STORAGE_ENABLED: 'true' }, 'S3_ENDPOINT'],
+    [
+      {
+        ...production,
+        NEXA_OBJECT_STORAGE_ENABLED: 'true',
+        S3_ENDPOINT: 'http://storage.example.test',
+        S3_ACCESS_KEY: 'access',
+        S3_SECRET_KEY: 'secret',
+        S3_BUCKET: 'private-objects',
+      },
+      'S3_ENDPOINT',
+    ],
   ])('rejects invalid input without exposing values', (environment, key) => {
     try {
       parseRuntimeConfig(environment);
