@@ -140,6 +140,15 @@ function parseCookies(header: string | undefined): Record<string, string> {
   );
 }
 
+export function sessionTokenFromCookie(
+  header: string | undefined,
+  secureCookies: boolean,
+): string | undefined {
+  return parseCookies(header)[
+    secureCookies ? '__Host-nexa_session' : 'nexa_session'
+  ];
+}
+
 function cookieAttributes(config: AuthHttpConfig): string {
   return `Path=/; HttpOnly; SameSite=Strict${config.secureCookies ? '; Secure' : ''}`;
 }

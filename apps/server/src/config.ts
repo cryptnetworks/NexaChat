@@ -22,7 +22,20 @@ export interface RuntimeConfig {
     rateWindowMs: number;
     hashing: PasswordHashParameters;
   };
-  websocket: { developmentIdentityEnabled: boolean };
+  websocket: {
+    maxConnections: number;
+    maxConnectionsPerAccount: number;
+    maxConnectionsPerAddress: number;
+    maxSubscriptions: number;
+    maxPayloadBytes: number;
+    maxBufferedBytes: number;
+    maxMessagesPerWindow: number;
+    rateWindowMs: number;
+    heartbeatMs: number;
+    staleMs: number;
+    revalidateMs: number;
+    drainMs: number;
+  };
 }
 
 export class ConfigurationError extends Error {
@@ -61,6 +74,18 @@ const keys = new Set([
   'NEXA_DATABASE_QUERY_TIMEOUT_MS',
   'NEXA_MIGRATIONS_DIR',
   'NEXA_ENABLE_DEV_AUTH',
+  'NEXA_WS_MAX_CONNECTIONS',
+  'NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT',
+  'NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS',
+  'NEXA_WS_MAX_SUBSCRIPTIONS',
+  'NEXA_WS_MAX_PAYLOAD_BYTES',
+  'NEXA_WS_MAX_BUFFERED_BYTES',
+  'NEXA_WS_RATE_LIMIT',
+  'NEXA_WS_RATE_WINDOW_SECONDS',
+  'NEXA_WS_HEARTBEAT_SECONDS',
+  'NEXA_WS_STALE_SECONDS',
+  'NEXA_WS_REVALIDATE_SECONDS',
+  'NEXA_WS_DRAIN_SECONDS',
 ]);
 
 export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
@@ -232,7 +257,87 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
         ),
       },
     },
-    websocket: { developmentIdentityEnabled: devIdentity },
+    websocket: {
+      maxConnections: int(
+        env.NEXA_WS_MAX_CONNECTIONS,
+        1_000,
+        1,
+        100_000,
+        'NEXA_WS_MAX_CONNECTIONS',
+      ),
+      maxConnectionsPerAccount: int(
+        env.NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT,
+        5,
+        1,
+        100,
+        'NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT',
+      ),
+      maxConnectionsPerAddress: int(
+        env.NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS,
+        20,
+        1,
+        1_000,
+        'NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS',
+      ),
+      maxSubscriptions: int(
+        env.NEXA_WS_MAX_SUBSCRIPTIONS,
+        32,
+        1,
+        1_000,
+        'NEXA_WS_MAX_SUBSCRIPTIONS',
+      ),
+      maxPayloadBytes: int(
+        env.NEXA_WS_MAX_PAYLOAD_BYTES,
+        16_384,
+        1_024,
+        1_048_576,
+        'NEXA_WS_MAX_PAYLOAD_BYTES',
+      ),
+      maxBufferedBytes: int(
+        env.NEXA_WS_MAX_BUFFERED_BYTES,
+        262_144,
+        1_024,
+        16_777_216,
+        'NEXA_WS_MAX_BUFFERED_BYTES',
+      ),
+      maxMessagesPerWindow: int(
+        env.NEXA_WS_RATE_LIMIT,
+        60,
+        1,
+        10_000,
+        'NEXA_WS_RATE_LIMIT',
+      ),
+      rateWindowMs:
+        int(
+          env.NEXA_WS_RATE_WINDOW_SECONDS,
+          10,
+          1,
+          3_600,
+          'NEXA_WS_RATE_WINDOW_SECONDS',
+        ) * 1_000,
+      heartbeatMs:
+        int(
+          env.NEXA_WS_HEARTBEAT_SECONDS,
+          15,
+          1,
+          300,
+          'NEXA_WS_HEARTBEAT_SECONDS',
+        ) * 1_000,
+      staleMs:
+        int(env.NEXA_WS_STALE_SECONDS, 45, 2, 900, 'NEXA_WS_STALE_SECONDS') *
+        1_000,
+      revalidateMs:
+        int(
+          env.NEXA_WS_REVALIDATE_SECONDS,
+          5,
+          1,
+          300,
+          'NEXA_WS_REVALIDATE_SECONDS',
+        ) * 1_000,
+      drainMs:
+        int(env.NEXA_WS_DRAIN_SECONDS, 5, 1, 60, 'NEXA_WS_DRAIN_SECONDS') *
+        1_000,
+    },
   };
 }
 

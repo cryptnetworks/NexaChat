@@ -52,6 +52,107 @@ export interface AuthStore {
   transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T>;
 }
 
+export class InMemoryAuthStore implements AuthStore {
+  readonly accounts = new Map<string, AuthAccount>();
+  readonly sessions = new Map<string, AuthSession>();
+  createAccount(account: AuthAccount): Promise<AuthAccount> {
+    if (
+      [...this.accounts.values()].some(
+        (value) => value.normalizedUsername === account.normalizedUsername,
+      )
+    )
+      return Promise.reject(
+        Object.assign(new Error('duplicate'), { code: '23505' }),
+      );
+    this.accounts.set(account.id, account);
+    return Promise.resolve(account);
+  }
+  findAccountByNormalizedUsername(
+    username: string,
+  ): Promise<AuthAccount | undefined> {
+    return Promise.resolve(
+      [...this.accounts.values()].find(
+        (value) => value.normalizedUsername === username,
+      ),
+    );
+  }
+  findAccountById(id: string): Promise<AuthAccount | undefined> {
+    return Promise.resolve(this.accounts.get(id));
+  }
+  updatePasswordHash(id: string, passwordHash: string): Promise<void> {
+    const account = this.accounts.get(id);
+    if (account) this.accounts.set(id, { ...account, passwordHash });
+    return Promise.resolve();
+  }
+  resetCredentials(id: string, passwordHash: string): Promise<void> {
+    const account = this.accounts.get(id);
+    if (account)
+      this.accounts.set(id, {
+        ...account,
+        passwordHash,
+        credentialVersion: account.credentialVersion + 1,
+      });
+    return Promise.resolve();
+  }
+  createSession(session: AuthSession): Promise<AuthSession> {
+    this.sessions.set(session.id, session);
+    return Promise.resolve(session);
+  }
+  findSessionByTokenHash(hash: string): Promise<AuthSession | undefined> {
+    return Promise.resolve(
+      [...this.sessions.values()].find((value) => value.tokenHash === hash),
+    );
+  }
+  touchSession(
+    id: string,
+    lastSeenAt: string,
+    idleExpiresAt: string,
+  ): Promise<boolean> {
+    const value = this.sessions.get(id);
+    if (!value || value.revokedAt) return Promise.resolve(false);
+    this.sessions.set(id, { ...value, lastSeenAt, idleExpiresAt });
+    return Promise.resolve(true);
+  }
+  revokeSession(id: string, revokedAt: string): Promise<boolean> {
+    const value = this.sessions.get(id);
+    if (!value) return Promise.resolve(false);
+    this.sessions.set(id, {
+      ...value,
+      revokedAt: value.revokedAt ?? revokedAt,
+    });
+    return Promise.resolve(true);
+  }
+  revokeAllSessions(accountId: string, revokedAt: string): Promise<number> {
+    let count = 0;
+    for (const [id, value] of this.sessions)
+      if (value.accountId === accountId && !value.revokedAt) {
+        this.sessions.set(id, { ...value, revokedAt });
+        count += 1;
+      }
+    return Promise.resolve(count);
+  }
+  listSessions(accountId: string): Promise<AuthSession[]> {
+    return Promise.resolve(
+      [...this.sessions.values()].filter(
+        (value) => value.accountId === accountId,
+      ),
+    );
+  }
+  async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
+    const accounts = new Map(this.accounts);
+    const sessions = new Map(this.sessions);
+    try {
+      return await work(this);
+    } catch (error) {
+      this.accounts.clear();
+      this.sessions.clear();
+      for (const entry of accounts) this.accounts.set(...entry);
+      for (const entry of sessions) this.sessions.set(...entry);
+      throw error;
+    }
+  }
+}
+
 export interface Clock {
   now(): Date;
 }

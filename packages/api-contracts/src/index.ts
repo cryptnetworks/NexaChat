@@ -224,23 +224,50 @@ export const errorResponseSchema = z.object({
   correlationId: id.optional(),
 });
 
-export const websocketClientMessageSchema = z
-  .object({
-    type: z.literal('subscribe'),
-    spaceId: id,
-    actorId: id,
-  })
-  .strict();
+const websocketRequestId = z.string().uuid();
+export const websocketClientMessageSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      version: z.literal(1),
+      type: z.literal('subscribe'),
+      requestId: websocketRequestId,
+      spaceId: id,
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      type: z.literal('unsubscribe'),
+      requestId: websocketRequestId,
+      spaceId: id,
+    })
+    .strict(),
+  z.object({ version: z.literal(1), type: z.literal('heartbeat') }).strict(),
+]);
 
 export const websocketServerMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('subscribed'), spaceId: id }),
   z.object({
+    version: z.literal(1),
+    type: z.enum(['subscribed', 'unsubscribed']),
+    requestId: websocketRequestId,
+    spaceId: id,
+  }),
+  z.object({
+    version: z.literal(1),
+    type: z.literal('heartbeat'),
+    occurredAt: z.string().datetime(),
+  }),
+  z.object({
+    version: z.literal(1),
     type: z.literal('error'),
+    requestId: websocketRequestId.optional(),
     error: z.enum([
-      'development_only',
-      'forbidden',
+      'unauthenticated',
+      'unavailable',
       'invalid_message',
-      'not_found',
+      'rate_limited',
+      'subscription_limit',
+      'server_draining',
     ]),
   }),
 ]);

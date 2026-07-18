@@ -1,16 +1,51 @@
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import {
   websocketClientMessageSchema,
   websocketServerMessageSchema,
   type WebsocketServerMessage,
 } from '@nexa/api-contracts';
-import { DomainError, type CommunityService } from '@nexa/domain';
-import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
+import { AuthenticationError, type AuthenticatedSession } from '@nexa/auth';
+import type { CommunityService } from '@nexa/domain';
+import {
+  realtimeDeliverySchema,
+  realtimeEnvelopeSchema,
+  type RealtimeDelivery,
+  type RealtimeEnvelope,
+} from '@nexa/realtime-contracts';
+import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
+
+export interface WebsocketLimits {
+  maxConnections: number;
+  maxConnectionsPerAccount: number;
+  maxConnectionsPerAddress: number;
+  maxSubscriptions: number;
+  maxPayloadBytes: number;
+  maxBufferedBytes: number;
+  maxMessagesPerWindow: number;
+  rateWindowMs: number;
+  heartbeatMs: number;
+  staleMs: number;
+  revalidateMs: number;
+  drainMs: number;
+}
+
+export interface WebsocketMetrics {
+  increment(name: string, labels?: Record<string, string>): void;
+  gauge(name: string, value: number): void;
+}
+
+export interface WebsocketHubOptions {
+  auth: AuthRuntime;
+  trustedOrigin: string;
+  limits?: Partial<WebsocketLimits>;
+  metrics?: WebsocketMetrics;
+}
 
 export interface WebsocketHub {
   broadcast(spaceId: string, event: RealtimeEnvelope): void;
   close(): Promise<void>;
+  snapshot?(): { connections: number; subscriptions: number };
 }
 
 declare module 'fastify' {
@@ -19,9 +54,36 @@ declare module 'fastify' {
   }
 }
 
-function send(socket: WebSocket, message: WebsocketServerMessage): void {
-  socket.send(JSON.stringify(websocketServerMessageSchema.parse(message)));
+const defaults: WebsocketLimits = {
+  maxConnections: 1_000,
+  maxConnectionsPerAccount: 5,
+  maxConnectionsPerAddress: 20,
+  maxSubscriptions: 32,
+  maxPayloadBytes: 16_384,
+  maxBufferedBytes: 262_144,
+  maxMessagesPerWindow: 60,
+  rateWindowMs: 10_000,
+  heartbeatMs: 15_000,
+  staleMs: 45_000,
+  revalidateMs: 5_000,
+  drainMs: 5_000,
+};
+
+interface ConnectionState {
+  actorId: string;
+  token: string;
+  address: string;
+  subscriptions: Set<string>;
+  lastSeenAt: number;
+  rateStartedAt: number;
+  messagesInWindow: number;
+  outboundBytes: number;
 }
+
+const noopMetrics: WebsocketMetrics = {
+  increment() {},
+  gauge() {},
+};
 
 function textFromRawData(data: RawData): string {
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
@@ -32,74 +94,358 @@ function textFromRawData(data: RawData): string {
 export function attachWebsocketHub(
   server: Server,
   service: CommunityService,
-  developmentIdentityEnabled = false,
+  options: WebsocketHubOptions,
 ): WebsocketHub {
-  const sockets = new Map<WebSocket, string | undefined>();
-  const wss = new WebSocketServer({ server, path: '/v1/realtime' });
-  wss.on('connection', (socket) => {
-    if (!developmentIdentityEnabled) {
-      send(socket, { type: 'error', error: 'development_only' });
-      socket.close(1008, 'development only');
+  const limits = { ...defaults, ...options.limits };
+  const metrics = options.metrics ?? noopMetrics;
+  const pending = new Map<
+    IncomingMessage,
+    AuthenticatedSession & { token: string }
+  >();
+  const connections = new Map<WebSocket, ConnectionState>();
+  const sequences = new Map<string, number>();
+  let draining = false;
+  const wss = new WebSocketServer({
+    server,
+    path: '/v1/realtime',
+    maxPayload: limits.maxPayloadBytes,
+    verifyClient(info, callback) {
+      void verify(info.req, info.origin).then(
+        () => {
+          callback(true);
+        },
+        (error: unknown) => {
+          const status = error instanceof AuthenticationError ? 401 : 403;
+          metrics.increment('realtime_connection_rejected', {
+            reason: status === 401 ? 'unauthenticated' : 'origin',
+          });
+          callback(
+            false,
+            status,
+            status === 401 ? 'Unauthorized' : 'Forbidden',
+          );
+        },
+      );
+    },
+  });
+
+  async function verify(
+    request: IncomingMessage,
+    origin: string,
+  ): Promise<void> {
+    if (draining || origin !== options.trustedOrigin) throw new Error('reject');
+    const address = request.socket.remoteAddress ?? 'unknown';
+    if (
+      connections.size >= limits.maxConnections ||
+      countConnections((state) => state.address === address) >=
+        limits.maxConnectionsPerAddress
+    )
+      throw new Error('reject');
+    const token = sessionTokenFromCookie(
+      request.headers.cookie,
+      options.auth.config.secureCookies,
+    );
+    if (!token) throw new AuthenticationError('unauthenticated');
+    const authenticated = await options.auth.service.authenticate(token);
+    if (
+      countConnections((state) => state.actorId === authenticated.account.id) >=
+      limits.maxConnectionsPerAccount
+    )
+      throw new Error('reject');
+    pending.set(request, { ...authenticated, token });
+  }
+
+  function countConnections(predicate: (state: ConnectionState) => boolean) {
+    let count = 0;
+    for (const state of connections.values()) if (predicate(state)) count += 1;
+    return count;
+  }
+
+  wss.on('connection', (socket, request) => {
+    const authenticated = pending.get(request);
+    pending.delete(request);
+    if (!authenticated) {
+      socket.close(1008, 'unauthenticated');
       return;
     }
-    sockets.set(socket, undefined);
-    socket.on('message', (data, isBinary) => {
-      void handleMessage(socket, data, isBinary);
+    const now = Date.now();
+    const state: ConnectionState = {
+      actorId: authenticated.account.id,
+      token: authenticated.token,
+      address: request.socket.remoteAddress ?? 'unknown',
+      subscriptions: new Set(),
+      lastSeenAt: now,
+      rateStartedAt: now,
+      messagesInWindow: 0,
+      outboundBytes: 0,
+    };
+    connections.set(socket, state);
+    reportConnections();
+    metrics.increment('realtime_connection_opened');
+    socket.on('pong', () => {
+      state.lastSeenAt = Date.now();
     });
-    socket.on('close', () => sockets.delete(socket));
+    socket.on('message', (data, isBinary) => {
+      void handleMessage(socket, state, data, isBinary);
+    });
+    socket.on('error', () => {
+      cleanup(socket);
+    });
+    socket.on('close', () => {
+      cleanup(socket);
+    });
+  });
 
-    async function handleMessage(
-      client: WebSocket,
-      data: RawData,
-      isBinary: boolean,
-    ): Promise<void> {
-      let raw: unknown;
-      try {
-        raw = isBinary ? undefined : JSON.parse(textFromRawData(data));
-      } catch {
-        raw = undefined;
-      }
-      const parsed = websocketClientMessageSchema.safeParse(raw);
-      if (!parsed.success) {
-        send(client, { type: 'error', error: 'invalid_message' });
+  function cleanup(socket: WebSocket): void {
+    if (!connections.delete(socket)) return;
+    metrics.increment('realtime_connection_closed');
+    reportConnections();
+  }
+
+  function reportConnections(): void {
+    metrics.gauge('realtime_connections', connections.size);
+    metrics.gauge(
+      'realtime_subscriptions',
+      [...connections.values()].reduce(
+        (total, state) => total + state.subscriptions.size,
+        0,
+      ),
+    );
+  }
+
+  function consume(state: ConnectionState): boolean {
+    const now = Date.now();
+    if (now - state.rateStartedAt >= limits.rateWindowMs) {
+      state.rateStartedAt = now;
+      state.messagesInWindow = 0;
+    }
+    state.messagesInWindow += 1;
+    return state.messagesInWindow <= limits.maxMessagesPerWindow;
+  }
+
+  async function handleMessage(
+    socket: WebSocket,
+    state: ConnectionState,
+    data: RawData,
+    isBinary: boolean,
+  ): Promise<void> {
+    state.lastSeenAt = Date.now();
+    if (!consume(state)) {
+      safeSend(socket, state, {
+        version: 1,
+        type: 'error',
+        error: 'rate_limited',
+      });
+      socket.close(1008, 'rate limit');
+      return;
+    }
+    let raw: unknown;
+    try {
+      raw = isBinary ? undefined : JSON.parse(textFromRawData(data));
+    } catch {
+      raw = undefined;
+    }
+    const parsed = websocketClientMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      safeSend(socket, state, {
+        version: 1,
+        type: 'error',
+        error: 'invalid_message',
+      });
+      socket.close(1007, 'invalid message');
+      return;
+    }
+    if (parsed.data.type === 'heartbeat') {
+      safeSend(socket, state, {
+        version: 1,
+        type: 'heartbeat',
+        occurredAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (draining) {
+      safeSend(socket, state, {
+        version: 1,
+        type: 'error',
+        requestId: parsed.data.requestId,
+        error: 'server_draining',
+      });
+      return;
+    }
+    if (parsed.data.type === 'unsubscribe') {
+      state.subscriptions.delete(parsed.data.spaceId);
+      reportConnections();
+      safeSend(socket, state, {
+        version: 1,
+        type: 'unsubscribed',
+        requestId: parsed.data.requestId,
+        spaceId: parsed.data.spaceId,
+      });
+      return;
+    }
+    if (
+      !state.subscriptions.has(parsed.data.spaceId) &&
+      state.subscriptions.size >= limits.maxSubscriptions
+    ) {
+      safeSend(socket, state, {
+        version: 1,
+        type: 'error',
+        requestId: parsed.data.requestId,
+        error: 'subscription_limit',
+      });
+      return;
+    }
+    try {
+      await options.auth.service.authenticate(state.token);
+      await service.authorizeSpaceSubscription(
+        parsed.data.spaceId,
+        state.actorId,
+      );
+      state.subscriptions.add(parsed.data.spaceId);
+      reportConnections();
+      safeSend(socket, state, {
+        version: 1,
+        type: 'subscribed',
+        requestId: parsed.data.requestId,
+        spaceId: parsed.data.spaceId,
+      });
+    } catch (error) {
+      if (error instanceof AuthenticationError) {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          requestId: parsed.data.requestId,
+          error: 'unauthenticated',
+        });
+        socket.close(1008, 'unauthenticated');
         return;
       }
+      safeSend(socket, state, {
+        version: 1,
+        type: 'error',
+        requestId: parsed.data.requestId,
+        error: 'unavailable',
+      });
+    }
+  }
+
+  function safeSend(
+    socket: WebSocket,
+    state: ConnectionState,
+    message: WebsocketServerMessage | RealtimeDelivery,
+  ): boolean {
+    if (socket.readyState !== WebSocket.OPEN) return false;
+    const payload = JSON.stringify(
+      websocketServerMessageSchema.or(realtimeDeliverySchema).parse(message),
+    );
+    const bytes = Buffer.byteLength(payload);
+    if (
+      socket.bufferedAmount + state.outboundBytes + bytes >
+      limits.maxBufferedBytes
+    ) {
+      metrics.increment('realtime_slow_consumer');
+      socket.close(1013, 'slow consumer');
+      return false;
+    }
+    state.outboundBytes += bytes;
+    socket.send(payload, (error) => {
+      state.outboundBytes = Math.max(0, state.outboundBytes - bytes);
+      if (error) socket.terminate();
+    });
+    return true;
+  }
+
+  async function revalidate(): Promise<void> {
+    const now = Date.now();
+    for (const [socket, state] of connections) {
+      if (now - state.lastSeenAt > limits.staleMs) {
+        metrics.increment('realtime_stale_connection');
+        socket.terminate();
+        continue;
+      }
       try {
-        await service.authorizeSpaceSubscription(
-          parsed.data.spaceId,
-          parsed.data.actorId,
-        );
-        sockets.set(client, parsed.data.spaceId);
-        send(client, { type: 'subscribed', spaceId: parsed.data.spaceId });
-      } catch (error) {
-        send(client, {
-          type: 'error',
-          error:
-            error instanceof DomainError && error.code === 'forbidden'
-              ? 'forbidden'
-              : error instanceof DomainError && error.code === 'not_found'
-                ? 'not_found'
-                : 'invalid_message',
-        });
+        await options.auth.service.authenticate(state.token);
+      } catch {
+        socket.close(1008, 'unauthenticated');
+        continue;
+      }
+      for (const spaceId of [...state.subscriptions]) {
+        try {
+          await service.authorizeSpaceSubscription(spaceId, state.actorId);
+        } catch {
+          state.subscriptions.delete(spaceId);
+          safeSend(socket, state, {
+            version: 1,
+            type: 'error',
+            error: 'unavailable',
+          });
+        }
       }
     }
-  });
+    reportConnections();
+  }
+
+  const heartbeat = setInterval(() => {
+    for (const socket of connections.keys())
+      if (socket.readyState === WebSocket.OPEN) socket.ping();
+  }, limits.heartbeatMs);
+  heartbeat.unref();
+  const authorizationCheck = setInterval(
+    () => void revalidate(),
+    limits.revalidateMs,
+  );
+  authorizationCheck.unref();
+
   return {
-    broadcast(spaceId, event) {
-      const payload = JSON.stringify(event);
-      for (const [socket, subscribedSpace] of sockets) {
-        if (subscribedSpace === spaceId && socket.readyState === WebSocket.OPEN)
-          socket.send(payload);
-      }
+    broadcast(spaceId, rawEvent) {
+      const event = realtimeEnvelopeSchema.parse(rawEvent);
+      const sequence = (sequences.get(spaceId) ?? 0) + 1;
+      sequences.set(spaceId, sequence);
+      const delivery = realtimeDeliverySchema.parse({
+        version: 1,
+        type: 'event',
+        spaceId,
+        sequence,
+        event,
+      });
+      for (const [socket, state] of connections)
+        if (state.subscriptions.has(spaceId)) safeSend(socket, state, delivery);
     },
-    close() {
-      for (const socket of sockets.keys()) socket.close(1001, 'server closing');
-      return new Promise((resolve, reject) => {
+    async close() {
+      if (draining) return;
+      draining = true;
+      clearInterval(heartbeat);
+      clearInterval(authorizationCheck);
+      for (const [socket, state] of connections) {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          error: 'server_draining',
+        });
+        socket.close(1001, 'server shutdown');
+      }
+      const deadline = setTimeout(() => {
+        for (const socket of connections.keys()) socket.terminate();
+      }, limits.drainMs);
+      deadline.unref();
+      await new Promise<void>((resolve, reject) => {
         wss.close((error) => {
           if (error) reject(error);
           else resolve();
         });
       });
+      clearTimeout(deadline);
+      connections.clear();
+      reportConnections();
+    },
+    snapshot() {
+      return {
+        connections: connections.size,
+        subscriptions: [...connections.values()].reduce(
+          (total, state) => total + state.subscriptions.size,
+          0,
+        ),
+      };
     },
   };
 }
