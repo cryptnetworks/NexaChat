@@ -40,6 +40,7 @@ npm run test:postgres
 npm run test:auth
 npm run test:authorization
 npm run test:config
+npm run test:contracts
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
