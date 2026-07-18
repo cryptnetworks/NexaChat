@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
+import { parseRuntimeConfig } from '../src/config.js';
 import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
 
 const adminUrl =
@@ -20,6 +21,11 @@ const config: PostgresConfig = {
   queryTimeoutMs: 2_000,
   migrationsDirectory: resolve('apps/server/migrations'),
 };
+const authenticationConfig = parseRuntimeConfig({
+  NODE_ENV: 'development',
+  DATABASE_URL: config.connectionString,
+  NEXA_WEB_ORIGIN: 'http://localhost:5173',
+}).authentication;
 process.env.NEXA_WEB_ORIGIN = 'http://localhost:5173';
 
 beforeAll(async () => {
@@ -36,7 +42,7 @@ afterAll(async () => {
 
 describe('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
-    const first = await initializeDatabase(config);
+    const first = await initializeDatabase(config, authenticationConfig);
     const firstApp = buildApp(first.service, first.readiness, first.auth);
     const accountResponse = await firstApp.inject({
       method: 'POST',
@@ -64,7 +70,7 @@ describe('PostgreSQL-backed API', () => {
     await firstApp.close();
     await first.pool.end();
 
-    const second = await initializeDatabase(config);
+    const second = await initializeDatabase(config, authenticationConfig);
     const secondApp = buildApp(second.service, second.readiness, second.auth);
     const message = await secondApp.inject({
       method: 'POST',

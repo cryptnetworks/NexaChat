@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   Pool,
   type PoolClient,
@@ -22,9 +21,6 @@ import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 
 export const CURRENT_SCHEMA_VERSION = 2;
 const MIGRATION_LOCK_ID = 1_318_611_193;
-const DEFAULT_MIGRATIONS_DIRECTORY = fileURLToPath(
-  new URL('../../../apps/server/migrations', import.meta.url),
-);
 
 export interface PostgresConfig {
   connectionString: string;
@@ -33,62 +29,6 @@ export interface PostgresConfig {
   idleTimeoutMs: number;
   queryTimeoutMs: number;
   migrationsDirectory: string;
-}
-
-export function postgresConfigFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): PostgresConfig {
-  const connectionString = environment.DATABASE_URL;
-  if (!connectionString)
-    throw new Error('DATABASE_URL is required for PostgreSQL storage');
-  return {
-    connectionString,
-    maxConnections: parseBoundedInteger(
-      environment.NEXA_DATABASE_POOL_MAX,
-      10,
-      1,
-      50,
-      'NEXA_DATABASE_POOL_MAX',
-    ),
-    connectionTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_CONNECT_TIMEOUT_MS,
-      5_000,
-      100,
-      60_000,
-      'NEXA_DATABASE_CONNECT_TIMEOUT_MS',
-    ),
-    idleTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_IDLE_TIMEOUT_MS,
-      30_000,
-      1_000,
-      300_000,
-      'NEXA_DATABASE_IDLE_TIMEOUT_MS',
-    ),
-    queryTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_QUERY_TIMEOUT_MS,
-      5_000,
-      100,
-      60_000,
-      'NEXA_DATABASE_QUERY_TIMEOUT_MS',
-    ),
-    migrationsDirectory:
-      environment.NEXA_MIGRATIONS_DIR ?? resolve(DEFAULT_MIGRATIONS_DIRECTORY),
-  };
-}
-
-function parseBoundedInteger(
-  value: string | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-  name: string,
-): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum)
-    throw new Error(
-      `${name} must be an integer from ${String(minimum)} to ${String(maximum)}`,
-    );
-  return parsed;
 }
 
 export function createPostgresPool(config: PostgresConfig): Pool {

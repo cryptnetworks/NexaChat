@@ -49,7 +49,7 @@ describe('real WebSocket integration', () => {
     service = new InMemoryCommunityService();
     app = buildApp(service);
     await app.listen({ host: '127.0.0.1', port: 0 });
-    app.websocketHub = attachWebsocketHub(app.server, service);
+    app.websocketHub = attachWebsocketHub(app.server, service, true);
     const address = app.server.address() as AddressInfo;
     endpoint = `ws://127.0.0.1:${String(address.port)}/v1/realtime`;
   });
@@ -150,6 +150,8 @@ describe('real WebSocket integration', () => {
 
   it('rejects every connection outside explicitly enabled development mode', async () => {
     process.env.NODE_ENV = 'production';
+    await app.websocketHub?.close();
+    app.websocketHub = attachWebsocketHub(app.server, service, false);
     const socket = new WebSocket(endpoint);
     const closeEvent = closed(socket);
     const rejection = nextMessage(socket);
