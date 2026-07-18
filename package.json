@@ -27,6 +27,7 @@
     "test:architecture": "tsc -p tools/architecture/tsconfig.json && vitest run tools/architecture/check.test.ts",
     "test:config": "vitest run apps/server/test/config.test.ts",
     "test:contracts": "vitest run packages/api-contracts/src/error-contract.test.ts packages/realtime-contracts/src/contracts.test.ts packages/realtime-contracts/src/compatibility-fixtures.test.ts",
+    "test:coordination": "vitest run packages/coordination/test",
     "test:http": "vitest run apps/server/test/http.integration.test.ts apps/server/test/community-lifecycle.integration.test.ts",
     "test:object-storage": "vitest run packages/object-storage/test",
     "test:postgres": "vitest run packages/postgres/test apps/server/test/postgres.integration.test.ts",

@@ -16,6 +16,7 @@
     "@nexa/authorization": "0.1.0",
     "@nexa/api-contracts": "0.1.0",
     "@nexa/domain": "0.1.0",
+    "@nexa/coordination": "0.1.0",
     "@nexa/object-storage": "0.1.0",
     "@nexa/postgres": "0.1.0",
     "@nexa/realtime-contracts": "0.1.0",

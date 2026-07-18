@@ -26,6 +26,20 @@ describe('runtime configuration', () => {
     expect(config.websocket.maxSubscriptions).toBe(32);
     expect(config.server.rateLimit).toBe(1_000);
     expect(config.objectStorage.enabled).toBe(false);
+    expect(config.coordination.enabled).toBe(false);
+  });
+
+  it('parses bounded ephemeral coordination settings', () => {
+    const config = parseRuntimeConfig({
+      ...development,
+      NEXA_COORDINATION_ENABLED: 'true',
+      REDIS_URL: 'redis://localhost:6379',
+    });
+    expect(config.coordination.config).toMatchObject({
+      namespace: 'nexa',
+      operationTimeoutMs: 250,
+      maxTtlSeconds: 86_400,
+    });
   });
 
   it('parses enabled object storage without retaining endpoint credentials', () => {
@@ -89,6 +103,15 @@ describe('runtime configuration', () => {
     ],
     [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
     [{ ...development, NEXA_OBJECT_STORAGE_ENABLED: 'true' }, 'S3_ENDPOINT'],
+    [{ ...development, NEXA_COORDINATION_ENABLED: 'true' }, 'REDIS_URL'],
+    [
+      {
+        ...production,
+        NEXA_COORDINATION_ENABLED: 'true',
+        REDIS_URL: 'redis://cache.example.test',
+      },
+      'REDIS_URL',
+    ],
     [
       {
         ...production,

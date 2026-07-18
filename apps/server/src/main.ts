@@ -2,6 +2,7 @@ import { buildApp } from './app.js';
 import { parseRuntimeConfig, safeConfigurationDiagnostic } from './config.js';
 import { initializeDatabase } from './database.js';
 import { initializeObjectStorage } from './object-storage.js';
+import { initializeCoordination } from './coordination.js';
 import { attachWebsocketHub } from './websocket.js';
 
 let config;
@@ -15,6 +16,7 @@ try {
   throw error;
 }
 
+const coordination = await initializeCoordination(config.coordination);
 const objectStorage = await initializeObjectStorage(config.objectStorage);
 const database = await initializeDatabase(
   config.database,
@@ -44,6 +46,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         .then(() => app.close())
         .then(() => database.pool.end())
         .then(() => objectStorage?.close())
+        .then(() => coordination?.close())
         .then(() => process.exit(0)),
   );
 }
