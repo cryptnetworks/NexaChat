@@ -38,6 +38,7 @@ npm run test:http
 npm run test:websocket
 npm run test:postgres
 npm run test:auth
+npm run test:config
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
@@ -61,6 +62,8 @@ npm audit
 Malformed HTTP input returns a stable `invalid_request` response with a correlation ID and no validation internals. Malformed WebSocket messages return `invalid_message`; unknown resources return `not_found`; unauthorized subscriptions return `forbidden`.
 
 Authentication endpoints are `POST /v1/auth/register`, `POST /v1/auth/login`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all`, `GET /v1/account`, and `GET /v1/sessions`. State-changing requests require the configured exact `Origin`; cookie-authenticated logout requests also require `X-Nexa-CSRF: 1`. Authentication failures return stable `authentication_failed`, `unauthenticated`, `identifier_unavailable`, `rate_limited`, or `csrf_rejected` codes without account-existence details.
+
+Runtime configuration is parsed exactly once before database initialization or socket binding. Development values are listed in `.env.example`; production requires an explicit PostgreSQL URL and exact HTTPS web origin, forces secure cookies, rejects development identity, and fails startup with the stable `invalid_configuration` diagnostic. Diagnostics name the invalid key but never include its value.
 
 ## Desktop status
 

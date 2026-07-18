@@ -4,16 +4,17 @@ import {
   PostgresAuthorizationStore,
   createPostgresPool,
   migratePostgres,
-  postgresConfigFromEnvironment,
   verifyPostgresSchema,
   type PostgresConfig,
 } from '@nexa/postgres';
 import type { StorageReadiness } from './app.js';
 import { createAuthRuntime } from './auth-config.js';
 import { AuthorizationService } from '@nexa/authorization';
+import type { RuntimeConfig } from './config.js';
 
 export async function initializeDatabase(
-  config: PostgresConfig = postgresConfigFromEnvironment(),
+  config: PostgresConfig,
+  authentication?: RuntimeConfig['authentication'],
 ) {
   const pool = createPostgresPool(config);
   try {
@@ -40,7 +41,9 @@ export async function initializeDatabase(
     service: new CommunityService(persistence, authorization),
     authorization,
     readiness,
-    auth: createAuthRuntime(pool),
+    ...(authentication
+      ? { auth: createAuthRuntime(pool, authentication) }
+      : {}),
   };
 }
 

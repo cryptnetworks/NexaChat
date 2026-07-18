@@ -27,15 +27,18 @@ import {
   registerAuthRoutes,
   type AuthRuntime,
 } from './auth-routes.js';
+import type { RuntimeConfig } from './config.js';
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
   readiness: StorageReadiness = memoryReadiness,
   auth?: AuthRuntime,
   authorization?: AuthorizationService,
+  serverConfig?: RuntimeConfig['server'],
 ): FastifyInstance {
   const app = Fastify({
-    bodyLimit: 16_384,
+    bodyLimit: serverConfig?.bodyLimitBytes ?? 16_384,
+    requestTimeout: serverConfig?.requestTimeoutMs ?? 15_000,
     logger: {
       redact: [
         'req.headers.authorization',

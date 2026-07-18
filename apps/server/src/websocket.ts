@@ -32,14 +32,12 @@ function textFromRawData(data: RawData): string {
 export function attachWebsocketHub(
   server: Server,
   service: CommunityService,
+  developmentIdentityEnabled = false,
 ): WebsocketHub {
   const sockets = new Map<WebSocket, string | undefined>();
   const wss = new WebSocketServer({ server, path: '/v1/realtime' });
   wss.on('connection', (socket) => {
-    if (
-      process.env.NODE_ENV !== 'development' ||
-      process.env.NEXA_ENABLE_DEV_AUTH !== 'true'
-    ) {
+    if (!developmentIdentityEnabled) {
       send(socket, { type: 'error', error: 'development_only' });
       socket.close(1008, 'development only');
       return;
