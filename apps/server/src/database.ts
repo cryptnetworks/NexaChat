@@ -29,7 +29,9 @@ export async function initializeDatabase(
       `${JSON.stringify({ event: 'migration.failed', error: safeErrorMessage(error) })}\n`,
     );
     await pool.end();
-    throw new Error(`PostgreSQL startup failed: ${safeErrorMessage(error)}`);
+    throw new Error(`PostgreSQL startup failed: ${safeErrorMessage(error)}`, {
+      cause: error,
+    });
   }
   const persistence = new PostgresPersistence(pool);
   const authorization = new AuthorizationService(
