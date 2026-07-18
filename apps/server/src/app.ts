@@ -10,11 +10,16 @@ import {
   messageSchema,
   spaceSchema,
 } from '@nexa/api-contracts';
-import { DomainError, InMemoryCommunityService } from '@nexa/domain';
+import {
+  CommunityService,
+  DomainError,
+  InMemoryCommunityService,
+} from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 
 export function buildApp(
-  service = new InMemoryCommunityService(),
+  service: CommunityService = new InMemoryCommunityService(),
+  readiness: StorageReadiness = memoryReadiness,
 ): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -24,10 +29,16 @@ export function buildApp(
   });
 
   app.get('/health/live', () => ({ status: 'ok' }));
-  app.get('/health/ready', () => ({
-    status: 'ready',
-    storage: 'development-memory',
-  }));
+  app.get('/health/ready', async (_request, reply) => {
+    const result = await readiness.check();
+    return reply.code(result.ready ? 200 : 503).send({
+      status: result.ready ? 'ready' : 'unavailable',
+      storage: result.storage,
+      ...(result.schemaVersion === undefined
+        ? {}
+        : { schemaVersion: result.schemaVersion }),
+    });
+  });
 
   app.post('/v1/dev/accounts', async (request, reply) => {
     if (
@@ -39,7 +50,9 @@ export function buildApp(
     const input = createDevAccountSchema.parse(request.body);
     return reply
       .code(201)
-      .send(accountSchema.parse(service.createAccount(input.displayName)));
+      .send(
+        accountSchema.parse(await service.createAccount(input.displayName)),
+      );
   });
 
   app.post('/v1/communities', async (request, reply) => {
@@ -48,7 +61,7 @@ export function buildApp(
       .code(201)
       .send(
         communitySchema.parse(
-          service.createCommunity(input.ownerId, input.name),
+          await service.createCommunity(input.ownerId, input.name),
         ),
       );
   });
@@ -61,7 +74,7 @@ export function buildApp(
         .code(201)
         .send(
           spaceSchema.parse(
-            service.createTextSpace(
+            await service.createTextSpace(
               request.params.communityId,
               input.actorId,
               input.name,
@@ -75,7 +88,7 @@ export function buildApp(
     '/v1/spaces/:spaceId/messages',
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
-      const message = service.postMessage(
+      const message = await service.postMessage(
         request.params.spaceId,
         input.authorId,
         input.body,
@@ -120,3 +133,18 @@ export function buildApp(
 
   return app;
 }
+
+export interface StorageReadinessResult {
+  ready: boolean;
+  storage: 'development-memory' | 'postgresql';
+  schemaVersion?: number;
+}
+
+export interface StorageReadiness {
+  check(): Promise<StorageReadinessResult>;
+}
+
+const memoryReadiness: StorageReadiness = {
+  check: () =>
+    Promise.resolve({ ready: true, storage: 'development-memory' as const }),
+};

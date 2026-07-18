@@ -1,12 +1,12 @@
 import { buildApp } from './app.js';
+import { initializeDatabase } from './database.js';
 import { attachWebsocketHub } from './websocket.js';
-import { InMemoryCommunityService } from '@nexa/domain';
 
-const service = new InMemoryCommunityService();
-const app = buildApp(service);
+const database = await initializeDatabase();
+const app = buildApp(database.service, database.readiness);
 const port = Number(process.env.NEXA_SERVER_PORT ?? 3000);
 await app.listen({ host: '0.0.0.0', port });
-app.websocketHub = attachWebsocketHub(app.server, service);
+app.websocketHub = attachWebsocketHub(app.server, database.service);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(
@@ -15,6 +15,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void app.websocketHub
         ?.close()
         .then(() => app.close())
+        .then(() => database.pool.end())
         .then(() => process.exit(0)),
   );
 }

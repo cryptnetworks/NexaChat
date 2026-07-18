@@ -5,7 +5,7 @@ import {
   websocketServerMessageSchema,
   type WebsocketServerMessage,
 } from '@nexa/api-contracts';
-import { DomainError, type InMemoryCommunityService } from '@nexa/domain';
+import { DomainError, type CommunityService } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 
 export interface WebsocketHub {
@@ -31,7 +31,7 @@ function textFromRawData(data: RawData): string {
 
 export function attachWebsocketHub(
   server: Server,
-  service: InMemoryCommunityService,
+  service: CommunityService,
 ): WebsocketHub {
   const sockets = new Map<WebSocket, string | undefined>();
   const wss = new WebSocketServer({ server, path: '/v1/realtime' });
@@ -46,6 +46,15 @@ export function attachWebsocketHub(
     }
     sockets.set(socket, undefined);
     socket.on('message', (data, isBinary) => {
+      void handleMessage(socket, data, isBinary);
+    });
+    socket.on('close', () => sockets.delete(socket));
+
+    async function handleMessage(
+      client: WebSocket,
+      data: RawData,
+      isBinary: boolean,
+    ): Promise<void> {
       let raw: unknown;
       try {
         raw = isBinary ? undefined : JSON.parse(textFromRawData(data));
@@ -54,24 +63,23 @@ export function attachWebsocketHub(
       }
       const parsed = websocketClientMessageSchema.safeParse(raw);
       if (!parsed.success) {
-        send(socket, { type: 'error', error: 'invalid_message' });
+        send(client, { type: 'error', error: 'invalid_message' });
         return;
       }
       try {
-        service.authorizeSpaceSubscription(
+        await service.authorizeSpaceSubscription(
           parsed.data.spaceId,
           parsed.data.actorId,
         );
-        sockets.set(socket, parsed.data.spaceId);
-        send(socket, { type: 'subscribed', spaceId: parsed.data.spaceId });
+        sockets.set(client, parsed.data.spaceId);
+        send(client, { type: 'subscribed', spaceId: parsed.data.spaceId });
       } catch (error) {
-        send(socket, {
+        send(client, {
           type: 'error',
           error: error instanceof DomainError ? error.code : 'invalid_message',
         });
       }
-    });
-    socket.on('close', () => sockets.delete(socket));
+    }
   });
   return {
     broadcast(spaceId, event) {

@@ -62,9 +62,13 @@ describe('real WebSocket integration', () => {
   });
 
   it('connects, subscribes, receives a message, handles malformed input, and disconnects cleanly', async () => {
-    const owner = service.createAccount('Owner');
-    const community = service.createCommunity(owner.id, 'Workshop');
-    const space = service.createTextSpace(community.id, owner.id, 'planning');
+    const owner = await service.createAccount('Owner');
+    const community = await service.createCommunity(owner.id, 'Workshop');
+    const space = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'planning',
+    );
     const socket = new WebSocket(endpoint);
     await open(socket);
 
@@ -105,10 +109,14 @@ describe('real WebSocket integration', () => {
   });
 
   it('rejects unknown and unauthorized subscriptions', async () => {
-    const owner = service.createAccount('Owner');
-    const other = service.createAccount('Other');
-    const community = service.createCommunity(owner.id, 'Workshop');
-    const space = service.createTextSpace(community.id, owner.id, 'planning');
+    const owner = await service.createAccount('Owner');
+    const other = await service.createAccount('Other');
+    const community = await service.createCommunity(owner.id, 'Workshop');
+    const space = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'planning',
+    );
     const socket = new WebSocket(endpoint);
     await open(socket);
 
