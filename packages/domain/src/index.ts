@@ -103,8 +103,19 @@ export class DomainError extends Error {
   }
 }
 
+export interface AuthorizationGateway {
+  enforce(
+    actorId: string,
+    permission: 'space.manage' | 'message.create' | 'space.view',
+    scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
+  ): Promise<unknown>;
+}
+
 export class CommunityService {
-  constructor(public readonly persistence: Persistence) {}
+  constructor(
+    public readonly persistence: Persistence,
+    private readonly authorization?: AuthorizationGateway,
+  ) {}
 
   createAccount(displayName: string): Promise<Account> {
     return this.persistence.accounts.create({ id: randomUUID(), displayName });
@@ -139,7 +150,11 @@ export class CommunityService {
   ): Promise<Space> {
     const community = await this.persistence.communities.findById(communityId);
     if (!community) throw new DomainError('not_found');
-    if (community.ownerId !== actorId) throw new DomainError('forbidden');
+    if (this.authorization)
+      await this.authorization.enforce(actorId, 'space.manage', [
+        { type: 'community', id: communityId },
+      ]);
+    else if (community.ownerId !== actorId) throw new DomainError('forbidden');
     return this.persistence.spaces.create({
       id: randomUUID(),
       communityId,
@@ -156,11 +171,17 @@ export class CommunityService {
     authorId: string,
     body: string,
   ): Promise<Message> {
-    if (
-      !(await this.persistence.spaces.findById(spaceId)) ||
-      !(await this.persistence.accounts.findById(authorId))
-    )
+    const space = await this.persistence.spaces.findById(spaceId);
+    if (!space || !(await this.persistence.accounts.findById(authorId)))
       throw new DomainError('not_found');
+    if (this.authorization)
+      await this.authorization.enforce(authorId, 'message.create', [
+        { type: 'community', id: space.communityId },
+        ...(space.categoryId
+          ? [{ type: 'category' as const, id: space.categoryId }]
+          : []),
+        { type: 'space', id: space.id },
+      ]);
     return this.persistence.messages.create({
       id: randomUUID(),
       spaceId,
@@ -180,8 +201,16 @@ export class CommunityService {
     const community = await this.persistence.communities.findById(
       space.communityId,
     );
-    if (!community || community.ownerId !== actorId)
-      throw new DomainError('forbidden');
+    if (!community) throw new DomainError('not_found');
+    if (this.authorization)
+      await this.authorization.enforce(actorId, 'space.view', [
+        { type: 'community', id: community.id },
+        ...(space.categoryId
+          ? [{ type: 'category' as const, id: space.categoryId }]
+          : []),
+        { type: 'space', id: space.id },
+      ]);
+    else if (community.ownerId !== actorId) throw new DomainError('forbidden');
   }
 }
 

@@ -47,6 +47,40 @@ export const createMessageSchema = z
     body: z.string().trim().min(1).max(4000),
   })
   .strict();
+export const permissionSchema = z.enum([
+  'community.view',
+  'community.manage',
+  'community.transfer',
+  'membership.view',
+  'membership.manage',
+  'category.view',
+  'category.manage',
+  'space.view',
+  'space.manage',
+  'message.create',
+  'message.manage',
+  'invitation.create',
+  'invitation.manage',
+  'moderation.ban',
+  'moderation.audit',
+]);
+export const permissionScopeSchema = z.object({
+  type: z.enum(['instance', 'community', 'category', 'space', 'resource']),
+  id,
+});
+export const permissionPreviewRequestSchema = z
+  .object({
+    actorId: id,
+    permission: permissionSchema,
+    scopes: z.array(permissionScopeSchema).min(1).max(5),
+  })
+  .strict();
+export const permissionPreviewResponseSchema = z.object({
+  allowed: z.boolean(),
+  permission: permissionSchema,
+  reason: z.enum(['owner', 'grant', 'deny', 'missing_grant', 'invalid_actor']),
+  scope: permissionScopeSchema.optional(),
+});
 
 export const accountSchema = z.object({ id, displayName: name });
 export const communitySchema = z.object({ id, ownerId: id, name });
@@ -108,6 +142,12 @@ export type AuthSessionResponse = z.infer<typeof authSessionSchema>;
 export type CreateCommunityRequest = z.infer<typeof createCommunitySchema>;
 export type CreateSpaceRequest = z.infer<typeof createSpaceSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageSchema>;
+export type PermissionPreviewRequest = z.infer<
+  typeof permissionPreviewRequestSchema
+>;
+export type PermissionPreviewResponse = z.infer<
+  typeof permissionPreviewResponseSchema
+>;
 export type AccountResponse = z.infer<typeof accountSchema>;
 export type CommunityResponse = z.infer<typeof communitySchema>;
 export type SpaceResponse = z.infer<typeof spaceSchema>;

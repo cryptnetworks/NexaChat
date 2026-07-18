@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@nexa/auth": "0.1.0",
+    "@nexa/authorization": "0.1.0",
     "@nexa/domain": "0.1.0",
     "pg": "8.22.0"
   },

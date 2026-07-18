@@ -6,6 +6,8 @@ import {
   createMessageSchema,
   createSpaceSchema,
   messageSchema,
+  permissionPreviewRequestSchema,
+  permissionPreviewResponseSchema,
   spaceSchema,
 } from '@nexa/api-contracts';
 import {
@@ -16,7 +18,12 @@ import {
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
 import {
+  AuthorizationError,
+  type AuthorizationService,
+} from '@nexa/authorization';
+import {
   HttpSecurityError,
+  authenticateRequest,
   registerAuthRoutes,
   type AuthRuntime,
 } from './auth-routes.js';
@@ -25,6 +32,7 @@ export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
   readiness: StorageReadiness = memoryReadiness,
   auth?: AuthRuntime,
+  authorization?: AuthorizationService,
 ): FastifyInstance {
   const app = Fastify({
     bodyLimit: 16_384,
@@ -57,8 +65,26 @@ export function buildApp(
 
   if (auth) registerAuthRoutes(app, auth);
 
+  if (authorization)
+    app.post('/v1/permissions/preview', async (request, reply) => {
+      const input = permissionPreviewRequestSchema.parse(request.body);
+      const actorId = auth
+        ? (await authenticateRequest(request, auth)).account.id
+        : input.actorId;
+      if (actorId !== input.actorId) throw new AuthorizationError('deny');
+      return reply.send(
+        permissionPreviewResponseSchema.parse(
+          await authorization.preview(actorId, input.permission, input.scopes),
+        ),
+      );
+    });
+
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
+    if (authorization && auth) {
+      const actorId = (await authenticateRequest(request, auth)).account.id;
+      if (actorId !== input.ownerId) throw new AuthorizationError('deny');
+    }
     return reply
       .code(201)
       .send(
@@ -72,6 +98,10 @@ export function buildApp(
     '/v1/communities/:communityId/spaces',
     async (request, reply) => {
       const input = createSpaceSchema.parse(request.body);
+      if (authorization && auth) {
+        const actorId = (await authenticateRequest(request, auth)).account.id;
+        if (actorId !== input.actorId) throw new AuthorizationError('deny');
+      }
       return reply
         .code(201)
         .send(
@@ -90,6 +120,10 @@ export function buildApp(
     '/v1/spaces/:spaceId/messages',
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
+      if (authorization && auth) {
+        const actorId = (await authenticateRequest(request, auth)).account.id;
+        if (actorId !== input.authorId) throw new AuthorizationError('deny');
+      }
       const message = await service.postMessage(
         request.params.spaceId,
         input.authorId,
@@ -129,6 +163,10 @@ export function buildApp(
         )
         .send({ error: error.code });
     }
+    if (error instanceof AuthorizationError)
+      return reply
+        .code(404)
+        .send({ error: 'not_found', correlationId: request.id });
     if (error instanceof HttpSecurityError)
       return reply
         .code(403)
