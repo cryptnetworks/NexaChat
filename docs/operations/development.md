@@ -2,7 +2,9 @@
 
 ## Local services
 
-Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is durable data, Valkey is ephemeral coordination with local persistence enabled, and MinIO is S3-compatible attachment storage. The current slice uses none of them yet; they establish adapter targets.
+Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS provides Apache-2.0-licensed S3-compatible attachment storage in single-node development mode. The current slice uses none of them yet; they establish adapter targets.
+
+The Compose service pins SeaweedFS 4.38 by multi-platform image digest, pre-creates the `nexa-attachments` bucket, and exposes its S3 API at `http://localhost:9000`. Its `seaweedfs-data` volume is a development volume, not a production topology or backup strategy. The distinct volume name deliberately leaves any previous object-store volume untouched; remove an orphaned local volume manually only after confirming its data is no longer needed.
 
 Run `npm ci` and `npm run dev`. Never enable development authentication in production. `/health/live` reports process liveness; `/health/ready` will report dependency readiness when durable adapters exist.
 
