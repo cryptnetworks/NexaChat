@@ -8,6 +8,7 @@ import {
   type PostgresConfig,
 } from '@nexa/postgres';
 import type { StorageReadiness } from './app.js';
+import { createAuthRuntime } from './auth-config.js';
 
 export async function initializeDatabase(
   config: PostgresConfig = postgresConfigFromEnvironment(),
@@ -33,6 +34,7 @@ export async function initializeDatabase(
     pool,
     service: new CommunityService(persistence),
     readiness,
+    auth: createAuthRuntime(pool),
   };
 }
 
