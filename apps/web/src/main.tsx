@@ -1,4 +1,4 @@
-import { StrictMode, useState } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   websocketServerMessageSchema,
@@ -26,6 +26,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function get<T>(path: string): Promise<T> {
+  const response = await fetch(path);
+  if (!response.ok)
+    throw new Error(`Request failed (${String(response.status)})`);
+  return response.json() as Promise<T>;
+}
+
 function App() {
   const [account, setAccount] = useState<AccountResponse>();
   const [community, setCommunity] = useState<CommunityResponse>();
@@ -35,6 +42,32 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  useEffect(() => {
+    if (!account || !space) return;
+    let active = true;
+    setLoadingHistory(true);
+    setError('');
+    void get<{ items: Message[] }>(
+      `/v1/spaces/${space.id}/messages?actorId=${encodeURIComponent(account.id)}`,
+    )
+      .then((page) => {
+        if (active) setMessages(page.items);
+      })
+      .catch((reason: unknown) => {
+        if (active)
+          setError(
+            reason instanceof Error ? reason.message : 'Unable to load history',
+          );
+      })
+      .finally(() => {
+        if (active) setLoadingHistory(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [account, space]);
 
   async function begin() {
     try {
@@ -91,7 +124,17 @@ function App() {
         }
         const envelope = realtimeEnvelopeSchema.safeParse(raw);
         if (envelope.success) {
-          setMessages((current) => [...current, envelope.data.payload.message]);
+          setMessages((current) => {
+            const message = envelope.data.payload.message;
+            const withoutCurrent = current.filter(
+              (item) => item.id !== message.id,
+            );
+            return [...withoutCurrent, message].sort(
+              (a, b) =>
+                a.createdAt.localeCompare(b.createdAt) ||
+                a.id.localeCompare(b.id),
+            );
+          });
           return;
         }
         const control = websocketServerMessageSchema.safeParse(raw);
@@ -112,6 +155,7 @@ function App() {
     await post(`/v1/spaces/${space.id}/messages`, {
       authorId: account.id,
       body: data.get('message'),
+      idempotencyKey: crypto.randomUUID(),
     });
     form.currentTarget.reset();
   }
@@ -187,7 +231,8 @@ function App() {
         ) : (
           <>
             <div className="messages" aria-live="polite">
-              {messages.length === 0 && (
+              {loadingHistory && <p className="empty">Loading history…</p>}
+              {!loadingHistory && messages.length === 0 && (
                 <p className="empty">
                   This space is ready. Write the first note.
                 </p>
@@ -203,10 +248,32 @@ function App() {
                         minute: '2-digit',
                       })}
                     </time>
-                    <p>{message.body}</p>
+                    {message.replyToId && (
+                      <p className="muted">Reply to an earlier message</p>
+                    )}
+                    <p>
+                      {message.deletedAt ? (
+                        <span aria-label="Deleted message">
+                          Message deleted
+                        </span>
+                      ) : (
+                        message.body
+                      )}
+                    </p>
+                    {!message.deletedAt &&
+                      message.updatedAt !== message.createdAt && (
+                        <span className="muted" aria-label="Edited message">
+                          Edited
+                        </span>
+                      )}
                   </div>
                 </article>
               ))}
+              {error && (
+                <p role="alert" className="error">
+                  {error}
+                </p>
+              )}
             </div>
             <form onSubmit={(event) => void send(event)}>
               <label className="sr-only" htmlFor="message">

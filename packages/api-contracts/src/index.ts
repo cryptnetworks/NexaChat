@@ -96,8 +96,20 @@ export const updateSpaceSchema = z
 export const createMessageSchema = z
   .object({
     authorId: id,
-    body: z.string().trim().min(1).max(4000),
+    body: z.string().min(1).max(4000),
+    idempotencyKey: z.string().min(8).max(128).optional(),
+    replyToId: id.nullable().optional(),
   })
+  .strict();
+export const updateMessageSchema = z
+  .object({
+    actorId: id,
+    body: z.string().min(1).max(4000),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export const deleteMessageSchema = z
+  .object({ actorId: id, expectedVersion: z.number().int().positive() })
   .strict();
 export const permissionSchema = z.enum([
   'community.view',
@@ -181,8 +193,17 @@ export const messageSchema = z.object({
   id,
   spaceId: id,
   authorId: id,
-  body: z.string().min(1).max(4000),
+  body: z.string().min(1).max(4000).nullable(),
+  replyToId: id.nullable(),
+  idempotencyKey: z.string().min(8).max(128),
   createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  deletedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
+export const messagePageSchema = z.object({
+  items: z.array(messageSchema),
+  nextCursor: z.string().nullable(),
 });
 
 export const errorResponseSchema = z.object({
@@ -236,6 +257,7 @@ export type CreateCategoryRequest = z.infer<typeof createCategorySchema>;
 export type UpdateCategoryRequest = z.infer<typeof updateCategorySchema>;
 export type ChangeMembershipRequest = z.infer<typeof changeMembershipSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageSchema>;
+export type UpdateMessageRequest = z.infer<typeof updateMessageSchema>;
 export type PermissionPreviewRequest = z.infer<
   typeof permissionPreviewRequestSchema
 >;

@@ -15,6 +15,9 @@ import {
   updateSpaceSchema,
   createCommunitySchema,
   createMessageSchema,
+  updateMessageSchema,
+  deleteMessageSchema,
+  messagePageSchema,
   createSpaceSchema,
   messageSchema,
   permissionPreviewRequestSchema,
@@ -312,10 +315,18 @@ export function buildApp(
         const actorId = (await authenticateMutation(request, auth)).account.id;
         if (actorId !== input.authorId) throw new AuthorizationError('deny');
       }
+      const key = input.idempotencyKey ?? request.id;
+      const existing = await service.persistence.messages.findByIdempotencyKey(
+        input.authorId,
+        request.params.spaceId,
+        key,
+      );
       const message = await service.postMessage(
         request.params.spaceId,
         input.authorId,
         input.body,
+        key,
+        input.replyToId ?? null,
       );
       const event: RealtimeEnvelope = {
         version: 1,
@@ -325,8 +336,71 @@ export function buildApp(
         correlationId: request.id,
         payload: { message },
       };
-      app.websocketHub?.broadcast(request.params.spaceId, event);
+      if (!existing) app.websocketHub?.broadcast(request.params.spaceId, event);
       return reply.code(201).send(messageSchema.parse(message));
+    },
+  );
+
+  app.get<{ Params: { spaceId: string } }>(
+    '/v1/spaces/:spaceId/messages',
+    async (request, reply) => {
+      const input = pageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        messagePageSchema.parse(
+          await service.listMessages(request.params.spaceId, actorId, {
+            limit: input.limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          }),
+        ),
+      );
+    },
+  );
+
+  app.patch<{ Params: { messageId: string } }>(
+    '/v1/messages/:messageId',
+    async (request, reply) => {
+      const input = updateMessageSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const message = await service.editMessage(
+        request.params.messageId,
+        actorId,
+        input.body,
+        input.expectedVersion,
+      );
+      const event: RealtimeEnvelope = {
+        version: 1,
+        id: randomUUID(),
+        type: 'message.updated',
+        occurredAt: new Date().toISOString(),
+        correlationId: request.id,
+        payload: { message },
+      };
+      app.websocketHub?.broadcast(message.spaceId, event);
+      return reply.send(messageSchema.parse(message));
+    },
+  );
+
+  app.delete<{ Params: { messageId: string } }>(
+    '/v1/messages/:messageId',
+    async (request, reply) => {
+      const input = deleteMessageSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const message = await service.deleteMessage(
+        request.params.messageId,
+        actorId,
+        input.expectedVersion,
+      );
+      const event: RealtimeEnvelope = {
+        version: 1,
+        id: randomUUID(),
+        type: 'message.deleted',
+        occurredAt: new Date().toISOString(),
+        correlationId: request.id,
+        payload: { message },
+      };
+      app.websocketHub?.broadcast(message.spaceId, event);
+      return reply.send(messageSchema.parse(message));
     },
   );
 
