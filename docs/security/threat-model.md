@@ -15,7 +15,7 @@ Protected assets include credentials, sessions, private messages, attachments, m
   upload/download is not yet implemented and must not ship partially.
 - Cross-site attacks: secure same-site cookies, CSRF protection, strict origin checks, output encoding, and content security policy.
 - Data exposure: log redaction, least-privilege credentials, scoped object URLs, encryption in transit, backups with equivalent protections, and deletion workflows.
-- Audit tampering: append-only events with chained hashes and externally checkpointed digests; this is planned, not implemented.
+- Audit tampering: administrative events use database-enforced append-only community chains and verifiable SHA-256 hashes. Independently checkpointed head hashes remain an operator responsibility for protection from privileged database replacement.
 - Extension compromise: administrator approval, explicit permission scopes, isolated execution, network/secret denial by default, and revocation.
 
 Local accounts use memory-hard password hashing, protected revocable session tokens, strict browser-cookie settings, origin/CSRF checks, bounded authentication attempts, and credential-version invalidation. HTTP abuse controls use atomic expiring Valkey counters by bounded endpoint, canonical address, and verified account; keys contain digests rather than raw identities. Sensitive routes fail closed when enabled coordination is unavailable, while ordinary traffic can use a bounded local fallback that never grants authorization. WebSocket identity remains development-only and must not be exposed to untrusted networks. End-to-end encryption, federation, and peer-to-peer operation are not current properties.

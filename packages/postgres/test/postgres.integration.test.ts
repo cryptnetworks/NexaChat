@@ -322,12 +322,53 @@ describe('PostgreSQL persistence', () => {
     expect(
       await persistence.invitations.findById(created.invitation.id),
     ).toMatchObject({ useCount: 1, version: 2 });
-    expect(await persistence.auditEvents.list(community.id)).toEqual(
+    expect(
+      (await persistence.auditEvents.list(community.id, { limit: 100 })).items,
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ action: 'invitation.create' }),
         expect.objectContaining({ action: 'invitation.accept' }),
       ]),
     );
+  });
+
+  it('serializes audit chains and rejects row mutation at the database boundary', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const service = new CommunityService(persistence);
+    const owner = await service.createAccount('Audit owner');
+    const community = await service.createCommunity(owner.id, 'Audit chain');
+    const identifiers = Array.from({ length: 25 }, () => randomUUID());
+    await Promise.all(
+      identifiers.map((id, index) =>
+        persistence.auditEvents.create({
+          id,
+          actorId: owner.id,
+          communityId: community.id,
+          invitationId: null,
+          action: 'invitation.create',
+          outcome: index % 2 ? 'rejected' : 'succeeded',
+          occurredAt: new Date(1_700_000_000_000 + index).toISOString(),
+        }),
+      ),
+    );
+    await expect(persistence.auditEvents.verify(community.id)).resolves.toEqual(
+      expect.objectContaining({ valid: true, count: 25 }),
+    );
+    const page = await persistence.auditEvents.list(community.id, {
+      limit: 100,
+    });
+    expect(page.items.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 25 }, (_, index) => index + 1),
+    );
+    await expect(
+      pool.query('UPDATE audit_events SET outcome=$1 WHERE id=$2', [
+        'rejected',
+        identifiers[0],
+      ]),
+    ).rejects.toThrow(/append-only/u);
+    await expect(
+      pool.query('DELETE FROM audit_events WHERE id=$1', [identifiers[0]]),
+    ).rejects.toThrow(/append-only/u);
   });
 });
 
@@ -422,7 +463,7 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -449,9 +490,57 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(6);
-    expect(applied).toEqual([3, 4, 5, 6]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(6);
+    ).resolves.toBe(7);
+    expect(applied).toEqual([3, 4, 5, 6, 7]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(7);
+  });
+
+  it('backfills and verifies existing version 6 audit rows', async () => {
+    await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
+    const migrations = await readMigrations(migrationsDirectory);
+    await pool.query(`CREATE TABLE nexa_schema_migrations (
+      version integer PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      checksum char(64) NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    for (const migration of migrations.slice(0, 6)) {
+      await pool.query(migration.sql);
+      await pool.query(
+        'INSERT INTO nexa_schema_migrations (version, name, checksum) VALUES ($1,$2,$3)',
+        [migration.version, migration.name, migration.checksum],
+      );
+    }
+    const actorId = randomUUID();
+    const communityId = randomUUID();
+    await pool.query('INSERT INTO accounts (id,display_name) VALUES ($1,$2)', [
+      actorId,
+      'Upgrade actor',
+    ]);
+    await pool.query(
+      'INSERT INTO communities (id,owner_id,name) VALUES ($1,$2,$3)',
+      [communityId, actorId, 'Upgrade community'],
+    );
+    for (let index = 0; index < 2; index += 1)
+      await pool.query(
+        `INSERT INTO audit_events
+          (id,actor_id,community_id,invitation_id,action,outcome,occurred_at)
+         VALUES ($1,$2,$3,NULL,'invitation.create','succeeded',$4)`,
+        [
+          randomUUID(),
+          actorId,
+          communityId,
+          new Date(1_700_000_000_000 + index).toISOString(),
+        ],
+      );
+
+    await expect(migratePostgres(pool, migrationsDirectory)).resolves.toBe(7);
+    const persistence = new PostgresPersistence(pool);
+    await expect(persistence.auditEvents.verify(communityId)).resolves.toEqual(
+      expect.objectContaining({ valid: true, count: 2 }),
+    );
+    const page = await persistence.auditEvents.list(communityId, { limit: 10 });
+    expect(page.items.map(({ sequence }) => sequence)).toEqual([1, 2]);
   });
 
   it('rejects missing and incompatible migration history', async () => {

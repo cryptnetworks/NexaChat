@@ -74,6 +74,18 @@ export interface AuditEvent {
   action: 'invitation.create' | 'invitation.revoke' | 'invitation.accept';
   outcome: 'succeeded' | 'rejected';
   occurredAt: string;
+  sequence: number;
+  previousHash: string;
+  eventHash: string;
+}
+export type AuditEventInput = Omit<
+  AuditEvent,
+  'eventHash' | 'previousHash' | 'sequence'
+>;
+export interface AuditIntegrity {
+  valid: boolean;
+  count: number;
+  headHash: string | null;
 }
 export interface SessionRecord {
   id: string;
@@ -194,8 +206,9 @@ export interface Persistence {
     ): Promise<Invitation | undefined>;
   };
   auditEvents: {
-    create(event: AuditEvent): Promise<AuditEvent>;
-    list(communityId: string): Promise<AuditEvent[]>;
+    create(event: AuditEventInput): Promise<AuditEvent>;
+    list(communityId: string, page: ListPage): Promise<Page<AuditEvent>>;
+    verify(communityId: string): Promise<AuditIntegrity>;
   };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
@@ -234,7 +247,8 @@ export interface AuthorizationGateway {
       | 'message.manage'
       | 'space.view'
       | 'invitation.create'
-      | 'invitation.manage',
+      | 'invitation.manage'
+      | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
 }
@@ -298,6 +312,28 @@ export function protectInvitationToken(token: string): string {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token))
     throw new DomainError('invitation_unavailable');
   return createHash('sha256').update(token).digest('hex');
+}
+
+export const zeroAuditHash = '0'.repeat(64);
+
+export function auditEventHash(
+  previousHash: string,
+  event: AuditEventInput,
+): string {
+  return createHash('sha256')
+    .update(
+      [
+        previousHash,
+        event.id,
+        event.actorId,
+        event.communityId ?? '',
+        event.invitationId ?? '',
+        event.action,
+        event.outcome,
+        event.occurredAt,
+      ].join('|'),
+    )
+    .digest('hex');
 }
 
 export class CommunityService {
@@ -775,6 +811,27 @@ export class CommunityService {
     ]);
     return this.persistence.invitations.list(communityId);
   }
+  async listAuditEvents(
+    actorId: string,
+    communityId: string,
+    page: ListPage,
+  ): Promise<Page<AuditEvent>> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.auditEvents.list(communityId, page);
+  }
+  async verifyAuditEvents(
+    actorId: string,
+    communityId: string,
+  ): Promise<AuditIntegrity> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.auditEvents.verify(communityId);
+  }
   async revokeInvitation(
     actorId: string,
     invitationId: string,
@@ -936,7 +993,7 @@ export class CommunityService {
     invitationId: string | null,
     action: AuditEvent['action'],
     outcome: AuditEvent['outcome'] = 'succeeded',
-  ): AuditEvent {
+  ): AuditEventInput {
     return {
       id: randomUUID(),
       actorId,
@@ -1388,11 +1445,52 @@ export class InMemoryPersistence implements Persistence {
     },
   };
   readonly auditEvents = {
-    create: async (v: AuditEvent) => (this.state.auditEvents.set(v.id, v), v),
-    list: async (communityId: string) =>
-      [...this.state.auditEvents.values()].filter(
-        (event) => event.communityId === communityId,
-      ),
+    create: async (v: AuditEventInput) => {
+      if (this.state.auditEvents.has(v.id)) throw new DomainError('conflict');
+      const events = [...this.state.auditEvents.values()]
+        .filter((event) => event.communityId === v.communityId)
+        .sort((a, b) => a.sequence - b.sequence);
+      const previousHash = events.at(-1)?.eventHash ?? zeroAuditHash;
+      const event: AuditEvent = {
+        ...v,
+        sequence: events.length + 1,
+        previousHash,
+        eventHash: auditEventHash(previousHash, v),
+      };
+      this.state.auditEvents.set(event.id, event);
+      return event;
+    },
+    list: async (communityId: string, page: ListPage) => {
+      const values = [...this.state.auditEvents.values()]
+        .filter((event) => event.communityId === communityId)
+        .sort((a, b) => a.sequence - b.sequence);
+      const offset = page.cursor ? Number(after(page.cursor)) : 0;
+      const items = values.slice(offset, offset + page.limit);
+      const next = offset + items.length;
+      return {
+        items,
+        nextCursor: next < values.length ? cursor(String(next)) : null,
+      };
+    },
+    verify: async (communityId: string) => {
+      const events = [...this.state.auditEvents.values()]
+        .filter((event) => event.communityId === communityId)
+        .sort((a, b) => a.sequence - b.sequence);
+      let previousHash = zeroAuditHash;
+      let valid = true;
+      for (const [index, event] of events.entries()) {
+        valid &&=
+          event.sequence === index + 1 &&
+          event.previousHash === previousHash &&
+          event.eventHash === auditEventHash(previousHash, event);
+        previousHash = event.eventHash;
+      }
+      return {
+        valid,
+        count: events.length,
+        headHash: events.at(-1)?.eventHash ?? null,
+      };
+    },
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

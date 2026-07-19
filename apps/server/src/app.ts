@@ -34,6 +34,9 @@ import {
   invitationSchema,
   createdInvitationSchema,
   invitationPreviewSchema,
+  auditEventPageSchema,
+  auditIntegritySchema,
+  auditPageQuerySchema,
   type ErrorResponse,
 } from '@nexa/api-contracts';
 import {
@@ -526,6 +529,59 @@ export function buildApp(
             input,
           ),
         ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events',
+    async (request, reply) => {
+      const input = auditPageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        auditEventPageSchema.parse(
+          await service.listAuditEvents(actorId, request.params.communityId, {
+            limit: input.limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/integrity',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        auditIntegritySchema.parse(
+          await service.verifyAuditEvents(actorId, request.params.communityId),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/export',
+    async (request, reply) => {
+      const input = auditPageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const page = auditEventPageSchema.parse(
+        await service.listAuditEvents(actorId, request.params.communityId, {
+          limit: input.limit,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+        }),
+      );
+      reply.type('application/x-ndjson; charset=utf-8');
+      reply.header(
+        'content-disposition',
+        'attachment; filename="audit.ndjson"',
+      );
+      if (page.nextCursor) reply.header('x-next-cursor', page.nextCursor);
+      return reply.send(
+        page.items.map((event) => JSON.stringify(event)).join('\n') +
+          (page.items.length ? '\n' : ''),
       );
     },
   );

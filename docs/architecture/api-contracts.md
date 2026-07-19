@@ -50,6 +50,14 @@ accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
 `invalid_request`.
 
+Administrative audit query, integrity, and NDJSON export endpoints require the
+community-scoped `moderation.audit` permission. Query and export use the same
+ascending community sequence, maximum page size of 100, and opaque next cursor.
+Responses expose only the action, outcome, identifiers, and integrity fields in
+`docs/operations/audit-events.md`; credentials, content, network addresses, and
+provider details are not contract fields. Integrity failure is returned as data
+(`valid: false`) so an authorized operator can escalate it without a retry loop.
+
 Optimistic versions return `stale_write` for losing mutations. Scoped unique
 conflicts return `conflict`. Message creation and invitation acceptance document
 their own idempotency behavior. PostgreSQL constraints and transactional

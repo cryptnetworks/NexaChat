@@ -19,6 +19,7 @@ import type {
   SessionRecord,
   Space,
 } from '@nexa/domain';
+import { auditEventHash, zeroAuditHash } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
   StaleAuthorizationWriteError,
@@ -31,7 +32,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -715,6 +716,9 @@ type AuditEventRow = {
   action: AuditEvent['action'];
   outcome: AuditEvent['outcome'];
   occurred_at: Date;
+  chain_index: string | number;
+  previous_hash: string;
+  event_hash: string;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1172,7 +1176,7 @@ function invitationRepository(db: Queryable): Persistence['invitations'] {
 
 function auditEventRepository(db: Queryable): Persistence['auditEvents'] {
   const fields =
-    'id, actor_id, community_id, invitation_id, action, outcome, occurred_at';
+    'id, actor_id, community_id, invitation_id, action, outcome, occurred_at, chain_index, previous_hash, event_hash';
   return {
     async create(event) {
       const result = await db.query<AuditEventRow>(
@@ -1191,13 +1195,58 @@ function auditEventRepository(db: Queryable): Persistence['auditEvents'] {
       );
       return mapAuditEvent(requiredRow(result.rows));
     },
-    async list(communityId) {
+    async list(communityId, page) {
+      const afterSequence = page.cursor
+        ? Number(Buffer.from(page.cursor, 'base64url').toString())
+        : 0;
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0)
+        return { items: [], nextCursor: null };
       const result = await db.query<AuditEventRow>(
         `SELECT ${fields} FROM audit_events
-         WHERE community_id=$1 ORDER BY occurred_at,id`,
-        [communityId],
+         WHERE community_id=$1 AND chain_index>$2
+         ORDER BY chain_index LIMIT $3`,
+        [communityId, afterSequence, page.limit + 1],
       );
-      return result.rows.map(mapAuditEvent);
+      const hasMore = result.rows.length > page.limit;
+      const items = result.rows.slice(0, page.limit).map(mapAuditEvent);
+      return {
+        items,
+        nextCursor: hasMore
+          ? Buffer.from(String(items.at(-1)?.sequence ?? 0)).toString(
+              'base64url',
+            )
+          : null,
+      };
+    },
+    async verify(communityId) {
+      let previousHash = zeroAuditHash;
+      let valid = true;
+      let count = 0;
+      let afterSequence = 0;
+      for (;;) {
+        const result = await db.query<AuditEventRow>(
+          `SELECT ${fields} FROM audit_events
+           WHERE community_id=$1 AND chain_index>$2
+           ORDER BY chain_index LIMIT 1000`,
+          [communityId, afterSequence],
+        );
+        const events = result.rows.map(mapAuditEvent);
+        for (const event of events) {
+          valid &&=
+            event.sequence === count + 1 &&
+            event.previousHash === previousHash &&
+            event.eventHash === auditEventHash(previousHash, event);
+          previousHash = event.eventHash;
+          afterSequence = event.sequence;
+          count += 1;
+        }
+        if (events.length < 1000) break;
+      }
+      return {
+        valid,
+        count,
+        headHash: count ? previousHash : null,
+      };
     },
   };
 }
@@ -1319,6 +1368,9 @@ const mapAuditEvent = (row: AuditEventRow): AuditEvent => ({
   action: row.action,
   outcome: row.outcome,
   occurredAt: row.occurred_at.toISOString(),
+  sequence: Number(row.chain_index),
+  previousHash: row.previous_hash.trim(),
+  eventHash: row.event_hash.trim(),
 });
 
 interface Migration {
