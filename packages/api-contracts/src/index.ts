@@ -26,6 +26,40 @@ export const authAccountSchema = z.object({
   username: usernameSchema,
   displayName: name,
 });
+export const avatarMetadataSchema = z
+  .object({
+    objectKey: z
+      .string()
+      .max(255)
+      .regex(/^avatars\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,128}$/),
+    mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    byteLength: z.number().int().min(1).max(5_242_880),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+export const authProfileSchema = authAccountSchema
+  .extend({
+    avatar: avatarMetadataSchema.nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    version: z.number().int().positive(),
+  })
+  .strict();
+export const updateProfileSchema = z
+  .object({
+    username: usernameSchema.optional(),
+    displayName: name.optional(),
+    avatar: avatarMetadataSchema.nullable().optional(),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.username !== undefined ||
+      input.displayName !== undefined ||
+      input.avatar !== undefined,
+    { message: 'at least one profile field is required' },
+  );
 export const authSessionSchema = z.object({
   id,
   createdAt: z.string().datetime(),
@@ -346,6 +380,7 @@ export const errorResponseSchema = z.object({
     'not_found',
     'authentication_failed',
     'identifier_unavailable',
+    'invalid_profile',
     'rate_limited',
     'unauthenticated',
     'csrf_rejected',
@@ -412,6 +447,9 @@ export type CreateDevAccountRequest = z.infer<typeof createDevAccountSchema>;
 export type RegistrationRequest = z.infer<typeof registrationSchema>;
 export type LoginRequest = z.infer<typeof loginSchema>;
 export type AuthAccountResponse = z.infer<typeof authAccountSchema>;
+export type AvatarMetadata = z.infer<typeof avatarMetadataSchema>;
+export type AuthProfileResponse = z.infer<typeof authProfileSchema>;
+export type UpdateProfileRequest = z.infer<typeof updateProfileSchema>;
 export type AuthSessionResponse = z.infer<typeof authSessionSchema>;
 export type CreateCommunityRequest = z.infer<typeof createCommunitySchema>;
 export type CreateSpaceRequest = z.infer<typeof createSpaceSchema>;

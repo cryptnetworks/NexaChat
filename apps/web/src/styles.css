@@ -12,7 +12,8 @@ body {
   overflow-wrap: anywhere;
 }
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 .skip-link {
@@ -190,6 +191,22 @@ input {
   background: #151e2a;
   color: inherit;
 }
+.profile-editor {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid #263141;
+}
+.profile-editor form {
+  display: grid;
+  padding: 0;
+}
+.profile-editor label {
+  font-weight: 700;
+}
+.profile-editor [role='status'] {
+  min-height: 1.5em;
+  color: #aab4c3;
+}
 .error {
   color: #ff9b9b !important;
 }
@@ -265,6 +282,7 @@ input {
 @media (forced-colors: active) {
   button,
   input,
+  textarea,
   .space {
     border: 2px solid ButtonText;
   }

@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   authAccountSchema,
+  authProfileSchema,
   authSessionSchema,
   loginSchema,
   registrationSchema,
+  updateProfileSchema,
 } from '@nexa/api-contracts';
 import {
   AuthenticationError,
@@ -51,7 +53,36 @@ export function registerAuthRoutes(
 
   app.get('/v1/account', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
-    return reply.send(authAccountSchema.parse(authenticated.account));
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    return reply.send(
+      authProfileSchema.parse(
+        await runtime.service.getProfile(authenticated.account.id),
+      ),
+    );
+  });
+
+  app.patch('/v1/account', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const input = updateProfileSchema.parse(request.body);
+    return reply.send(
+      authProfileSchema.parse(
+        await runtime.service.updateProfile(authenticated.account.id, {
+          expectedVersion: input.expectedVersion,
+          ...(input.username !== undefined ? { username: input.username } : {}),
+          ...(input.displayName !== undefined
+            ? { displayName: input.displayName }
+            : {}),
+          ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
+        }),
+      ),
+    );
   });
 
   app.get('/v1/sessions', async (request, reply) => {

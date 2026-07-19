@@ -14,8 +14,17 @@ export interface AuthAccount {
   passwordHash: string;
   status: 'active' | 'suspended';
   credentialVersion: number;
+  profileVersion: number;
+  avatar: AvatarMetadata | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AvatarMetadata {
+  objectKey: string;
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteLength: number;
+  sha256: string;
 }
 
 export interface AuthSession {
@@ -37,6 +46,14 @@ export interface AuthStore {
     username: string,
   ): Promise<AuthAccount | undefined>;
   findAccountById(id: string): Promise<AuthAccount | undefined>;
+  updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ): Promise<AuthAccount | undefined>;
   updatePasswordHash(id: string, passwordHash: string): Promise<void>;
   resetCredentials(id: string, passwordHash: string): Promise<void>;
   createSession(session: AuthSession): Promise<AuthSession>;
@@ -78,6 +95,36 @@ export class InMemoryAuthStore implements AuthStore {
   }
   findAccountById(id: string): Promise<AuthAccount | undefined> {
     return Promise.resolve(this.accounts.get(id));
+  }
+  updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ): Promise<AuthAccount | undefined> {
+    const account = this.accounts.get(id);
+    if (!account || account.profileVersion !== expectedVersion)
+      return Promise.resolve(undefined);
+    if (
+      [...this.accounts.values()].some(
+        (value) =>
+          value.id !== id &&
+          value.normalizedUsername === profile.normalizedUsername,
+      )
+    )
+      return Promise.reject(
+        Object.assign(new Error('duplicate'), { code: '23505' }),
+      );
+    const updated = {
+      ...account,
+      ...profile,
+      profileVersion: account.profileVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return Promise.resolve(updated);
   }
   updatePasswordHash(id: string, passwordHash: string): Promise<void> {
     const account = this.accounts.get(id);
@@ -184,7 +231,9 @@ export interface AuthenticationConfig {
 export type AuthenticationErrorCode =
   | 'authentication_failed'
   | 'identifier_unavailable'
+  | 'invalid_profile'
   | 'rate_limited'
+  | 'stale_write'
   | 'unauthenticated';
 
 export class AuthenticationError extends Error {
@@ -212,16 +261,22 @@ export class AuthenticationService {
     const normalizedUsername = normalizeUsername(input.username);
     if (!validNormalizedUsername(normalizedUsername))
       throw new AuthenticationError('identifier_unavailable');
+    const username = canonicalUsername(input.username);
+    const displayName = normalizeDisplayName(input.displayName);
+    if (!validDisplayName(displayName))
+      throw new AuthenticationError('invalid_profile');
     await this.enforceRateLimit(input.source, normalizedUsername);
     const now = this.clock.now().toISOString();
     const account: AuthAccount = {
       id: randomUUID(),
-      username: input.username.trim(),
+      username,
       normalizedUsername,
-      displayName: input.displayName.trim(),
+      displayName,
       passwordHash: await this.hasher.hash(input.password),
       status: 'active',
       credentialVersion: 1,
+      profileVersion: 1,
+      avatar: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -334,6 +389,56 @@ export class AuthenticationService {
     return this.store.listSessions(accountId);
   }
 
+  async getProfile(accountId: string): Promise<PublicProfile> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    return publicProfile(account);
+  }
+
+  async updateProfile(
+    accountId: string,
+    input: {
+      username?: string;
+      displayName?: string;
+      avatar?: AvatarMetadata | null;
+      expectedVersion: number;
+    },
+  ): Promise<PublicProfile> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    const username =
+      input.username === undefined
+        ? account.username
+        : canonicalUsername(input.username);
+    const normalizedUsername = normalizeUsername(username);
+    if (!validNormalizedUsername(normalizedUsername))
+      throw new AuthenticationError('identifier_unavailable');
+    const displayName =
+      input.displayName === undefined
+        ? account.displayName
+        : normalizeDisplayName(input.displayName);
+    if (!validDisplayName(displayName))
+      throw new AuthenticationError('invalid_profile');
+    const avatar = input.avatar === undefined ? account.avatar : input.avatar;
+    if (avatar && !avatar.objectKey.startsWith(`avatars/${accountId}/`))
+      throw new AuthenticationError('invalid_profile');
+    try {
+      const updated = await this.store.updateProfile(
+        accountId,
+        { username, normalizedUsername, displayName, avatar },
+        input.expectedVersion,
+      );
+      if (!updated) throw new AuthenticationError('stale_write');
+      return publicProfile(updated);
+    } catch (error) {
+      if (isUniqueViolation(error))
+        throw new AuthenticationError('identifier_unavailable');
+      throw error;
+    }
+  }
+
   private async enforceRateLimit(source: string, identifier: string) {
     try {
       const allowed = await this.limiter.consume(
@@ -379,6 +484,12 @@ export interface PublicAccount {
   username: string;
   displayName: string;
 }
+export interface PublicProfile extends PublicAccount {
+  avatar: AvatarMetadata | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
 export interface IssuedSession {
   token: string;
   record: AuthSession;
@@ -389,7 +500,20 @@ export interface AuthenticatedSession {
 }
 
 export function normalizeUsername(username: string): string {
-  return username.trim().normalize('NFKC').toLowerCase();
+  return canonicalUsername(username).toLowerCase();
+}
+
+export function canonicalUsername(username: string): string {
+  return username.trim().normalize('NFKC');
+}
+
+export function normalizeDisplayName(displayName: string): string {
+  return displayName.trim().normalize('NFKC').replace(/\s+/gu, ' ');
+}
+
+function validDisplayName(displayName: string): boolean {
+  const length = Array.from(displayName).length;
+  return length >= 1 && length <= 80 && !/[\p{Cc}\p{Cf}]/u.test(displayName);
 }
 
 function validNormalizedUsername(username: string): boolean {
@@ -525,6 +649,16 @@ function publicAccount(account: AuthAccount): PublicAccount {
     id: account.id,
     username: account.username,
     displayName: account.displayName,
+  };
+}
+
+function publicProfile(account: AuthAccount): PublicProfile {
+  return {
+    ...publicAccount(account),
+    avatar: account.avatar,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+    version: account.profileVersion,
   };
 }
 

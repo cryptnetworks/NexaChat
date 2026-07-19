@@ -159,6 +159,121 @@ describe('local authentication HTTP lifecycle', () => {
     await app.close();
   });
 
+  it('retrieves and atomically updates private-safe account profiles', async () => {
+    const app = buildApp(undefined, undefined, runtime(pool, true));
+    const first = await register(app, 'ProfileOwner');
+    await register(app, 'CollisionOwner');
+    const profile = await app.inject({
+      method: 'GET',
+      url: '/v1/account',
+      headers: { cookie: first.cookie },
+    });
+    expect(profile.statusCode).toBe(200);
+    expect(profile.json()).toMatchObject({
+      username: 'ProfileOwner',
+      avatar: null,
+      version: 1,
+    });
+    expect(JSON.stringify(profile.json())).not.toMatch(
+      /password|credential|normalized|status|token/iu,
+    );
+    const accountId = profile.json<{ id: string }>().id;
+    const accepted = await app.inject({
+      method: 'PATCH',
+      url: '/v1/account',
+      headers: {
+        cookie: first.cookie,
+        origin,
+        'x-nexa-csrf': '1',
+      },
+      payload: {
+        username: '  Profile_Owner  ',
+        displayName: '  Profile\t Owner  ',
+        avatar: {
+          objectKey: `avatars/${accountId}/portrait.webp`,
+          mediaType: 'image/webp',
+          byteLength: 1024,
+          sha256: 'a'.repeat(64),
+        },
+        expectedVersion: 1,
+      },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({
+      username: 'Profile_Owner',
+      displayName: 'Profile Owner',
+      version: 2,
+    });
+    const collision = await app.inject({
+      method: 'PATCH',
+      url: '/v1/account',
+      headers: {
+        cookie: first.cookie,
+        origin,
+        'x-nexa-csrf': '1',
+      },
+      payload: { username: 'collisionowner', expectedVersion: 2 },
+    });
+    expect(collision.statusCode).toBe(409);
+    expect(collision.json()).toMatchObject({ error: 'identifier_unavailable' });
+    const race = await Promise.all([
+      app.inject({
+        method: 'PATCH',
+        url: '/v1/account',
+        headers: {
+          cookie: first.cookie,
+          origin,
+          'x-nexa-csrf': '1',
+        },
+        payload: { displayName: 'First writer', expectedVersion: 2 },
+      }),
+      app.inject({
+        method: 'PATCH',
+        url: '/v1/account',
+        headers: {
+          cookie: first.cookie,
+          origin,
+          'x-nexa-csrf': '1',
+        },
+        payload: { displayName: 'Second writer', expectedVersion: 2 },
+      }),
+    ]);
+    expect(race.map((response) => response.statusCode).sort()).toEqual([
+      200, 409,
+    ]);
+    expect(
+      race.find((response) => response.statusCode === 409)?.json(),
+    ).toMatchObject({ error: 'stale_write' });
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: '/v1/account',
+          headers: { origin, 'x-nexa-csrf': '1' },
+          payload: { displayName: 'No session', expectedVersion: 1 },
+        })
+      ).statusCode,
+    ).toBe(401);
+    await pool.query("UPDATE accounts SET status = 'suspended' WHERE id = $1", [
+      accountId,
+    ]);
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: '/v1/account',
+          headers: {
+            cookie: first.cookie,
+            origin,
+            'x-nexa-csrf': '1',
+          },
+          payload: { displayName: 'Suspended', expectedVersion: 3 },
+        })
+      ).statusCode,
+    ).toBe(401);
+    await app.close();
+  });
+
   it('revokes all sessions immediately and persists revocation across restart', async () => {
     const first = buildApp(undefined, undefined, runtime(pool, true));
     const one = await register(first, 'revoker');

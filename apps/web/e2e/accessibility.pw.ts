@@ -11,6 +11,15 @@ const ids = {
 const invitationToken = 'A'.repeat(43);
 
 const account = { id: ids.account, displayName: 'Local Explorer' };
+const profile = {
+  id: ids.account,
+  username: 'local-explorer',
+  displayName: 'Local Explorer',
+  avatar: null,
+  createdAt: '2026-07-19T12:00:00.000Z',
+  updatedAt: '2026-07-19T12:00:00.000Z',
+  version: 1,
+};
 const community = {
   id: ids.community,
   ownerId: ids.account,
@@ -41,11 +50,27 @@ async function fulfillJson(route: Route, json: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', json });
 }
 
-async function mockApplicationApi(page: Page, failAccount = false) {
+async function mockApplicationApi(
+  page: Page,
+  failAccount = false,
+  authenticatedProfile = false,
+) {
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === '/v1/dev/accounts') {
+    if (path === '/v1/account' && request.method() === 'GET') {
+      await fulfillJson(
+        route,
+        authenticatedProfile ? profile : { error: 'unauthenticated' },
+        authenticatedProfile ? 200 : 401,
+      );
+    } else if (path === '/v1/account' && request.method() === 'PATCH') {
+      const body = request.postDataJSON() as {
+        username: string;
+        displayName: string;
+      };
+      await fulfillJson(route, { ...profile, ...body, version: 2 });
+    } else if (path === '/v1/dev/accounts') {
       await fulfillJson(
         route,
         failAccount ? { error: 'dependency_unavailable' } : account,
@@ -94,6 +119,23 @@ async function mockApplicationApi(page: Page, failAccount = false) {
     }
   });
 }
+
+test('authenticated profile editing is labelled, keyboard operable, and announced', async ({
+  page,
+}) => {
+  await mockApplicationApi(page, false, true);
+  await page.goto('/');
+  const heading = page.getByRole('heading', { name: 'Your profile' });
+  await expect(heading).toBeVisible();
+  await expectNoAutomatedWcagViolations(page);
+  const displayName = page.getByRole('textbox', { name: 'Display name' });
+  await displayName.focus();
+  await displayName.fill('Ada Lovelace');
+  await page.getByRole('button', { name: 'Save profile' }).click();
+  await expect(page.getByRole('status')).toContainText('Profile saved.');
+  await expect(displayName).toHaveValue('Ada Lovelace');
+  await expectNoAutomatedWcagViolations(page);
+});
 
 async function expectNoAutomatedWcagViolations(page: Page) {
   const results = await new AxeBuilder({ page })

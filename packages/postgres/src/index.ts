@@ -34,7 +34,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -287,6 +287,42 @@ export class PostgresAuthStore implements AuthStore {
     const result = await this.authQueryable.query<AuthAccountRow>(
       `SELECT ${AUTH_ACCOUNT_FIELDS} FROM accounts WHERE id = $1 AND password_hash IS NOT NULL`,
       [id],
+    );
+    return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
+  }
+
+  async updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ) {
+    const result = await this.authQueryable.query<AuthAccountRow>(
+      `UPDATE accounts SET
+         username = $2,
+         normalized_username = $3,
+         display_name = $4,
+         avatar_object_key = $5,
+         avatar_media_type = $6,
+         avatar_byte_length = $7,
+         avatar_sha256 = $8,
+         profile_version = profile_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'active' AND profile_version = $9
+       RETURNING ${AUTH_ACCOUNT_FIELDS}`,
+      [
+        id,
+        profile.username,
+        profile.normalizedUsername,
+        profile.displayName,
+        profile.avatar?.objectKey ?? null,
+        profile.avatar?.mediaType ?? null,
+        profile.avatar?.byteLength ?? null,
+        profile.avatar?.sha256 ?? null,
+        expectedVersion,
+      ],
     );
     return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
   }
@@ -591,7 +627,7 @@ function isSerializationFailure(error: unknown): boolean {
 }
 
 const AUTH_ACCOUNT_FIELDS =
-  'id, username, normalized_username, display_name, password_hash, status, credential_version, created_at, updated_at';
+  'id, username, normalized_username, display_name, password_hash, status, credential_version, profile_version, avatar_object_key, avatar_media_type, avatar_byte_length, avatar_sha256, created_at, updated_at';
 const AUTH_SESSION_FIELDS =
   'id, account_id, token_hash, credential_version, created_at, last_seen_at, recent_auth_at, expires_at, idle_expires_at, revoked_at';
 type AuthAccountRow = {
@@ -602,6 +638,11 @@ type AuthAccountRow = {
   password_hash: string;
   status: 'active' | 'suspended';
   credential_version: number;
+  profile_version: number;
+  avatar_object_key: string | null;
+  avatar_media_type: 'image/jpeg' | 'image/png' | 'image/webp' | null;
+  avatar_byte_length: number | null;
+  avatar_sha256: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -625,6 +666,19 @@ const mapAuthAccount = (row: AuthAccountRow): AuthAccount => ({
   passwordHash: row.password_hash,
   status: row.status,
   credentialVersion: row.credential_version,
+  profileVersion: row.profile_version,
+  avatar:
+    row.avatar_object_key &&
+    row.avatar_media_type &&
+    row.avatar_byte_length !== null &&
+    row.avatar_sha256
+      ? {
+          objectKey: row.avatar_object_key,
+          mediaType: row.avatar_media_type,
+          byteLength: row.avatar_byte_length,
+          sha256: row.avatar_sha256,
+        }
+      : null,
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
 });

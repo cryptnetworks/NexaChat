@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   websocketServerMessageSchema,
   type AccountResponse,
+  type AuthProfileResponse,
   type CommunityResponse,
   type CategoryResponse,
   type SpaceResponse,
@@ -50,6 +51,20 @@ async function get<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok)
+    throw publicRequestError(
+      response.status,
+      response.headers.get('retry-after'),
+    );
+  return response.json() as Promise<T>;
+}
+
 function App() {
   const [account, setAccount] = useState<AccountResponse>();
   const [community, setCommunity] = useState<CommunityResponse>();
@@ -57,6 +72,9 @@ function App() {
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [spaces, setSpaces] = useState<SpaceResponse[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [profile, setProfile] = useState<AuthProfileResponse>();
+  const [profileStatus, setProfileStatus] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -79,6 +97,19 @@ function App() {
     if (inviteToken)
       history.replaceState(null, '', `${location.pathname}${location.search}`);
   }, [inviteToken]);
+
+  useEffect(() => {
+    let active = true;
+    void fetch('/v1/account')
+      .then(async (response) => {
+        if (active && response.ok)
+          setProfile((await response.json()) as AuthProfileResponse);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -326,6 +357,35 @@ function App() {
     }
   }
 
+  async function saveProfile(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!profile) return;
+    const data = new FormData(event.currentTarget);
+    const username = data.get('profile-username');
+    const displayName = data.get('profile-display-name');
+    setSavingProfile(true);
+    setProfileStatus('Saving profile…');
+    try {
+      const updated = await patch<AuthProfileResponse>('/v1/account', {
+        username: typeof username === 'string' ? username : '',
+        displayName: typeof displayName === 'string' ? displayName : '',
+        expectedVersion: profile.version,
+      });
+      setProfile(updated);
+      setProfileStatus('Profile saved.');
+    } catch (reason) {
+      const message =
+        reason instanceof Error ? reason.message : 'Unable to save profile.';
+      setProfileStatus(
+        message.includes('(409)')
+          ? 'Profile changed in another session. Reload before trying again.'
+          : 'Unable to save profile. Check the fields and try again.',
+      );
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
   return (
     <>
       <a className="skip-link" href="#conversation-heading">
@@ -339,6 +399,48 @@ function App() {
           <p className="eyebrow">Community</p>
           <h1 id="community-heading">{community?.name ?? 'Nexa Chat'}</h1>
           <p className="muted">A calm place for shared work.</p>
+          {profile && (
+            <section
+              className="profile-editor"
+              aria-labelledby="profile-heading"
+            >
+              <h2 id="profile-heading">Your profile</h2>
+              <form
+                key={profile.version}
+                onSubmit={(event) => void saveProfile(event)}
+              >
+                <label htmlFor="profile-username">Username</label>
+                <input
+                  id="profile-username"
+                  name="profile-username"
+                  defaultValue={profile.username}
+                  minLength={3}
+                  maxLength={32}
+                  autoComplete="username"
+                  required
+                />
+                <label htmlFor="profile-display-name">Display name</label>
+                <input
+                  id="profile-display-name"
+                  name="profile-display-name"
+                  defaultValue={profile.displayName}
+                  maxLength={80}
+                  autoComplete="name"
+                  required
+                />
+                <button
+                  type="submit"
+                  disabled={savingProfile}
+                  aria-busy={savingProfile}
+                >
+                  {savingProfile ? 'Saving…' : 'Save profile'}
+                </button>
+              </form>
+              <p role="status" aria-live="polite" aria-atomic="true">
+                {profileStatus}
+              </p>
+            </section>
+          )}
           {community && (
             <nav aria-label="Community navigation">
               {categories.length === 0 && (

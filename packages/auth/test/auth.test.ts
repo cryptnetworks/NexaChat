@@ -56,6 +56,50 @@ describe('AuthenticationService', () => {
     });
   });
 
+  it('normalizes profile updates and rejects collisions, stale writes, and suspended accounts', async () => {
+    const { service, store } = fixture();
+    const first = await service.register(input('ProfileOne'));
+    await service.register(input('ProfileTwo'));
+    const updated = await service.updateProfile(first.account.id, {
+      username: '  Profile_One  ',
+      displayName: '  Ada\t  Lovelace  ',
+      expectedVersion: 1,
+    });
+    expect(updated).toMatchObject({
+      username: 'Profile_One',
+      displayName: 'Ada Lovelace',
+      version: 2,
+    });
+    await expect(
+      service.updateProfile(first.account.id, {
+        username: 'profiletwo',
+        expectedVersion: 2,
+      }),
+    ).rejects.toMatchObject({ code: 'identifier_unavailable' });
+    const race = await Promise.allSettled([
+      service.updateProfile(first.account.id, {
+        displayName: 'First writer',
+        expectedVersion: 2,
+      }),
+      service.updateProfile(first.account.id, {
+        displayName: 'Second writer',
+        expectedVersion: 2,
+      }),
+    ]);
+    expect(race.filter((result) => result.status === 'fulfilled')).toHaveLength(
+      1,
+    );
+    expect(race.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'stale_write' },
+    });
+    const account = store.accounts.get(first.account.id);
+    if (!account) throw new Error('test account missing');
+    store.accounts.set(account.id, { ...account, status: 'suspended' });
+    await expect(service.getProfile(account.id)).rejects.toMatchObject({
+      code: 'unauthenticated',
+    });
+  });
+
   it('rotates tokens, lists sessions, and revokes immediately and concurrently', async () => {
     const { service } = fixture();
     const registered = await service.register(input('sessions'));
@@ -251,6 +295,34 @@ class MemoryAuthStore implements AuthStore {
   }
   async findAccountById(id: string) {
     return this.accounts.get(id);
+  }
+  async updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ) {
+    const account = this.accounts.get(id);
+    if (!account || account.profileVersion !== expectedVersion)
+      return undefined;
+    if (
+      [...this.accounts.values()].some(
+        (value) =>
+          value.id !== id &&
+          value.normalizedUsername === profile.normalizedUsername,
+      )
+    )
+      throw Object.assign(new Error('duplicate'), { code: '23505' });
+    const updated = {
+      ...account,
+      ...profile,
+      profileVersion: account.profileVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return updated;
   }
   async updatePasswordHash(id: string, passwordHash: string) {
     const account = this.accounts.get(id);
