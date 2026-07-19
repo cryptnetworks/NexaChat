@@ -20,6 +20,7 @@ const config: PostgresConfig = {
   queryTimeoutMs: 2_000,
   migrationsDirectory: resolve('apps/server/migrations'),
 };
+process.env.NEXA_WEB_ORIGIN = 'http://localhost:5173';
 let databaseCreated = false;
 
 function asError(error: unknown): Error {
@@ -69,14 +70,17 @@ afterAll(async () => {
 
 describe('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
-    process.env.NODE_ENV = 'development';
-    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
     const first = await initializeDatabase(config);
-    const firstApp = buildApp(first.service, first.readiness);
+    const firstApp = buildApp(first.service, first.readiness, first.auth);
     const accountResponse = await firstApp.inject({
       method: 'POST',
-      url: '/v1/dev/accounts',
-      payload: { displayName: 'Ada' },
+      url: '/v1/auth/register',
+      headers: { origin: 'http://localhost:5173' },
+      payload: {
+        username: 'ada',
+        displayName: 'Ada',
+        password: 'correct horse battery staple',
+      },
     });
     const account = accountResponse.json<{ id: string }>();
     const communityResponse = await firstApp.inject({
@@ -95,7 +99,7 @@ describe('PostgreSQL-backed API', () => {
     await first.pool.end();
 
     const second = await initializeDatabase(config);
-    const secondApp = buildApp(second.service, second.readiness);
+    const secondApp = buildApp(second.service, second.readiness, second.auth);
     const message = await secondApp.inject({
       method: 'POST',
       url: `/v1/spaces/${space.id}/messages`,
@@ -108,7 +112,7 @@ describe('PostgreSQL-backed API', () => {
     expect(ready.json()).toEqual({
       status: 'ready',
       storage: 'postgresql',
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
     await secondApp.close();
     await second.pool.end();

@@ -15,7 +15,7 @@ Protected assets include credentials, sessions, private messages, attachments, m
 - Audit tampering: append-only events with chained hashes and externally checkpointed digests; this is planned, not implemented.
 - Extension compromise: administrator approval, explicit permission scopes, isolated execution, network/secret denial by default, and revocation.
 
-The development slice stores state in memory and has no real authentication. It must never be exposed to untrusted networks. End-to-end encryption, federation, and peer-to-peer operation are not current properties.
+Local accounts use memory-hard password hashing, protected revocable session tokens, strict browser-cookie settings, origin/CSRF checks, bounded authentication attempts, and credential-version invalidation. WebSocket identity remains development-only and must not be exposed to untrusted networks. End-to-end encryption, federation, and peer-to-peer operation are not current properties.
 
 ## Federation research prerequisites
 

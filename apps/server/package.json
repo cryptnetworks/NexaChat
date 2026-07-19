@@ -12,11 +12,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nexa/auth": "0.1.0",
     "@nexa/api-contracts": "0.1.0",
     "@nexa/domain": "0.1.0",
     "@nexa/postgres": "0.1.0",
     "@nexa/realtime-contracts": "0.1.0",
     "fastify": "5.10.0",
+    "pg": "8.22.0",
     "ws": "8.21.1"
   },
   "devDependencies": {

@@ -4,6 +4,36 @@ const name = z.string().trim().min(1).max(80);
 const id = z.string().uuid();
 
 export const createDevAccountSchema = z.object({ displayName: name }).strict();
+export const usernameSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(32)
+  .regex(/^[\p{L}\p{N}_.-]+$/u);
+export const passwordSchema = z.string().min(12).max(128);
+export const registrationSchema = z
+  .object({
+    username: usernameSchema,
+    displayName: name,
+    password: passwordSchema,
+  })
+  .strict();
+export const loginSchema = z
+  .object({ username: usernameSchema, password: passwordSchema })
+  .strict();
+export const authAccountSchema = z.object({
+  id,
+  username: usernameSchema,
+  displayName: name,
+});
+export const authSessionSchema = z.object({
+  id,
+  createdAt: z.string().datetime(),
+  lastSeenAt: z.string().datetime(),
+  recentAuthAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  current: z.boolean(),
+});
 export const createCommunitySchema = z
   .object({
     ownerId: z.string().uuid(),
@@ -40,6 +70,11 @@ export const errorResponseSchema = z.object({
     'internal_error',
     'invalid_request',
     'not_found',
+    'authentication_failed',
+    'identifier_unavailable',
+    'rate_limited',
+    'unauthenticated',
+    'csrf_rejected',
   ]),
   correlationId: id.optional(),
 });
@@ -66,6 +101,10 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export type CreateDevAccountRequest = z.infer<typeof createDevAccountSchema>;
+export type RegistrationRequest = z.infer<typeof registrationSchema>;
+export type LoginRequest = z.infer<typeof loginSchema>;
+export type AuthAccountResponse = z.infer<typeof authAccountSchema>;
+export type AuthSessionResponse = z.infer<typeof authSessionSchema>;
 export type CreateCommunityRequest = z.infer<typeof createCommunitySchema>;
 export type CreateSpaceRequest = z.infer<typeof createSpaceSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageSchema>;

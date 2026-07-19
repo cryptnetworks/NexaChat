@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
-  accountSchema,
   communitySchema,
   createCommunitySchema,
-  createDevAccountSchema,
   createMessageSchema,
   createSpaceSchema,
   messageSchema,
@@ -16,14 +14,31 @@ import {
   InMemoryCommunityService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
+import { AuthenticationError } from '@nexa/auth';
+import {
+  HttpSecurityError,
+  registerAuthRoutes,
+  type AuthRuntime,
+} from './auth-routes.js';
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
   readiness: StorageReadiness = memoryReadiness,
+  auth?: AuthRuntime,
 ): FastifyInstance {
   const app = Fastify({
+    bodyLimit: 16_384,
     logger: {
-      redact: ['req.headers.authorization', 'req.headers.cookie', 'body.body'],
+      redact: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.body.password',
+        'password',
+        'token',
+        'cookie',
+        'authorization',
+      ],
+      ...(auth?.logStream ? { stream: auth.logStream } : {}),
     },
     genReqId: () => randomUUID(),
   });
@@ -40,20 +55,7 @@ export function buildApp(
     });
   });
 
-  app.post('/v1/dev/accounts', async (request, reply) => {
-    if (
-      process.env.NODE_ENV !== 'development' ||
-      process.env.NEXA_ENABLE_DEV_AUTH !== 'true'
-    ) {
-      return reply.code(404).send({ error: 'not_found' });
-    }
-    const input = createDevAccountSchema.parse(request.body);
-    return reply
-      .code(201)
-      .send(
-        accountSchema.parse(await service.createAccount(input.displayName)),
-      );
-  });
+  if (auth) registerAuthRoutes(app, auth);
 
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
@@ -116,12 +118,27 @@ export function buildApp(
         .code(error.code === 'forbidden' ? 403 : 404)
         .send({ error: error.code, correlationId: request.id });
     }
+    if (error instanceof AuthenticationError) {
+      return reply
+        .code(
+          error.code === 'rate_limited'
+            ? 429
+            : error.code === 'identifier_unavailable'
+              ? 409
+              : 401,
+        )
+        .send({ error: error.code });
+    }
+    if (error instanceof HttpSecurityError)
+      return reply
+        .code(403)
+        .send({ error: error.code, correlationId: request.id });
     if (
       (error instanceof Error && error.name === 'ZodError') ||
       (typeof error === 'object' &&
         error !== null &&
         'statusCode' in error &&
-        error.statusCode === 400)
+        (error.statusCode === 400 || error.statusCode === 413))
     )
       return reply
         .code(400)

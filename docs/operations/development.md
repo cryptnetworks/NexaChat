@@ -4,7 +4,17 @@
 
 Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and MinIO is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
-Run `npm ci` and `npm run dev`. Never enable development authentication in production. `/health/live` reports process liveness. `/health/ready` returns `200` only when PostgreSQL is reachable and its schema matches this build; otherwise it returns `503` without exposing connection details.
+Run `npm ci` and `npm run dev`. `/health/live` reports process liveness. `/health/ready` returns `200` only when PostgreSQL is reachable and its schema matches this build; otherwise it returns `503` without exposing connection details.
+
+## Local authentication
+
+Usernames are normalized with Unicode NFKC and locale-independent lowercase behavior, then uniquely constrained in PostgreSQL. Passwords are 12–128 characters and are hashed with Argon2id. `NEXA_ARGON2_MEMORY_KIB`, `NEXA_ARGON2_PASSES`, `NEXA_ARGON2_PARALLELISM`, `NEXA_ARGON2_TAG_LENGTH`, and `NEXA_ARGON2_SALT_LENGTH` are bounded and validated at startup. Encoded hashes retain their parameters so a successful login can safely rehash when settings increase.
+
+Sessions use 256-bit opaque tokens; only SHA-256 representations are stored. Absolute and idle lifetimes are controlled by `NEXA_SESSION_ABSOLUTE_SECONDS` and `NEXA_SESSION_IDLE_SECONDS`. Production always emits `Secure; HttpOnly; SameSite=Strict; Path=/` on the `__Host-nexa_session` cookie. Local HTTP development sets `NEXA_SECURE_COOKIES=false` and uses the unprefixed `nexa_session` cookie; never use that setting in production. Changing credentials increments `credential_version`, which immediately invalidates older sessions. Recent authentication time is retained for future sensitive-operation gates.
+
+Authentication attempts are bounded independently by normalized identifier and source using a replaceable in-process limiter. A limiter failure rejects authentication deterministically. Cross-instance distributed enforcement remains separate work; deployments with multiple API replicas must provide the future shared limiter before claiming a global limit.
+
+The former `/v1/dev/accounts` route is absent from the application route graph. Setting obsolete development environment variables cannot restore it. Passwords, raw tokens, cookies, and authorization headers are redacted or excluded from structured logs.
 
 ## Migrations and rollback
 

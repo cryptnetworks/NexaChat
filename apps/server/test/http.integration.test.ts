@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { InMemoryCommunityService } from '@nexa/domain';
 
 describe('HTTP vertical slice', () => {
   const previousNodeEnv = process.env.NODE_ENV;
@@ -9,15 +10,9 @@ describe('HTTP vertical slice', () => {
   });
 
   it('completes the development flow', async () => {
-    process.env.NODE_ENV = 'development';
-    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
-    const app = buildApp();
-    const account = await app.inject({
-      method: 'POST',
-      url: '/v1/dev/accounts',
-      payload: { displayName: 'Mira' },
-    });
-    const owner = account.json<{ id: string }>();
+    const service = new InMemoryCommunityService();
+    const app = buildApp(service);
+    const owner = await service.createAccount('Mira');
     const community = await app.inject({
       method: 'POST',
       url: '/v1/communities',
@@ -36,11 +31,10 @@ describe('HTTP vertical slice', () => {
       payload: { authorId: owner.id, body: 'Hello' },
     });
     expect([
-      account.statusCode,
       community.statusCode,
       space.statusCode,
       message.statusCode,
-    ]).toEqual([201, 201, 201, 201]);
+    ]).toEqual([201, 201, 201]);
     await app.close();
   });
 
@@ -57,26 +51,26 @@ describe('HTTP vertical slice', () => {
   });
 
   it.each([
-    { url: '/v1/dev/accounts', payload: { displayName: '' } },
-    { url: '/v1/dev/accounts', payload: { displayName: 'Mira', extra: true } },
-  ])('returns a stable error for invalid input', async ({ url, payload }) => {
-    process.env.NODE_ENV = 'development';
-    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
+    { payload: { ownerId: 'bad', name: '' } },
+    { payload: { ownerId: 'bad', name: 'Mira', extra: true } },
+  ])('returns a stable error for invalid input', async ({ payload }) => {
     const app = buildApp();
-    const response = await app.inject({ method: 'POST', url, payload });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/communities',
+      payload,
+    });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'invalid_request' });
-    expect(JSON.stringify(response.json())).not.toContain('displayName');
+    expect(JSON.stringify(response.json())).not.toContain('ownerId');
     await app.close();
   });
 
   it('returns the same stable error for malformed JSON', async () => {
-    process.env.NODE_ENV = 'development';
-    process.env.NEXA_ENABLE_DEV_AUTH = 'true';
     const app = buildApp();
     const response = await app.inject({
       method: 'POST',
-      url: '/v1/dev/accounts',
+      url: '/v1/communities',
       headers: { 'content-type': 'application/json' },
       payload: '{',
     });
