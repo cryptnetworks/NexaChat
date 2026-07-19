@@ -6,6 +6,8 @@ Public HTTP or realtime contract changes must follow `docs/architecture/contract
 
 Workspace dependency changes must comply with `docs/architecture/dependency-boundaries.md` and pass `npm run test:architecture`. Add an exception only when no boundary-safe design is practical, with a narrow edge, owner, rationale, and removal date.
 
+Automated and manual dependency changes follow `docs/operations/dependency-updates.md`. Major updates require release-note, compatibility, migration, rollback, and manual-test evidence; no dependency update is eligible for automatic merge.
+
 Branches use `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `chore/`, or `security/` plus a short description. Commits use Conventional Commits such as `feat(server): add community creation`.
 
 Pull requests explain the problem and solution, security/privacy/migration/accessibility/operational effects, and a test plan. Visible changes include screenshots. Architecture changes use an ADR. Report vulnerabilities through the process in `SECURITY.md`, not a public issue.
