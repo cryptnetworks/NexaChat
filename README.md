@@ -70,6 +70,8 @@ Runtime configuration is parsed exactly once before database initialization or s
 
 Community lifecycle endpoints support authenticated community, membership, category, and text-space operations. Names are normalized and scoped for active uniqueness. Collections use bounded stable cursors, version fields reject stale writes, and archival preserves message history. Cookie-authenticated mutations require the exact configured `Origin` and `X-Nexa-CSRF: 1`.
 
+Community invitations are bounded, revocable, optionally account-targeted, and stored only as protected token hashes. Authorized administrators can create, list, and revoke invitations. Authenticated preview and acceptance use privacy-safe failures, rate limits, atomic usage claims, idempotent active-membership handling, and audit events. Browser invite tokens are consumed from URL fragments and removed from history before preview.
+
 ## Desktop status
 
 The web/domain split is suitable for a thin Tauri shell without duplicating interface or domain logic, but the desktop scaffold is deferred because `rustc`, `cargo`, and the Tauri CLI are not installed locally. Xcode 26.6 is available.

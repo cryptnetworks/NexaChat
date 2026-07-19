@@ -23,6 +23,12 @@ import {
   permissionPreviewRequestSchema,
   permissionPreviewResponseSchema,
   spaceSchema,
+  createInvitationSchema,
+  invitationActionSchema,
+  revokeInvitationSchema,
+  invitationSchema,
+  createdInvitationSchema,
+  invitationPreviewSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -59,6 +65,8 @@ export function buildApp(
         'req.headers.authorization',
         'req.headers.cookie',
         'req.body.password',
+        'req.body.token',
+        'req.body.inviteToken',
         'password',
         'token',
         'cookie',
@@ -404,6 +412,80 @@ export function buildApp(
     },
   );
 
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/invitations',
+    async (request, reply) => {
+      const input = createInvitationSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const created = await service.createInvitation(
+        actorId,
+        request.params.communityId,
+        {
+          expiresInSeconds: input.expiresInSeconds,
+          maxUses: input.maxUses,
+          targetAccountId: input.targetAccountId ?? null,
+        },
+      );
+      return reply.code(201).send(
+        createdInvitationSchema.parse({
+          invitation: publicInvitation(created.invitation),
+          token: created.token,
+        }),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/invitations',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const invitations = await service.listInvitations(
+        actorId,
+        request.params.communityId,
+      );
+      return reply.send(
+        invitations.map((invitation) =>
+          invitationSchema.parse(publicInvitation(invitation)),
+        ),
+      );
+    },
+  );
+
+  app.delete<{ Params: { invitationId: string } }>(
+    '/v1/invitations/:invitationId',
+    async (request, reply) => {
+      const input = revokeInvitationSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const invitation = await service.revokeInvitation(
+        actorId,
+        request.params.invitationId,
+        input.expectedVersion,
+      );
+      return reply.send(invitationSchema.parse(publicInvitation(invitation)));
+    },
+  );
+
+  app.post('/v1/invitations/preview', async (request, reply) => {
+    const input = invitationActionSchema.parse(request.body);
+    const actorId = await verifiedActor(request, auth, input.actorId, true);
+    return reply.send(
+      invitationPreviewSchema.parse(
+        await service.previewInvitation(actorId, input.token),
+      ),
+    );
+  });
+
+  app.post('/v1/invitations/accept', async (request, reply) => {
+    const input = invitationActionSchema.parse(request.body);
+    const actorId = await verifiedActor(request, auth, input.actorId, true);
+    return reply.send(
+      membershipSchema.parse(
+        await service.acceptInvitation(actorId, input.token, request.ip),
+      ),
+    );
+  });
+
   app.setErrorHandler((error, request, reply) => {
     request.log.warn(
       { err: error, correlationId: request.id },
@@ -412,11 +494,14 @@ export function buildApp(
     if (error instanceof DomainError) {
       return reply
         .code(
-          error.code === 'forbidden'
-            ? 403
-            : error.code === 'not_found'
-              ? 404
-              : 409,
+          error.code === 'rate_limited'
+            ? 429
+            : error.code === 'forbidden'
+              ? 403
+              : error.code === 'not_found' ||
+                  error.code === 'invitation_unavailable'
+                ? 404
+                : 409,
         )
         .send({ error: error.code, correlationId: request.id });
     }
@@ -464,6 +549,21 @@ export function buildApp(
   });
 
   return app;
+}
+
+function publicInvitation(invitation: {
+  id: string;
+  communityId: string;
+  creatorId: string;
+  targetAccountId: string | null;
+  createdAt: string;
+  expiresAt: string;
+  maxUses: number;
+  useCount: number;
+  revokedAt: string | null;
+  version: number;
+}) {
+  return invitation;
 }
 
 async function verifiedActor(
