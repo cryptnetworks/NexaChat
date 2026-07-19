@@ -280,7 +280,7 @@ function choice<const T extends readonly string[]>(
 ): T[number] {
   if (!allowed.includes(value))
     fail(key, `must be one of: ${allowed.join(', ')}`);
-  return value as T[number];
+  return value;
 }
 function url(value: string, key: string): URL {
   try {

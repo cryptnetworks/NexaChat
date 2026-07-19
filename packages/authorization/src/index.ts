@@ -19,11 +19,7 @@ export const permissionCatalog = [
 ] as const;
 export type Permission = (typeof permissionCatalog)[number];
 export type ScopeType =
-  | 'instance'
-  | 'community'
-  | 'category'
-  | 'space'
-  | 'resource';
+  'instance' | 'community' | 'category' | 'space' | 'resource';
 export interface Scope {
   type: ScopeType;
   id: string;

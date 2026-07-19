@@ -29,7 +29,7 @@ describe('community vertical slice', () => {
     const community = await service.createCommunity(owner.id, 'Community');
     await expect(
       service.createTextSpace(community.id, other.id, 'private'),
-    ).rejects.toThrowError(DomainError);
+    ).rejects.toThrow(DomainError);
   });
 
   it('authorizes only the owning account to subscribe to a space', async () => {
@@ -47,6 +47,6 @@ describe('community vertical slice', () => {
     ).resolves.toBeUndefined();
     await expect(
       service.authorizeSpaceSubscription(space.id, other.id),
-    ).rejects.toThrowError(DomainError);
+    ).rejects.toThrow(DomainError);
   });
 });
