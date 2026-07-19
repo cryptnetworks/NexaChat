@@ -143,3 +143,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget --quiet --spider --no-check-certificate https://127.0.0.1:8443/health/live || exit 1
 ENTRYPOINT ["nginx"]
 CMD ["-g", "daemon off;"]
+
+FROM edge-runtime AS edge-cloudflare-runtime
+COPY --chown=nginx:nginx deploy/nginx-cloudflare/nginx.conf /etc/nginx/nginx.conf

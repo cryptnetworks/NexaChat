@@ -43,6 +43,7 @@ jobs:
       - run: npm run test:contracts
       - run: npm run verify:security-policy
       - run: npm run verify:backup-policy
+      - run: npm run verify:cloudflare-policy
       - run: npm test
       - name: Install accessibility test browser
         run: npx playwright install --with-deps chromium

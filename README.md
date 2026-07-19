@@ -78,6 +78,12 @@ Use the isolated end-to-end check before an installation or upgrade:
 bash scripts/verify-production.sh
 ```
 
+An optional, pinned Cloudflare Tunnel overlay removes the host edge port and
+uses two hardened outbound connectors with a file-backed token and verified
+origin TLS. Follow the [Cloudflare Tunnel runbook](docs/operations/cloudflare-tunnel.md)
+and run `npm run verify:cloudflare-tunnel`; the verification uses only synthetic
+local credentials and never creates a real tunnel.
+
 ## Architecture
 
 - `apps/server` is the Fastify HTTP and WebSocket process.
