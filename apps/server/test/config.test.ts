@@ -24,6 +24,7 @@ describe('runtime configuration', () => {
     expect(config.authentication.secureCookies).toBe(true);
     expect(config.database.maxConnections).toBe(10);
     expect(config.websocket.maxSubscriptions).toBe(32);
+    expect(config.server.rateLimit).toBe(1_000);
   });
 
   it.each([
@@ -68,6 +69,7 @@ describe('runtime configuration', () => {
       { ...development, NEXA_WS_MAX_PAYLOAD_BYTES: '999' },
       'NEXA_WS_MAX_PAYLOAD_BYTES',
     ],
+    [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
   ])('rejects invalid input without exposing values', (environment, key) => {
     try {
       parseRuntimeConfig(environment);

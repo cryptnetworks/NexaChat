@@ -62,6 +62,8 @@ npm audit
 
 Malformed HTTP input returns a stable `invalid_request` response with a correlation ID and no validation internals. Malformed WebSocket messages return `invalid_message`; missing and unauthorized subscription targets both return the non-disclosing `unavailable` error.
 
+Every HTTP response includes `X-Request-Id` and `X-API-Version: 1`. Errors use a versioned envelope with a stable code, correlation ID, and explicit retryability. Rate limits include `Retry-After`; bodies, timeouts, cursors, page sizes, and the instance address-bucket set are bounded. See [HTTP API contracts](docs/architecture/api-contracts.md).
+
 WebSocket control messages are versioned and support subscribe, unsubscribe, and heartbeat operations. Connections, subscriptions, command rates, frames, and outbound buffering are bounded. Session and permission checks run throughout active connections; heartbeats remove stale clients; shutdown drains sockets. Event deliveries include per-process, per-space sequence numbers and globally unique event IDs. Clients deduplicate IDs, detect sequence gaps, and reconcile durable history over HTTP after gaps or jittered reconnects.
 
 Authentication endpoints are `POST /v1/auth/register`, `POST /v1/auth/login`, `POST /v1/auth/logout`, `POST /v1/auth/logout-all`, `GET /v1/account`, and `GET /v1/sessions`. State-changing requests require the configured exact `Origin`; cookie-authenticated logout requests also require `X-Nexa-CSRF: 1`. Authentication failures return stable `authentication_failed`, `unauthenticated`, `identifier_unavailable`, `rate_limited`, or `csrf_rejected` codes without account-existence details.

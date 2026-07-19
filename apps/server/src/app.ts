@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import {
   communitySchema,
   communityPageSchema,
@@ -29,6 +29,7 @@ import {
   invitationSchema,
   createdInvitationSchema,
   invitationPreviewSchema,
+  type ErrorResponse,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -76,10 +77,50 @@ export function buildApp(
     },
     genReqId: () => randomUUID(),
   });
+  const requestLimit = serverConfig?.rateLimit ?? 1_000;
+  const requestWindowMs = serverConfig?.rateWindowMs ?? 60_000;
+  const requestBuckets = new Map<
+    string,
+    { count: number; startedAt: number }
+  >();
+  app.addHook('onRequest', (request, reply, done) => {
+    reply.header('x-request-id', request.id);
+    reply.header('x-api-version', '1');
+    const now = Date.now();
+    const current = requestBuckets.get(request.ip);
+    const bucket =
+      !current || now - current.startedAt >= requestWindowMs
+        ? { count: 0, startedAt: now }
+        : current;
+    if (bucket.count >= requestLimit) {
+      sendApiError(
+        reply,
+        429,
+        'rate_limited',
+        request.id,
+        Math.max(
+          1,
+          Math.ceil((bucket.startedAt + requestWindowMs - now) / 1000),
+        ),
+      );
+      done();
+      return;
+    }
+    requestBuckets.set(request.ip, { ...bucket, count: bucket.count + 1 });
+    if (requestBuckets.size > 10_000) {
+      const oldest = requestBuckets.keys().next().value;
+      if (oldest) requestBuckets.delete(oldest);
+    }
+    done();
+  });
 
   app.get('/health/live', () => ({ status: 'ok' }));
   app.get('/health/ready', async (_request, reply) => {
     const result = await readiness.check();
+    if (!result.ready) {
+      reply.header('cache-control', 'no-store');
+      reply.header('retry-after', '5');
+    }
     return reply.code(result.ready ? 200 : 503).send({
       status: result.ready ? 'ready' : 'unavailable',
       storage: result.storage,
@@ -492,18 +533,22 @@ export function buildApp(
       'request rejected',
     );
     if (error instanceof DomainError) {
-      return reply
-        .code(
-          error.code === 'rate_limited'
-            ? 429
-            : error.code === 'forbidden'
-              ? 403
-              : error.code === 'not_found' ||
-                  error.code === 'invitation_unavailable'
-                ? 404
-                : 409,
-        )
-        .send({ error: error.code, correlationId: request.id });
+      const status =
+        error.code === 'rate_limited'
+          ? 429
+          : error.code === 'forbidden'
+            ? 403
+            : error.code === 'not_found' ||
+                error.code === 'invitation_unavailable'
+              ? 404
+              : 409;
+      return sendApiError(
+        reply,
+        status,
+        error.code,
+        request.id,
+        status === 429 ? 60 : undefined,
+      );
     }
     if (
       typeof error === 'object' &&
@@ -511,44 +556,67 @@ export function buildApp(
       'code' in error &&
       error.code === '23505'
     )
-      return reply
-        .code(409)
-        .send({ error: 'conflict', correlationId: request.id });
+      return sendApiError(reply, 409, 'conflict', request.id);
     if (error instanceof AuthenticationError) {
-      return reply
-        .code(
-          error.code === 'rate_limited'
-            ? 429
-            : error.code === 'identifier_unavailable'
-              ? 409
-              : 401,
-        )
-        .send({ error: error.code });
+      const status =
+        error.code === 'rate_limited'
+          ? 429
+          : error.code === 'identifier_unavailable'
+            ? 409
+            : 401;
+      return sendApiError(
+        reply,
+        status,
+        error.code,
+        request.id,
+        status === 429 ? 60 : undefined,
+      );
     }
     if (error instanceof AuthorizationError)
-      return reply
-        .code(404)
-        .send({ error: 'not_found', correlationId: request.id });
+      return sendApiError(reply, 404, 'not_found', request.id);
     if (error instanceof HttpSecurityError)
-      return reply
-        .code(403)
-        .send({ error: error.code, correlationId: request.id });
+      return sendApiError(reply, 403, error.code, request.id);
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'statusCode' in error &&
+      error.statusCode === 413
+    )
+      return sendApiError(reply, 413, 'payload_too_large', request.id);
     if (
       (error instanceof Error && error.name === 'ZodError') ||
       (typeof error === 'object' &&
         error !== null &&
         'statusCode' in error &&
-        (error.statusCode === 400 || error.statusCode === 413))
+        error.statusCode === 400)
     )
-      return reply
-        .code(400)
-        .send({ error: 'invalid_request', correlationId: request.id });
-    return reply
-      .code(500)
-      .send({ error: 'internal_error', correlationId: request.id });
+      return sendApiError(reply, 400, 'invalid_request', request.id);
+    return sendApiError(reply, 500, 'internal_error', request.id);
   });
 
+  app.setNotFoundHandler((request, reply) =>
+    sendApiError(reply, 404, 'not_found', request.id),
+  );
+
   return app;
+}
+
+function sendApiError(
+  reply: FastifyReply,
+  status: number,
+  error: ErrorResponse['error'],
+  correlationId: string,
+  retryAfterSeconds?: number,
+) {
+  reply.header('cache-control', 'no-store');
+  if (retryAfterSeconds !== undefined)
+    reply.header('retry-after', String(retryAfterSeconds));
+  return reply.code(status).send({
+    version: 1,
+    error,
+    correlationId,
+    retryable: status === 429 || status === 503,
+  } satisfies ErrorResponse);
 }
 
 function publicInvitation(invitation: {
