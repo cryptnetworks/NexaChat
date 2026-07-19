@@ -13,3 +13,13 @@ export const realtimeEnvelopeSchema = z.object({
 });
 
 export type RealtimeEnvelope = z.infer<typeof realtimeEnvelopeSchema>;
+
+export const realtimeDeliverySchema = z.object({
+  version: z.literal(1),
+  type: z.literal('event'),
+  spaceId: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  event: realtimeEnvelopeSchema,
+});
+
+export type RealtimeDelivery = z.infer<typeof realtimeDeliverySchema>;

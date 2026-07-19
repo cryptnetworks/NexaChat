@@ -23,6 +23,7 @@ describe('runtime configuration', () => {
     const config = parseRuntimeConfig(production);
     expect(config.authentication.secureCookies).toBe(true);
     expect(config.database.maxConnections).toBe(10);
+    expect(config.websocket.maxSubscriptions).toBe(32);
   });
 
   it.each([
@@ -59,6 +60,14 @@ describe('runtime configuration', () => {
     ],
     [{ ...development, NEXA_ARGON2_MEMORY_KIB: '1' }, 'NEXA_ARGON2_MEMORY_KIB'],
     [{ ...development, NEXA_SECURE_COOKIES: 'yes' }, 'NEXA_SECURE_COOKIES'],
+    [
+      { ...development, NEXA_WS_MAX_SUBSCRIPTIONS: '0' },
+      'NEXA_WS_MAX_SUBSCRIPTIONS',
+    ],
+    [
+      { ...development, NEXA_WS_MAX_PAYLOAD_BYTES: '999' },
+      'NEXA_WS_MAX_PAYLOAD_BYTES',
+    ],
   ])('rejects invalid input without exposing values', (environment, key) => {
     try {
       parseRuntimeConfig(environment);

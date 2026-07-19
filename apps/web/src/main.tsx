@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   websocketServerMessageSchema,
@@ -8,10 +8,12 @@ import {
   type SpaceResponse,
 } from '@nexa/api-contracts';
 import {
+  realtimeDeliverySchema,
   realtimeEnvelopeSchema,
   type RealtimeEnvelope,
 } from '@nexa/realtime-contracts';
 import './styles.css';
+import { acceptDelivery, reconnectDelay } from './realtime.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -43,6 +45,10 @@ function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const realtimeCursor = useRef({
+    sequence: 0,
+    seenEventIds: new Set<string>(),
+  });
 
   useEffect(() => {
     if (!account || !space) return;
@@ -66,6 +72,99 @@ function App() {
       });
     return () => {
       active = false;
+    };
+  }, [account, space]);
+
+  useEffect(() => {
+    if (!account || !space) return;
+    let active = true;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
+    let attempts = 0;
+
+    const reconcile = async () => {
+      const page = await get<{ items: Message[] }>(
+        `/v1/spaces/${space.id}/messages?actorId=${encodeURIComponent(account.id)}`,
+      );
+      if (active) setMessages(page.items);
+    };
+
+    const connect = () => {
+      if (!active) return;
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      socket = new WebSocket(`${protocol}://${location.host}/v1/realtime`);
+      socket.onopen = () => {
+        attempts = 0;
+        socket?.send(
+          JSON.stringify({
+            version: 1,
+            type: 'subscribe',
+            requestId: crypto.randomUUID(),
+            spaceId: space.id,
+          }),
+        );
+        void reconcile().catch(() => {
+          setError('Unable to reconcile history');
+        });
+      };
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') return;
+        let raw: unknown;
+        try {
+          raw = JSON.parse(event.data);
+        } catch {
+          setError('Realtime server returned an invalid message');
+          return;
+        }
+        const delivery = realtimeDeliverySchema.safeParse(raw);
+        if (delivery.success) {
+          const next = delivery.data;
+          const accepted = acceptDelivery(
+            realtimeCursor.current,
+            next.event.id,
+            next.sequence,
+          );
+          if (!accepted.accepted) return;
+          if (accepted.gap)
+            void reconcile().catch(() => {
+              setError('Unable to recover missed messages');
+            });
+          const envelope = realtimeEnvelopeSchema.parse(next.event);
+          setMessages((current) => {
+            const message = envelope.payload.message;
+            const withoutCurrent = current.filter(
+              (item) => item.id !== message.id,
+            );
+            return [...withoutCurrent, message].sort(
+              (a, b) =>
+                a.createdAt.localeCompare(b.createdAt) ||
+                a.id.localeCompare(b.id),
+            );
+          });
+          return;
+        }
+        const control = websocketServerMessageSchema.safeParse(raw);
+        if (control.success && control.data.type === 'error')
+          setError(`Realtime connection rejected (${control.data.error})`);
+      };
+      socket.onclose = (event) => {
+        if (!active || event.code === 1000 || event.code === 1001) return;
+        attempts += 1;
+        if (attempts > 8) {
+          setError('Realtime connection could not be restored');
+          return;
+        }
+        reconnectTimer = window.setTimeout(connect, reconnectDelay(attempts));
+      };
+    };
+
+    realtimeCursor.current.sequence = 0;
+    realtimeCursor.current.seenEventIds.clear();
+    connect();
+    return () => {
+      active = false;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socket?.close(1000, 'space changed');
     };
   }, [account, space]);
 
@@ -97,50 +196,6 @@ function App() {
       setSpace(nextSpace);
       setCategories([category]);
       setSpaces([nextSpace]);
-      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-      const socket = new WebSocket(
-        `${protocol}://${location.host}/v1/realtime`,
-      );
-      socket.onopen = () => {
-        socket.send(
-          JSON.stringify({
-            type: 'subscribe',
-            spaceId: nextSpace.id,
-            actorId: nextAccount.id,
-          }),
-        );
-      };
-      socket.onmessage = (event) => {
-        if (typeof event.data !== 'string') {
-          setError('Realtime server returned an invalid message');
-          return;
-        }
-        let raw: unknown;
-        try {
-          raw = JSON.parse(event.data);
-        } catch {
-          setError('Realtime server returned an invalid message');
-          return;
-        }
-        const envelope = realtimeEnvelopeSchema.safeParse(raw);
-        if (envelope.success) {
-          setMessages((current) => {
-            const message = envelope.data.payload.message;
-            const withoutCurrent = current.filter(
-              (item) => item.id !== message.id,
-            );
-            return [...withoutCurrent, message].sort(
-              (a, b) =>
-                a.createdAt.localeCompare(b.createdAt) ||
-                a.id.localeCompare(b.id),
-            );
-          });
-          return;
-        }
-        const control = websocketServerMessageSchema.safeParse(raw);
-        if (control.success && control.data.type === 'error')
-          setError(`Realtime connection rejected (${control.data.error})`);
-      };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to start');
     } finally {

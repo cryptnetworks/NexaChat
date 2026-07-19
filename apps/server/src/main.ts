@@ -25,12 +25,13 @@ const app = buildApp(
   database.authorization,
   config.server,
 );
+if (!database.auth) throw new Error('Authentication runtime is unavailable');
 await app.listen({ host: config.server.host, port: config.server.port });
-app.websocketHub = attachWebsocketHub(
-  app.server,
-  database.service,
-  config.websocket.developmentIdentityEnabled,
-);
+app.websocketHub = attachWebsocketHub(app.server, database.service, {
+  auth: database.auth,
+  trustedOrigin: config.authentication.trustedOrigin,
+  limits: config.websocket,
+});
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(
