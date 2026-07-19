@@ -1,0 +1,6 @@
+{
+  "name": "@nexa/postgres",
+  "dependencies": {
+    "@nexa/domain": "0.1.0"
+  }
+}

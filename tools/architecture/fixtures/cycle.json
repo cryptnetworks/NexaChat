@@ -1,0 +1,7 @@
+{
+  "path": "packages/domain/package.json",
+  "value": {
+    "name": "@nexa/domain",
+    "dependencies": { "@nexa/postgres": "0.1.0" }
+  }
+}
