@@ -21,6 +21,9 @@ export const registrationSchema = z
 export const loginSchema = z
   .object({ username: usernameSchema, password: passwordSchema })
   .strict();
+export const changePasswordSchema = z
+  .object({ currentPassword: passwordSchema, newPassword: passwordSchema })
+  .strict();
 export const authAccountSchema = z.object({
   id,
   username: usernameSchema,
@@ -307,7 +310,13 @@ export const auditEventSchema = z
     actorId: z.string().min(3).max(128),
     scopeType: z.enum(['community', 'instance']),
     scopeId: id.nullable(),
-    targetType: z.enum(['audit_chain', 'community', 'invitation', 'none']),
+    targetType: z.enum([
+      'account',
+      'audit_chain',
+      'community',
+      'invitation',
+      'none',
+    ]),
     targetId: id.nullable(),
     action: z.enum([
       'invitation.create',
@@ -316,6 +325,8 @@ export const auditEventSchema = z
       'audit.checkpoint',
       'audit.legal_hold.apply',
       'audit.legal_hold.release',
+      'account.credentials.change',
+      'account.sessions.revoke_all',
     ]),
     outcome: z.enum(['succeeded', 'rejected']),
     reasonCode: z
@@ -446,6 +457,7 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
 export type CreateDevAccountRequest = z.infer<typeof createDevAccountSchema>;
 export type RegistrationRequest = z.infer<typeof registrationSchema>;
 export type LoginRequest = z.infer<typeof loginSchema>;
+export type ChangePasswordRequest = z.infer<typeof changePasswordSchema>;
 export type AuthAccountResponse = z.infer<typeof authAccountSchema>;
 export type AvatarMetadata = z.infer<typeof avatarMetadataSchema>;
 export type AuthProfileResponse = z.infer<typeof authProfileSchema>;

@@ -22,7 +22,12 @@ import type {
   Space,
 } from '@nexa/domain';
 import { auditEventHash, zeroAuditHash } from '@nexa/domain';
-import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
+import type {
+  AuthAccount,
+  AuthSession,
+  AuthStore,
+  CredentialSecurityEvent,
+} from '@nexa/auth';
 import {
   StaleAuthorizationWriteError,
   type AuthorizationSnapshot,
@@ -34,7 +39,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 9;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -334,6 +339,22 @@ export class PostgresAuthStore implements AuthStore {
     );
   }
 
+  async changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ) {
+    const result = await this.authQueryable.query<AuthAccountRow>(
+      `UPDATE accounts SET password_hash = $3,
+         credential_version = credential_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'active' AND credential_version = $2
+       RETURNING ${AUTH_ACCOUNT_FIELDS}`,
+      [id, expectedCredentialVersion, passwordHash],
+    );
+    return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
+  }
+
   async resetCredentials(id: string, passwordHash: string): Promise<void> {
     await this.authQueryable.query(
       `UPDATE accounts SET password_hash = $2,
@@ -407,6 +428,37 @@ export class PostgresAuthStore implements AuthStore {
       [accountId],
     );
     return result.rows.map(mapAuthSession);
+  }
+
+  async recordSecurityEvent(event: CredentialSecurityEvent): Promise<void> {
+    await this.authQueryable.query(
+      `INSERT INTO security_notifications
+        (id, account_id, notification_type, correlation_id, occurred_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        event.id,
+        event.accountId,
+        event.notificationType,
+        event.correlationId,
+        event.occurredAt,
+        event.expiresAt,
+      ],
+    );
+    await this.authQueryable.query(
+      `INSERT INTO audit_events
+        (id, actor_id, community_id, invitation_id, action, outcome, occurred_at,
+         event_version, actor_type, scope_type, scope_id, target_type, target_id,
+         reason_code, correlation_id, retention_until)
+       VALUES ($1,$2,NULL,NULL,$3,'succeeded',$4,1,'account','instance',NULL,
+         'account',$2,NULL,$5,$4::timestamptz + interval '7 years')`,
+      [
+        event.id,
+        event.accountId,
+        event.action,
+        event.occurredAt,
+        event.correlationId,
+      ],
+    );
   }
 
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {

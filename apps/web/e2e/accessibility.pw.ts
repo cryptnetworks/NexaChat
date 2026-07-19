@@ -70,6 +70,8 @@ async function mockApplicationApi(
         displayName: string;
       };
       await fulfillJson(route, { ...profile, ...body, version: 2 });
+    } else if (path === '/v1/account/password') {
+      await route.fulfill({ status: 204 });
     } else if (path === '/v1/dev/accounts') {
       await fulfillJson(
         route,
@@ -132,8 +134,27 @@ test('authenticated profile editing is labelled, keyboard operable, and announce
   await displayName.focus();
   await displayName.fill('Ada Lovelace');
   await page.getByRole('button', { name: 'Save profile' }).click();
-  await expect(page.getByRole('status')).toContainText('Profile saved.');
+  await expect(
+    page.getByRole('region', { name: 'Your profile' }).getByRole('status'),
+  ).toContainText('Profile saved.');
   await expect(displayName).toHaveValue('Ada Lovelace');
+  await expectNoAutomatedWcagViolations(page);
+});
+
+test('password change is labelled, keyboard operable, private, and announced', async ({
+  page,
+}) => {
+  await mockApplicationApi(page, false, true);
+  await page.goto('/');
+  const section = page.getByRole('region', { name: 'Change password' });
+  await section.getByLabel('Current password').fill('old password value');
+  await section
+    .getByLabel('New password', { exact: true })
+    .fill('new password value');
+  await section.getByLabel('Confirm new password').fill('new password value');
+  await section.getByRole('button', { name: 'Change password' }).click();
+  await expect(section.getByRole('status')).toContainText('Password changed.');
+  await expect(section.getByLabel('Current password')).toHaveValue('');
   await expectNoAutomatedWcagViolations(page);
 });
 

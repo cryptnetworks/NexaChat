@@ -73,7 +73,7 @@ export interface AuditEvent {
   actorId: string;
   scopeType: 'community' | 'instance';
   scopeId: string | null;
-  targetType: 'audit_chain' | 'community' | 'invitation' | 'none';
+  targetType: 'account' | 'audit_chain' | 'community' | 'invitation' | 'none';
   targetId: string | null;
   action:
     | 'invitation.create'
@@ -81,7 +81,9 @@ export interface AuditEvent {
     | 'invitation.accept'
     | 'audit.checkpoint'
     | 'audit.legal_hold.apply'
-    | 'audit.legal_hold.release';
+    | 'audit.legal_hold.release'
+    | 'account.credentials.change'
+    | 'account.sessions.revoke_all';
   outcome: 'succeeded' | 'rejected';
   reasonCode: string | null;
   correlationId: string;

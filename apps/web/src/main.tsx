@@ -65,6 +65,19 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function mutate(path: string, body: unknown): Promise<void> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok)
+    throw publicRequestError(
+      response.status,
+      response.headers.get('retry-after'),
+    );
+}
+
 function App() {
   const [account, setAccount] = useState<AccountResponse>();
   const [community, setCommunity] = useState<CommunityResponse>();
@@ -75,6 +88,8 @@ function App() {
   const [profile, setProfile] = useState<AuthProfileResponse>();
   const [profileStatus, setProfileStatus] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
+  const [passwordStatus, setPasswordStatus] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -386,6 +401,38 @@ function App() {
     }
   }
 
+  async function changePassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const currentPassword = data.get('current-password');
+    const newPassword = data.get('new-password');
+    const confirmation = data.get('confirm-password');
+    if (
+      typeof currentPassword !== 'string' ||
+      typeof newPassword !== 'string' ||
+      newPassword !== confirmation
+    ) {
+      setPasswordStatus('New password and confirmation must match.');
+      return;
+    }
+    setChangingPassword(true);
+    setPasswordStatus('Changing password…');
+    try {
+      await mutate('/v1/account/password', { currentPassword, newPassword });
+      form.reset();
+      setPasswordStatus(
+        'Password changed. Other signed-in devices have been signed out.',
+      );
+    } catch {
+      setPasswordStatus(
+        'Password could not be changed. Check your entries and try again.',
+      );
+    } finally {
+      setChangingPassword(false);
+    }
+  }
+
   return (
     <>
       <a className="skip-link" href="#conversation-heading">
@@ -400,46 +447,96 @@ function App() {
           <h1 id="community-heading">{community?.name ?? 'Nexa Chat'}</h1>
           <p className="muted">A calm place for shared work.</p>
           {profile && (
-            <section
-              className="profile-editor"
-              aria-labelledby="profile-heading"
-            >
-              <h2 id="profile-heading">Your profile</h2>
-              <form
-                key={profile.version}
-                onSubmit={(event) => void saveProfile(event)}
+            <div className="account-controls">
+              <section
+                className="profile-editor"
+                aria-labelledby="profile-heading"
               >
-                <label htmlFor="profile-username">Username</label>
-                <input
-                  id="profile-username"
-                  name="profile-username"
-                  defaultValue={profile.username}
-                  minLength={3}
-                  maxLength={32}
-                  autoComplete="username"
-                  required
-                />
-                <label htmlFor="profile-display-name">Display name</label>
-                <input
-                  id="profile-display-name"
-                  name="profile-display-name"
-                  defaultValue={profile.displayName}
-                  maxLength={80}
-                  autoComplete="name"
-                  required
-                />
-                <button
-                  type="submit"
-                  disabled={savingProfile}
-                  aria-busy={savingProfile}
+                <h2 id="profile-heading">Your profile</h2>
+                <form
+                  key={profile.version}
+                  onSubmit={(event) => void saveProfile(event)}
                 >
-                  {savingProfile ? 'Saving…' : 'Save profile'}
-                </button>
-              </form>
-              <p role="status" aria-live="polite" aria-atomic="true">
-                {profileStatus}
-              </p>
-            </section>
+                  <label htmlFor="profile-username">Username</label>
+                  <input
+                    id="profile-username"
+                    name="profile-username"
+                    defaultValue={profile.username}
+                    minLength={3}
+                    maxLength={32}
+                    autoComplete="username"
+                    required
+                  />
+                  <label htmlFor="profile-display-name">Display name</label>
+                  <input
+                    id="profile-display-name"
+                    name="profile-display-name"
+                    defaultValue={profile.displayName}
+                    maxLength={80}
+                    autoComplete="name"
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={savingProfile}
+                    aria-busy={savingProfile}
+                  >
+                    {savingProfile ? 'Saving…' : 'Save profile'}
+                  </button>
+                </form>
+                <p role="status" aria-live="polite" aria-atomic="true">
+                  {profileStatus}
+                </p>
+              </section>
+              <section
+                className="profile-editor"
+                aria-labelledby="password-heading"
+              >
+                <h2 id="password-heading">Change password</h2>
+                <form onSubmit={(event) => void changePassword(event)}>
+                  <label htmlFor="current-password">Current password</label>
+                  <input
+                    id="current-password"
+                    name="current-password"
+                    type="password"
+                    autoComplete="current-password"
+                    minLength={12}
+                    maxLength={128}
+                    required
+                  />
+                  <label htmlFor="new-password">New password</label>
+                  <input
+                    id="new-password"
+                    name="new-password"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={12}
+                    maxLength={128}
+                    required
+                  />
+                  <label htmlFor="confirm-password">Confirm new password</label>
+                  <input
+                    id="confirm-password"
+                    name="confirm-password"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={12}
+                    maxLength={128}
+                    required
+                  />
+                  <button
+                    type="submit"
+                    disabled={changingPassword}
+                    aria-busy={changingPassword}
+                  >
+                    {changingPassword ? 'Changing…' : 'Change password'}
+                  </button>
+                </form>
+                <p role="status" aria-live="polite" aria-atomic="true">
+                  {passwordStatus}
+                </p>
+              </section>
+            </div>
           )}
           {community && (
             <nav aria-label="Community navigation">

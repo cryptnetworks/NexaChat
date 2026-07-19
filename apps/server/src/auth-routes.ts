@@ -3,6 +3,7 @@ import {
   authAccountSchema,
   authProfileSchema,
   authSessionSchema,
+  changePasswordSchema,
   loginSchema,
   registrationSchema,
   updateProfileSchema,
@@ -117,8 +118,25 @@ export function registerAuthRoutes(
     enforceOrigin(request, runtime.config);
     enforceCsrf(request);
     const authenticated = await authenticateRequest(request, runtime);
-    await runtime.service.logoutAll(authenticated.account.id);
+    await runtime.service.logoutAll(authenticated.account.id, request.id);
     clearSessionCookie(reply, runtime.config);
+    return reply.code(204).send();
+  });
+
+  app.post('/v1/account/password', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const input = changePasswordSchema.parse(request.body);
+    const session = await runtime.service.changePassword({
+      accountId: authenticated.account.id,
+      currentPassword: input.currentPassword,
+      newPassword: input.newPassword,
+      correlationId: request.id,
+    });
+    setSessionCookie(reply, session.token, runtime.config);
     return reply.code(204).send();
   });
 }

@@ -7,6 +7,7 @@ import {
   type AuthAccount,
   type AuthSession,
   type AuthStore,
+  type CredentialSecurityEvent,
   type PasswordHasher,
   type RateLimiter,
 } from '../src/index.js';
@@ -118,10 +119,71 @@ describe('AuthenticationService', () => {
     await expect(
       service.authenticate(loggedIn.session.token),
     ).rejects.toMatchObject({ code: 'unauthenticated' });
-    await service.logoutAll(registered.account.id);
+    await service.logoutAll(
+      registered.account.id,
+      '00000000-0000-4000-8000-000000000001',
+    );
     await expect(
       service.authenticate(registered.session.token),
     ).rejects.toMatchObject({ code: 'unauthenticated' });
+  });
+
+  it('changes credentials once under races, rotates sessions, and emits safe evidence', async () => {
+    const { service, store } = fixture();
+    const registered = await service.register(input('credentials'));
+    const second = await service.login({
+      username: 'credentials',
+      password,
+      source: 'two',
+    });
+    await expect(
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: 'incorrect credential',
+        newPassword: 'a sufficiently long replacement',
+        correlationId: '00000000-0000-4000-8000-000000000002',
+      }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    await expect(
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: password,
+        correlationId: '00000000-0000-4000-8000-000000000003',
+      }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    const race = await Promise.allSettled([
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: 'first replacement password',
+        correlationId: '00000000-0000-4000-8000-000000000004',
+      }),
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: 'second replacement password',
+        correlationId: '00000000-0000-4000-8000-000000000005',
+      }),
+    ]);
+    const winners = race.filter((result) => result.status === 'fulfilled');
+    expect(winners).toHaveLength(1);
+    expect(race.filter((result) => result.status === 'rejected')).toHaveLength(
+      1,
+    );
+    const [winner] = winners;
+    if (!winner) throw new Error('credential race winner missing');
+    await expect(
+      service.authenticate(winner.value.token),
+    ).resolves.toMatchObject({ account: { id: registered.account.id } });
+    await expect(
+      service.authenticate(registered.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    await expect(
+      service.authenticate(second.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(store.securityEvents).toHaveLength(1);
+    expect(JSON.stringify(store.securityEvents)).not.toContain(password);
   });
 
   it('enforces malformed, absolute, idle, suspended, and credential-reset invalidation', async () => {
@@ -278,6 +340,8 @@ class TestClock {
 class MemoryAuthStore implements AuthStore {
   accounts = new Map<string, AuthAccount>();
   sessions = new Map<string, AuthSession>();
+  securityEvents: CredentialSecurityEvent[] = [];
+  private transactionTail = Promise.resolve();
   async createAccount(account: AuthAccount) {
     if (
       [...this.accounts.values()].some(
@@ -328,6 +392,22 @@ class MemoryAuthStore implements AuthStore {
     const account = this.accounts.get(id);
     if (account) this.accounts.set(id, { ...account, passwordHash });
   }
+  async changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ) {
+    const account = this.accounts.get(id);
+    if (!account || account.credentialVersion !== expectedCredentialVersion)
+      return undefined;
+    const updated = {
+      ...account,
+      passwordHash,
+      credentialVersion: account.credentialVersion + 1,
+    };
+    this.accounts.set(id, updated);
+    return updated;
+  }
   async resetCredentials(id: string, passwordHash: string) {
     const account = this.accounts.get(id);
     if (account)
@@ -375,15 +455,29 @@ class MemoryAuthStore implements AuthStore {
       (value) => value.accountId === accountId,
     );
   }
+  async recordSecurityEvent(event: CredentialSecurityEvent) {
+    this.securityEvents.push(event);
+  }
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release: () => void = () => undefined;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.transactionTail = previous.then(() => turn);
+    await previous;
     const accounts = new Map(this.accounts);
     const sessions = new Map(this.sessions);
+    const securityEvents = [...this.securityEvents];
     try {
       return await work(this);
     } catch (error) {
       this.accounts = accounts;
       this.sessions = sessions;
+      this.securityEvents = securityEvents;
       throw error;
+    } finally {
+      release();
     }
   }
 }

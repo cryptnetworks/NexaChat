@@ -55,6 +55,11 @@ export interface AuthStore {
     expectedVersion: number,
   ): Promise<AuthAccount | undefined>;
   updatePasswordHash(id: string, passwordHash: string): Promise<void>;
+  changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ): Promise<AuthAccount | undefined>;
   resetCredentials(id: string, passwordHash: string): Promise<void>;
   createSession(session: AuthSession): Promise<AuthSession>;
   findSessionByTokenHash(tokenHash: string): Promise<AuthSession | undefined>;
@@ -66,12 +71,25 @@ export interface AuthStore {
   revokeSession(id: string, revokedAt: string): Promise<boolean>;
   revokeAllSessions(accountId: string, revokedAt: string): Promise<number>;
   listSessions(accountId: string): Promise<AuthSession[]>;
+  recordSecurityEvent(event: CredentialSecurityEvent): Promise<void>;
   transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T>;
+}
+
+export interface CredentialSecurityEvent {
+  id: string;
+  accountId: string;
+  action: 'account.credentials.change' | 'account.sessions.revoke_all';
+  notificationType: 'credentials_changed' | 'sessions_revoked';
+  correlationId: string;
+  occurredAt: string;
+  expiresAt: string;
 }
 
 export class InMemoryAuthStore implements AuthStore {
   readonly accounts = new Map<string, AuthAccount>();
   readonly sessions = new Map<string, AuthSession>();
+  readonly securityEvents: CredentialSecurityEvent[] = [];
+  private transactionTail = Promise.resolve();
   createAccount(account: AuthAccount): Promise<AuthAccount> {
     if (
       [...this.accounts.values()].some(
@@ -131,6 +149,23 @@ export class InMemoryAuthStore implements AuthStore {
     if (account) this.accounts.set(id, { ...account, passwordHash });
     return Promise.resolve();
   }
+  changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ): Promise<AuthAccount | undefined> {
+    const account = this.accounts.get(id);
+    if (!account || account.credentialVersion !== expectedCredentialVersion)
+      return Promise.resolve(undefined);
+    const updated = {
+      ...account,
+      passwordHash,
+      credentialVersion: account.credentialVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return Promise.resolve(updated);
+  }
   resetCredentials(id: string, passwordHash: string): Promise<void> {
     const account = this.accounts.get(id);
     if (account)
@@ -185,9 +220,21 @@ export class InMemoryAuthStore implements AuthStore {
       ),
     );
   }
+  recordSecurityEvent(event: CredentialSecurityEvent): Promise<void> {
+    this.securityEvents.push(event);
+    return Promise.resolve();
+  }
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release: () => void = () => undefined;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.transactionTail = previous.then(() => turn);
+    await previous;
     const accounts = new Map(this.accounts);
     const sessions = new Map(this.sessions);
+    const securityEvents = [...this.securityEvents];
     try {
       return await work(this);
     } catch (error) {
@@ -195,7 +242,14 @@ export class InMemoryAuthStore implements AuthStore {
       this.sessions.clear();
       for (const entry of accounts) this.accounts.set(...entry);
       for (const entry of sessions) this.sessions.set(...entry);
+      this.securityEvents.splice(
+        0,
+        this.securityEvents.length,
+        ...securityEvents,
+      );
       throw error;
+    } finally {
+      release();
     }
   }
 }
@@ -369,11 +423,58 @@ export class AuthenticationService {
     await this.store.revokeSession(sessionId, this.clock.now().toISOString());
   }
 
-  async logoutAll(accountId: string): Promise<void> {
-    await this.store.revokeAllSessions(
-      accountId,
-      this.clock.now().toISOString(),
+  async logoutAll(accountId: string, correlationId: string): Promise<void> {
+    const now = this.clock.now();
+    await this.store.transaction(async (store) => {
+      await store.revokeAllSessions(accountId, now.toISOString());
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.sessions.revoke_all',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+    });
+  }
+
+  async changePassword(input: {
+    accountId: string;
+    currentPassword: string;
+    newPassword: string;
+    correlationId: string;
+  }): Promise<IssuedSession> {
+    const account = await this.store.findAccountById(input.accountId);
+    const currentValid = await this.hasher.verify(
+      input.currentPassword,
+      account?.passwordHash ?? this.hasher.dummyHash(),
     );
+    if (!account || account.status !== 'active' || !currentValid)
+      throw new AuthenticationError('authentication_failed');
+    if (await this.hasher.verify(input.newPassword, account.passwordHash))
+      throw new AuthenticationError('authentication_failed');
+    const passwordHash = await this.hasher.hash(input.newPassword);
+    const now = this.clock.now();
+    return this.store.transaction(async (store) => {
+      const updated = await store.changeCredentials(
+        account.id,
+        account.credentialVersion,
+        passwordHash,
+      );
+      if (!updated) throw new AuthenticationError('authentication_failed');
+      await store.revokeAllSessions(account.id, now.toISOString());
+      await store.recordSecurityEvent(
+        securityEvent(
+          account.id,
+          'account.credentials.change',
+          'credentials_changed',
+          input.correlationId,
+          now,
+        ),
+      );
+      return this.issueSession(updated, now, store);
+    });
   }
 
   async resetCredentials(accountId: string, password: string): Promise<void> {
@@ -669,6 +770,24 @@ function isUniqueViolation(error: unknown): boolean {
     'code' in error &&
     error.code === '23505'
   );
+}
+
+function securityEvent(
+  accountId: string,
+  action: CredentialSecurityEvent['action'],
+  notificationType: CredentialSecurityEvent['notificationType'],
+  correlationId: string,
+  now: Date,
+): CredentialSecurityEvent {
+  return {
+    id: randomUUID(),
+    accountId,
+    action,
+    notificationType,
+    correlationId,
+    occurredAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 90 * 86_400_000).toISOString(),
+  };
 }
 
 function encodeHash(
