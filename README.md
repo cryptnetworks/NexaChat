@@ -35,4 +35,7 @@ See [the architecture record](docs/architecture/0001-application-language.md), [
 
 ## License
 
-GPL-3.0-only. See [LICENSE](LICENSE).
+Copyright © 2026 cryptnetworks.
+
+NexaChat is licensed under GPL-3.0-only. See [LICENSE](LICENSE) for the
+complete license terms and [NOTICE](NOTICE) for attribution.
