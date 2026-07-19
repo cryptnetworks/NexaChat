@@ -80,6 +80,32 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD wget --quiet --spider http://127.0.0.1:3000/health/live || exit 1
 CMD ["node", "main.mjs"]
 
+FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS backup-runtime
+ARG NEXA_IMAGE_SOURCE
+ARG NEXA_IMAGE_REVISION
+ARG NEXA_IMAGE_VERSION
+LABEL org.opencontainers.image.title="NexaChat backup and restore" \
+  org.opencontainers.image.source="${NEXA_IMAGE_SOURCE}" \
+  org.opencontainers.image.revision="${NEXA_IMAGE_REVISION}" \
+  org.opencontainers.image.version="${NEXA_IMAGE_VERSION}" \
+  org.opencontainers.image.licenses="GPL-3.0-only"
+ENV NODE_ENV=production
+WORKDIR /app/backup
+RUN apk add --no-cache postgresql17-client=17.10-r0
+COPY --from=server-dependencies --chown=node:node /app/node_modules /app/node_modules
+COPY --chown=node:node scripts/backup/ ./
+RUN rm -rf /usr/local/lib/node_modules/npm \
+  /usr/local/lib/node_modules/corepack \
+  /usr/local/bin/npm \
+  /usr/local/bin/npx \
+  /usr/local/bin/corepack \
+  /usr/local/bin/yarn \
+  /usr/local/bin/yarnpkg \
+  /opt/yarn-v1.22.22
+USER node
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["node", "/app/backup/command.mjs"]
+
 FROM chrislusf/seaweedfs:4.39@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6 AS object-storage-runtime
 ARG NEXA_IMAGE_SOURCE
 ARG NEXA_IMAGE_REVISION

@@ -120,11 +120,13 @@ postgres_password="$(random_secret)"
 valkey_password="$(random_secret)"
 s3_secret_key="$(random_secret)"
 s3_access_key="nexaapp$$"
+backup_key="$(random_secret)$(random_secret)"
 sensitive_values=(
   "$postgres_password"
   "$valkey_password"
   "$s3_access_key"
   "$s3_secret_key"
+  "$backup_key"
 )
 
 write_secret postgres_password "$postgres_password"
@@ -133,6 +135,7 @@ write_secret valkey_password "$valkey_password"
 write_secret redis_url "redis://default:${valkey_password}@valkey:6379"
 write_secret s3_access_key "$s3_access_key"
 write_secret s3_secret_key "$s3_secret_key"
+write_secret backup_encryption_key "$backup_key"
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
   -subj "/CN=${public_host}" \
   -addext "subjectAltName=DNS:${public_host}" \
@@ -142,6 +145,8 @@ chmod 0444 "$secret_dir"/*
 
 export NEXA_COMPOSE_PROJECT_NAME="$project"
 export NEXA_SECRET_DIR="$secret_dir"
+export NEXA_BACKUP_DIR="$scan_dir/backups"
+mkdir -m 0700 "$NEXA_BACKUP_DIR"
 export NEXA_PUBLIC_ORIGIN="$origin"
 export NEXA_HTTPS_BIND_ADDRESS=127.0.0.1
 export NEXA_HTTPS_PORT="$port"
@@ -330,11 +335,13 @@ curl --noproxy '*' --resolve "${public_host}:${port}:127.0.0.1" --fail --silent 
   --cookie "$cookie_jar" "$origin/v1/account" | grep -q "\"username\":\"${username}\"" || fail 'durable account or session did not survive restart'
 
 if [[ "${NEXA_VERIFY_SCAN:-0}" == 1 ]]; then
+  "${compose[@]}" --profile operations build backup || fail 'backup operations image build failed'
   bash scripts/scan-production-images.sh "$scan_dir/sbom" \
     "${NEXA_SERVER_IMAGE:-nexa-chat-server}:${NEXA_IMAGE_TAG}" \
     "${NEXA_EDGE_IMAGE:-nexa-chat-edge}:${NEXA_IMAGE_TAG}" \
     "${NEXA_OBJECT_STORAGE_IMAGE:-nexa-chat-object-storage}:${NEXA_IMAGE_TAG}" \
     "${NEXA_POSTGRES_IMAGE:-nexa-chat-postgres}:${NEXA_IMAGE_TAG}" \
+    "${NEXA_BACKUP_IMAGE:-nexa-chat-backup}:${NEXA_IMAGE_TAG}" \
     'valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885' || fail 'production image scan or SBOM validation failed'
 fi
 

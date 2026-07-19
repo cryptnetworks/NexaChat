@@ -54,7 +54,7 @@ npm run verify:clean-env
 
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
 
-Pull requests also run immutable dependency review, full-history and proposed-tree secret scanning, pinned static analysis, license/migration/workflow checks, and validated CycloneDX output. Scheduled default-branch verification adds production image scans and BuildKit provenance validation. See the [supply-chain security guide](docs/operations/supply-chain-security.md) for trust boundaries, thresholds, triage, suppressions, and local reproduction.
+Pull requests also run immutable dependency review, full-history and proposed-tree secret scanning, pinned static analysis, license/migration/workflow checks, validated CycloneDX output, and a disposable encrypted backup/restore cycle. Scheduled default-branch verification adds production image scans and BuildKit provenance validation. See the [supply-chain security guide](docs/operations/supply-chain-security.md) for trust boundaries, thresholds, triage, suppressions, and local reproduction, and the [backup and restore runbook](docs/operations/backup-and-restore.md) for recovery.
 
 `npm run verify:clean-env` uses a uniquely named `nexa-chat-clean-verify-*`
 Compose project and per-run API, PostgreSQL, Valkey, and SeaweedFS ports, then

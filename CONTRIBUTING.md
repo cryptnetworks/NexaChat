@@ -10,6 +10,10 @@ Automated and manual dependency changes follow `docs/operations/dependency-updat
 
 Security and supply-chain changes follow `docs/operations/supply-chain-security.md`. Reproduce the relevant policy, secret, static, dependency, SBOM, provenance, and container gates locally. Suppressions require a named owner, technical rationale, compensating control, and expiration or review date.
 
+Durable-data, migration, storage, image, and deployment changes must follow
+`docs/operations/backup-and-restore.md` and pass `npm run verify:backup-policy`
+plus the complete disposable restore verification.
+
 Branches use `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `chore/`, or `security/` plus a short description. Commits use Conventional Commits such as `feat(server): add community creation`.
 
 Pull requests explain the problem and solution, security/privacy/migration/accessibility/operational effects, and a test plan. Visible changes include screenshots. Architecture changes use an ADR. Report vulnerabilities through the process in `SECURITY.md`, not a public issue.

@@ -37,6 +37,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "verify:production-artifacts": "node scripts/verify-production-artifacts.mjs",
     "verify:clean-env": "bash scripts/verify-clean-environment.sh",
+    "verify:backup-policy": "node scripts/verify-backup-policy.mjs",
+    "verify:backup-restore": "bash scripts/verify-backup-restore.sh",
     "verify:security-policy": "node scripts/verify-security-policy.mjs",
     "verify:sbom": "node scripts/verify-sbom.mjs",
     "test:security-tools": "bash scripts/test-security-tools.sh"

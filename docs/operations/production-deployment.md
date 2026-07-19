@@ -1,5 +1,9 @@
 # Single-host production deployment
 
+The supported encrypted data-protection and recovery procedure is documented
+in [Encrypted backup and restore](backup-and-restore.md). Do not enable public
+traffic until a disposable restore has passed for the deployed revision.
+
 This profile runs NexaChat on one Docker host behind a non-root HTTPS edge. It
 is suitable for a small self-hosted installation with one failure domain. It is
 not a high-availability design: host, disk, or bridge-network failure can make

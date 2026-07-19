@@ -42,6 +42,7 @@ jobs:
       - run: npm run test:architecture
       - run: npm run test:contracts
       - run: npm run verify:security-policy
+      - run: npm run verify:backup-policy
       - run: npm test
       - run: npm run build
       - run: docker compose config --quiet

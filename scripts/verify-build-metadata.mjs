@@ -10,6 +10,7 @@ if (!directory || !expectedRevision || !expectedVersion) {
 }
 
 const expectedTargets = new Set([
+  'backup-runtime',
   'edge-runtime',
   'object-storage-runtime',
   'postgres-runtime',

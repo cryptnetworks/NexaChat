@@ -36,6 +36,14 @@ x-object-storage-build: &object-storage-build
     NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}
     NEXA_IMAGE_VERSION: ${NEXA_IMAGE_VERSION:?set NEXA_IMAGE_VERSION to an immutable release identifier}
 
+x-backup-build: &backup-build
+  context: .
+  target: backup-runtime
+  args:
+    NEXA_IMAGE_SOURCE: ${NEXA_IMAGE_SOURCE:-https://github.com/cryptnetworks/NexaChat}
+    NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}
+    NEXA_IMAGE_VERSION: ${NEXA_IMAGE_VERSION:?set NEXA_IMAGE_VERSION to an immutable release identifier}
+
 x-server-environment: &server-environment
   NODE_ENV: production
   NEXA_DEPLOYMENT_PROFILE: single-host-private
@@ -315,6 +323,54 @@ services:
         limits: { cpus: '0.50', memory: 256M, pids: 100 }
         reservations: { cpus: '0.05', memory: 32M }
 
+  backup:
+    <<: *runtime-defaults
+    profiles: [operations]
+    image: ${NEXA_BACKUP_IMAGE:-nexa-chat-backup}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
+    build: *backup-build
+    user: ${NEXA_BACKUP_UID:-1000}:${NEXA_BACKUP_GID:-1000}
+    restart: 'no'
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+      S3_BUCKET: ${NEXA_S3_BUCKET:-nexa-attachments}
+      S3_REGION: ${NEXA_S3_REGION:-us-east-1}
+      NEXA_BACKUP_KEY_FILE: /run/secrets/backup_encryption_key
+      NEXA_BACKUP_KEY_ID: ${NEXA_BACKUP_KEY_ID:-operator-managed}
+      NEXA_BACKUP_DIR: /backups
+      NEXA_BACKUP_MODE: ${NEXA_BACKUP_MODE:-}
+      NEXA_RECOVERY_MODE: ${NEXA_RECOVERY_MODE:-}
+      NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION: ${NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION:-}
+      NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}
+      NEXA_IMAGE_VERSION: ${NEXA_IMAGE_VERSION:?set NEXA_IMAGE_VERSION to an immutable release identifier}
+      NEXA_MAX_SCHEMA_VERSION: '6'
+      NEXA_BACKUP_RETENTION_DAYS: ${NEXA_BACKUP_RETENTION_DAYS:-30}
+      NEXA_BACKUP_RETENTION_COUNT: ${NEXA_BACKUP_RETENTION_COUNT:-7}
+      NEXA_BACKUP_INCOMPLETE_HOURS: ${NEXA_BACKUP_INCOMPLETE_HOURS:-24}
+      NEXA_BACKUP_MAX_OBJECT_BYTES: ${NEXA_BACKUP_MAX_OBJECT_BYTES:-67108864}
+    secrets: [database_url, s3_access_key, s3_secret_key, backup_encryption_key]
+    volumes:
+      - type: bind
+        source: ${NEXA_BACKUP_DIR:-/srv/nexa-chat/backups}
+        target: /backups
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      object-storage: { condition: service_healthy }
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+    pids_limit: 100
+    ulimits:
+      nofile: { soft: 1024, hard: 4096 }
+    deploy:
+      resources:
+        limits: { cpus: '1.00', memory: 512M, pids: 100 }
+        reservations: { cpus: '0.05', memory: 64M }
+
 networks:
   frontend:
     driver: bridge
@@ -350,3 +406,5 @@ secrets:
     file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/tls_cert.pem
   tls_key:
     file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/tls_key.pem
+  backup_encryption_key:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/backup_encryption_key

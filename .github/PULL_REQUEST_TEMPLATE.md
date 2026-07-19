@@ -22,3 +22,4 @@
 - [ ] No secrets or private data are included.
 - [ ] Dependency changes include upstream/release-note and lockfile review; major updates document compatibility, migration, rollback, and manual testing.
 - [ ] Security suppressions identify an owner, technical rationale, compensating control, and expiration or review date.
+- [ ] Backup policy and disposable restore verification pass when durable data, migrations, storage, images, or deployment behavior changes.
