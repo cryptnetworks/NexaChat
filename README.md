@@ -38,6 +38,7 @@ npm run test:http
 npm run test:websocket
 npm run test:postgres
 npm run test:auth
+npm run test:authorization
 npm run test:config
 npm test
 npm run build --workspace @nexa/server

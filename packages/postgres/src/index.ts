@@ -29,7 +29,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -537,8 +537,13 @@ type MessageRow = {
   id: string;
   space_id: string;
   author_id: string;
-  body: string;
+  body: string | null;
+  reply_to_id: string | null;
+  idempotency_key: string;
   created_at: Date;
+  updated_at: Date | null;
+  deleted_at: Date | null;
+  version: number;
 };
 type SessionRow = {
   id: string;
@@ -806,31 +811,91 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
 }
 
 function messageRepository(db: Queryable): Persistence['messages'] {
+  const fields =
+    'id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, deleted_at, version';
   return {
     async create(message) {
       const result = await db.query<MessageRow>(
-        `INSERT INTO messages (id, space_id, author_id, body, created_at)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, space_id, author_id, body, created_at`,
+        `INSERT INTO messages
+          (id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (author_id, space_id, idempotency_key) DO UPDATE
+           SET idempotency_key = EXCLUDED.idempotency_key
+         RETURNING ${fields}`,
         [
           message.id,
           message.spaceId,
           message.authorId,
           message.body,
+          message.replyToId,
+          message.idempotencyKey,
           message.createdAt,
+          message.updatedAt,
+          message.version,
         ],
       );
       return mapMessage(requiredRow(result.rows));
     },
     async findById(id) {
       const result = await db.query<MessageRow>(
-        'SELECT id, space_id, author_id, body, created_at FROM messages WHERE id = $1',
+        `SELECT ${fields} FROM messages WHERE id = $1`,
         [id],
       );
       return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
     },
+    async findByIdempotencyKey(authorId, spaceId, key) {
+      const result = await db.query<MessageRow>(
+        `SELECT ${fields} FROM messages
+         WHERE author_id=$1 AND space_id=$2 AND idempotency_key=$3`,
+        [authorId, spaceId, key],
+      );
+      return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
+    },
+    async list(spaceId, page) {
+      const decoded = page.cursor
+        ? Buffer.from(page.cursor, 'base64url').toString()
+        : '';
+      const separator = decoded.lastIndexOf(':');
+      const afterTime = separator < 0 ? 'epoch' : decoded.slice(0, separator);
+      const afterId =
+        separator < 0
+          ? '00000000-0000-0000-0000-000000000000'
+          : decoded.slice(separator + 1);
+      const result = await db.query<MessageRow>(
+        `SELECT ${fields} FROM messages
+         WHERE space_id=$1 AND (created_at,id) > ($2::timestamptz,$3::uuid)
+         ORDER BY created_at,id LIMIT $4`,
+        [spaceId, afterTime, afterId, page.limit + 1],
+      );
+      const items = result.rows.slice(0, page.limit).map(mapMessage);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          result.rows.length > page.limit && last
+            ? Buffer.from(`${last.createdAt}:${last.id}`).toString('base64url')
+            : null,
+      };
+    },
+    async update(id, body, expectedVersion, updatedAt) {
+      const result = await db.query<MessageRow>(
+        `UPDATE messages SET body=$2, updated_at=$3, version=version+1
+         WHERE id=$1 AND version=$4 AND deleted_at IS NULL RETURNING ${fields}`,
+        [id, body, updatedAt, expectedVersion],
+      );
+      return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
+    },
+    async tombstone(id, expectedVersion, deletedAt) {
+      const result = await db.query<MessageRow>(
+        `UPDATE messages SET body=NULL, deleted_at=COALESCE(deleted_at,$2),
+           updated_at=$2, version=version+1
+         WHERE id=$1 AND version=$3 AND deleted_at IS NULL RETURNING ${fields}`,
+        [id, deletedAt, expectedVersion],
+      );
+      return result.rows[0] ? mapMessage(result.rows[0]) : undefined;
+    },
     async remove(id) {
-      const result = await db.query('DELETE FROM messages WHERE id = $1', [id]);
+      const result = await db.query('DELETE FROM messages WHERE id=$1', [id]);
       return result.rowCount === 1;
     },
   };
@@ -955,7 +1020,12 @@ const mapMessage = (row: MessageRow): Message => ({
   spaceId: row.space_id,
   authorId: row.author_id,
   body: row.body,
+  replyToId: row.reply_to_id,
+  idempotencyKey: row.idempotency_key,
   createdAt: row.created_at.toISOString(),
+  updatedAt: (row.updated_at ?? row.created_at).toISOString(),
+  deletedAt: row.deleted_at?.toISOString() ?? null,
+  version: row.version,
 });
 const mapSession = (row: SessionRow): SessionRecord => ({
   id: row.id,

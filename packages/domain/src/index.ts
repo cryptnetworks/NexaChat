@@ -45,8 +45,13 @@ export interface Message {
   id: string;
   spaceId: string;
   authorId: string;
-  body: string;
+  body: string | null;
+  replyToId: string | null;
+  idempotencyKey: string;
   createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  version: number;
 }
 export interface SessionRecord {
   id: string;
@@ -131,6 +136,23 @@ export interface Persistence {
   messages: {
     create(message: Message): Promise<Message>;
     findById(id: string): Promise<Message | undefined>;
+    findByIdempotencyKey(
+      authorId: string,
+      spaceId: string,
+      key: string,
+    ): Promise<Message | undefined>;
+    list(spaceId: string, page: ListPage): Promise<Page<Message>>;
+    update(
+      id: string,
+      body: string,
+      expectedVersion: number,
+      updatedAt: string,
+    ): Promise<Message | undefined>;
+    tombstone(
+      id: string,
+      expectedVersion: number,
+      deletedAt: string,
+    ): Promise<Message | undefined>;
     remove(id: string): Promise<boolean>;
   };
   sessions: {
@@ -161,6 +183,7 @@ export interface AuthorizationGateway {
       | 'category.manage'
       | 'space.manage'
       | 'message.create'
+      | 'message.manage'
       | 'space.view',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
@@ -181,6 +204,18 @@ function page(input: ListPage): ListPage {
 function position(value: number): number {
   if (!Number.isInteger(value) || value < 0) throw new DomainError('conflict');
   return value;
+}
+function messageBody(value: string): string {
+  const normalized = value.replace(/\r\n?/g, '\n').normalize('NFC').trim();
+  if (!normalized || normalized.length > 4000)
+    throw new DomainError('conflict');
+  return normalized;
+}
+function idempotencyKey(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(normalized))
+    throw new DomainError('conflict');
+  return normalized;
 }
 
 export class CommunityService {
@@ -483,6 +518,8 @@ export class CommunityService {
     spaceId: string,
     authorId: string,
     body: string,
+    key: string = randomUUID(),
+    replyToId: string | null = null,
   ): Promise<Message> {
     const space = await this.persistence.spaces.findById(spaceId);
     if (
@@ -497,19 +534,108 @@ export class CommunityService {
       );
       if (!category || category.archivedAt) throw new DomainError('not_found');
     }
-    await this.enforce(authorId, 'message.create', [
+    const scopes = [
       { type: 'community', id: space.communityId },
       ...(space.categoryId
         ? [{ type: 'category' as const, id: space.categoryId }]
         : []),
       { type: 'space', id: space.id },
-    ]);
-    return this.persistence.messages.create({
-      id: randomUUID(),
-      spaceId,
+    ] as const;
+    await this.enforce(authorId, 'message.create', scopes);
+    const normalizedKey = idempotencyKey(key);
+    const existing = await this.persistence.messages.findByIdempotencyKey(
       authorId,
-      body,
-      createdAt: new Date().toISOString(),
+      spaceId,
+      normalizedKey,
+    );
+    if (existing) return existing;
+    if (replyToId) {
+      const reply = await this.persistence.messages.findById(replyToId);
+      if (!reply || reply.spaceId !== spaceId)
+        throw new DomainError('not_found');
+    }
+    return this.persistence.transaction(async (persistence) => {
+      await this.enforce(authorId, 'message.create', scopes);
+      const retried = await persistence.messages.findByIdempotencyKey(
+        authorId,
+        spaceId,
+        normalizedKey,
+      );
+      if (retried) return retried;
+      const now = new Date().toISOString();
+      return persistence.messages.create({
+        id: randomUUID(),
+        spaceId,
+        authorId,
+        body: messageBody(body),
+        replyToId,
+        idempotencyKey: normalizedKey,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        version: 1,
+      });
+    });
+  }
+  async listMessages(
+    spaceId: string,
+    actorId: string,
+    input: ListPage,
+  ): Promise<Page<Message>> {
+    await this.authorizeSpaceSubscription(spaceId, actorId);
+    return this.persistence.messages.list(spaceId, page(input));
+  }
+  async editMessage(
+    id: string,
+    actorId: string,
+    body: string,
+    expectedVersion: number,
+  ): Promise<Message> {
+    return this.mutateMessage(id, actorId, async (message, persistence) => {
+      if (message.deletedAt) throw new DomainError('conflict');
+      return this.saved(
+        await persistence.messages.update(
+          id,
+          messageBody(body),
+          expectedVersion,
+          new Date().toISOString(),
+        ),
+      );
+    });
+  }
+  async deleteMessage(
+    id: string,
+    actorId: string,
+    expectedVersion: number,
+  ): Promise<Message> {
+    return this.mutateMessage(id, actorId, async (_message, persistence) =>
+      this.saved(
+        await persistence.messages.tombstone(
+          id,
+          expectedVersion,
+          new Date().toISOString(),
+        ),
+      ),
+    );
+  }
+  private async mutateMessage(
+    id: string,
+    actorId: string,
+    mutation: (message: Message, persistence: Persistence) => Promise<Message>,
+  ): Promise<Message> {
+    return this.persistence.transaction(async (persistence) => {
+      const message = await persistence.messages.findById(id);
+      if (!message) throw new DomainError('not_found');
+      const space = await persistence.spaces.findById(message.spaceId);
+      if (!space || space.archivedAt) throw new DomainError('not_found');
+      const scopes = [
+        { type: 'community' as const, id: space.communityId },
+        { type: 'space' as const, id: space.id },
+      ];
+      if (message.authorId === actorId)
+        await this.enforce(actorId, 'message.create', scopes);
+      else await this.enforce(actorId, 'message.manage', scopes);
+      return mutation(message, persistence);
     });
   }
   async authorizeSpaceSubscription(
@@ -789,8 +915,64 @@ export class InMemoryPersistence implements Persistence {
     },
   };
   readonly messages = {
-    create: async (v: Message) => (this.state.messages.set(v.id, v), v),
+    create: async (v: Message) => {
+      const existing = await this.messages.findByIdempotencyKey(
+        v.authorId,
+        v.spaceId,
+        v.idempotencyKey,
+      );
+      if (existing) return existing;
+      this.state.messages.set(v.id, v);
+      return v;
+    },
     findById: async (id: string) => this.state.messages.get(id),
+    findByIdempotencyKey: async (
+      authorId: string,
+      spaceId: string,
+      key: string,
+    ) =>
+      [...this.state.messages.values()].find(
+        (v) =>
+          v.authorId === authorId &&
+          v.spaceId === spaceId &&
+          v.idempotencyKey === key,
+      ),
+    list: async (spaceId: string, p: ListPage) => {
+      const values = [...this.state.messages.values()]
+        .filter((v) => v.spaceId === spaceId)
+        .sort(
+          (a, b) =>
+            a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+        )
+        .filter((v) => `${v.createdAt}:${v.id}` > after(p.cursor));
+      const items = values.slice(0, p.limit);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          values.length > p.limit && last
+            ? cursor(`${last.createdAt}:${last.id}`)
+            : null,
+      };
+    },
+    update: async (
+      id: string,
+      body: string,
+      version: number,
+      updatedAt: string,
+    ) =>
+      this.updateMap(this.state.messages, id, version, (v) => ({
+        ...v,
+        body,
+        updatedAt,
+      })),
+    tombstone: async (id: string, version: number, deletedAt: string) =>
+      this.updateMap(this.state.messages, id, version, (v) => ({
+        ...v,
+        body: null,
+        deletedAt: v.deletedAt ?? deletedAt,
+        updatedAt: deletedAt,
+      })),
     remove: async (id: string) => this.state.messages.delete(id),
   };
   readonly sessions = {

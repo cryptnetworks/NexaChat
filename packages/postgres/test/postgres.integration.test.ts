@@ -146,7 +146,12 @@ describe('PostgreSQL persistence', () => {
       spaceId: space.id,
       authorId: account.id,
       body: 'persist me',
+      replyToId: null,
+      idempotencyKey: 'request-0001',
       createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      version: 1,
     };
     const session = {
       id: randomUUID(),
@@ -181,6 +186,25 @@ describe('PostgreSQL persistence', () => {
       'renamed',
     );
     expect(await store.messages.findById(message.id)).toEqual(message);
+    expect((await store.messages.list(space.id, { limit: 10 })).items).toEqual([
+      message,
+    ]);
+    const edited = await store.messages.update(
+      message.id,
+      'persisted edit',
+      1,
+      later,
+    );
+    expect(edited).toMatchObject({ body: 'persisted edit', version: 2 });
+    const tombstone = await store.messages.tombstone(message.id, 2, later);
+    expect(tombstone).toMatchObject({
+      body: null,
+      deletedAt: later,
+      version: 3,
+    });
+    expect(await store.messages.update(message.id, 'stale', 1, later)).toBe(
+      undefined,
+    );
     expect(await store.sessions.findByTokenHash(session.tokenHash)).toEqual(
       session,
     );
@@ -366,7 +390,7 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4]);
+    expect(applied).toEqual([1, 2, 3, 4, 5]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -393,9 +417,9 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(4);
-    expect(applied).toEqual([3, 4]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(4);
+    ).resolves.toBe(5);
+    expect(applied).toEqual([3, 4, 5]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(5);
   });
 
   it('rejects missing and incompatible migration history', async () => {
