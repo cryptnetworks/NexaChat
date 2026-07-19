@@ -43,7 +43,25 @@ export interface PostgresConfig {
   migrationsDirectory: string;
 }
 
-export function createPostgresPool(config: PostgresConfig): Pool {
+export interface PostgresPoolObserver {
+  event(
+    event:
+      | 'connect'
+      | 'acquire'
+      | 'remove'
+      | 'query'
+      | 'timeout'
+      | 'query_error'
+      | 'pool_error',
+    snapshot: { total: number; idle: number; waiting: number },
+    durationMs?: number,
+  ): void;
+}
+
+export function createPostgresPool(
+  config: PostgresConfig,
+  observer?: PostgresPoolObserver,
+): Pool {
   const poolConfig: PoolConfig = {
     connectionString: config.connectionString,
     max: config.maxConnections,
@@ -54,14 +72,122 @@ export function createPostgresPool(config: PostgresConfig): Pool {
     options: '-c timezone=UTC',
   };
   const pool = new Pool(poolConfig);
-  pool.on('error', (error) => {
-    const code =
-      typeof (error as Error & { code?: unknown }).code === 'string'
-        ? (error as Error & { code: string }).code
-        : 'unknown';
-    console.error(JSON.stringify({ event: 'postgres.pool.error', code }));
+  const report = (
+    event:
+      | 'connect'
+      | 'acquire'
+      | 'remove'
+      | 'query'
+      | 'timeout'
+      | 'query_error'
+      | 'pool_error',
+    durationMs?: number,
+  ) => {
+    try {
+      observer?.event(
+        event,
+        {
+          total: pool.totalCount,
+          idle: pool.idleCount,
+          waiting: pool.waitingCount,
+        },
+        durationMs,
+      );
+    } catch {
+      // Observability cannot change database behavior.
+    }
+  };
+  const observedClients = new WeakSet<PoolClient>();
+  const observeClient = (client: PoolClient) => {
+    if (observedClients.has(client)) return;
+    observedClients.add(client);
+    const query = client.query.bind(client) as unknown as (
+      ...arguments_: unknown[]
+    ) => unknown;
+    (
+      client as unknown as { query: (...arguments_: unknown[]) => unknown }
+    ).query = (...arguments_) => {
+      const startedAt = Date.now();
+      const callback = arguments_.at(-1);
+      if (typeof callback === 'function') {
+        const wrappedArguments = [...arguments_];
+        wrappedArguments[wrappedArguments.length - 1] = (
+          error: unknown,
+          value: unknown,
+        ) => {
+          report(
+            error ? queryFailureEvent(error) : 'query',
+            Date.now() - startedAt,
+          );
+          (callback as (error: unknown, value: unknown) => void)(error, value);
+        };
+        try {
+          return query(...wrappedArguments);
+        } catch (error) {
+          report(queryFailureEvent(error), Date.now() - startedAt);
+          throw error;
+        }
+      }
+      let result: unknown;
+      try {
+        result = query(...arguments_);
+      } catch (error) {
+        report(queryFailureEvent(error), Date.now() - startedAt);
+        throw error;
+      }
+      if (!isPromise(result)) return result;
+      return result.then(
+        (value) => {
+          report('query', Date.now() - startedAt);
+          return value;
+        },
+        (error: unknown) => {
+          report(queryFailureEvent(error), Date.now() - startedAt);
+          throw error;
+        },
+      );
+    };
+  };
+  pool.on('connect', (client) => {
+    observeClient(client);
+    report('connect');
+  });
+  pool.on('acquire', (client) => {
+    observeClient(client);
+    report('acquire');
+  });
+  pool.on('remove', () => {
+    report('remove');
+  });
+  pool.on('error', () => {
+    try {
+      console.error(
+        JSON.stringify({ event: 'postgres.pool.error', code: 'pool_error' }),
+      );
+    } catch {
+      // Diagnostic sinks cannot make a handled pool error process-fatal.
+    }
+    report('pool_error');
   });
   return pool;
+}
+
+function queryFailureEvent(error: unknown): 'timeout' | 'query_error' {
+  const code =
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
+      ? error.code
+      : undefined;
+  return code === '57014' ||
+    (error instanceof Error && error.message === 'Query read timeout')
+    ? 'timeout'
+    : 'query_error';
+}
+
+function isPromise(value: unknown): value is Promise<unknown> {
+  return value instanceof Promise;
 }
 
 interface Queryable {
@@ -1302,12 +1428,39 @@ export async function currentSchemaVersion(pool: Pool): Promise<number> {
   return result.rows[0]?.version ?? 0;
 }
 
-export async function verifyPostgresSchema(pool: Pool): Promise<number> {
+export async function verifyPostgresSchema(
+  pool: Pool,
+  expected?: readonly Pick<Migration, 'version' | 'name' | 'checksum'>[],
+): Promise<number> {
   await pool.query('SELECT 1');
   const version = await currentSchemaVersion(pool);
   if (version !== CURRENT_SCHEMA_VERSION)
     throw new MigrationError(
       `PostgreSQL schema version ${String(version)} is incompatible; expected ${String(CURRENT_SCHEMA_VERSION)}`,
     );
+  if (expected) {
+    const applied = await pool.query<{
+      version: number;
+      name: string;
+      checksum: string;
+    }>(
+      'SELECT version, name, checksum FROM nexa_schema_migrations ORDER BY version',
+    );
+    if (
+      applied.rows.length !== expected.length ||
+      applied.rows.some((existing, index) => {
+        const migration = expected[index];
+        return (
+          !migration ||
+          migration.version !== existing.version ||
+          migration.name !== existing.name ||
+          migration.checksum !== existing.checksum
+        );
+      })
+    )
+      throw new MigrationError(
+        'PostgreSQL migration history is incompatible with this build',
+      );
+  }
   return version;
 }

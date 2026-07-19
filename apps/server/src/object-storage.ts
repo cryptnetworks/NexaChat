@@ -1,22 +1,47 @@
-import {
-  S3PrivateObjectStore,
-  type PrivateObjectStore,
-} from '@nexa/object-storage';
+import { S3PrivateObjectStore } from '@nexa/object-storage';
 import type { RuntimeConfig } from './config.js';
+import type { Telemetry } from './telemetry.js';
+
+export interface ObjectStorageRuntime {
+  enabled: boolean;
+  check(): Promise<void>;
+  close(): Promise<void>;
+}
 
 export async function initializeObjectStorage(
   runtime: RuntimeConfig['objectStorage'],
-): Promise<PrivateObjectStore | undefined> {
-  if (!runtime.enabled || !runtime.config) return undefined;
-  const store = new S3PrivateObjectStore(runtime.config);
+  telemetry?: Telemetry,
+): Promise<ObjectStorageRuntime> {
+  if (!runtime.enabled || !runtime.config)
+    return {
+      enabled: false,
+      check: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+    };
+  const store = new S3PrivateObjectStore(runtime.config, undefined, {
+    event: (operation, outcome, durationMs) =>
+      telemetry?.objectStorage(operation, outcome, durationMs),
+  });
+  let pending: Promise<void> | undefined;
+  const check = () => {
+    pending ??= store.verify().finally(() => {
+      pending = undefined;
+    });
+    return pending;
+  };
   try {
-    await store.verify();
-    return store;
-  } catch (error) {
-    store.close();
+    await check();
+  } catch {
     process.stderr.write(
-      `${JSON.stringify({ event: 'object_storage.startup_failed', code: 'object_storage_unavailable' })}\n`,
+      `${JSON.stringify({ event: 'object_storage.degraded', code: 'object_storage_unavailable' })}\n`,
     );
-    throw error;
   }
+  return {
+    enabled: true,
+    check,
+    close() {
+      store.close();
+      return Promise.resolve();
+    },
+  };
 }

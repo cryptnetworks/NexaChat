@@ -24,7 +24,7 @@ The command verifies the pinned toolchain, installs exactly the lockfile,
 creates `.env` only when absent, waits for all Compose dependencies, and starts
 the API and web processes. It never replaces an existing `.env` or volume.
 
-Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`.
+Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`. The API exposes separate liveness, startup, and readiness probes plus internal Prometheus-compatible metrics; see the [observability guide](docs/operations/observability.md).
 
 ## Verification
 
@@ -53,7 +53,11 @@ npm run verify:clean-env
 
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
 
-`npm run verify:clean-env` uses the isolated `nexa-chat-clean-verify` Compose project and PostgreSQL port 55432, then removes only that project's test volume. It verifies an empty database migration, readiness, dependency outage, and automatic recovery.
+`npm run verify:clean-env` uses a uniquely named `nexa-chat-clean-verify-*`
+Compose project and per-run API, PostgreSQL, Valkey, and MinIO ports, then
+removes only that project's containers, network, and volumes. It verifies empty-database
+migration, generic health semantics, metrics, required and optional dependency
+outage/recovery, private-value exclusion, and bounded shutdown.
 
 ## Architecture
 
@@ -94,7 +98,7 @@ Before adding `apps/desktop`, install the stable Rust toolchain (including `rust
 - There is no desktop application scaffold until the documented toolchain is available.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
-Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).
+Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [observability guide](docs/operations/observability.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).
 
 ## License
 

@@ -33,6 +33,7 @@ export interface WebsocketLimits {
 export interface WebsocketMetrics {
   increment(name: string, labels?: Record<string, string>): void;
   gauge(name: string, value: number): void;
+  observe?(name: string, value: number, labels?: Record<string, string>): void;
 }
 
 export interface WebsocketHubOptions {
@@ -80,6 +81,12 @@ interface ConnectionState {
   outboundBytes: number;
 }
 
+class AdmissionError extends Error {
+  constructor(readonly reason: 'origin' | 'capacity' | 'server_draining') {
+    super('websocket_rejected');
+  }
+}
+
 const noopMetrics: WebsocketMetrics = {
   increment() {},
   gauge() {},
@@ -104,6 +111,7 @@ export function attachWebsocketHub(
   >();
   const connections = new Map<WebSocket, ConnectionState>();
   const sequences = new Map<string, number>();
+  let outboundQueueBytes = 0;
   let draining = false;
   const wss = new WebSocketServer({
     server,
@@ -117,7 +125,12 @@ export function attachWebsocketHub(
         (error: unknown) => {
           const status = error instanceof AuthenticationError ? 401 : 403;
           metrics.increment('realtime_connection_rejected', {
-            reason: status === 401 ? 'unauthenticated' : 'origin',
+            reason:
+              status === 401
+                ? 'unauthenticated'
+                : error instanceof AdmissionError
+                  ? error.reason
+                  : 'internal',
           });
           callback(
             false,
@@ -133,14 +146,15 @@ export function attachWebsocketHub(
     request: IncomingMessage,
     origin: string,
   ): Promise<void> {
-    if (draining || origin !== options.trustedOrigin) throw new Error('reject');
+    if (draining) throw new AdmissionError('server_draining');
+    if (origin !== options.trustedOrigin) throw new AdmissionError('origin');
     const address = request.socket.remoteAddress ?? 'unknown';
     if (
       connections.size >= limits.maxConnections ||
       countConnections((state) => state.address === address) >=
         limits.maxConnectionsPerAddress
     )
-      throw new Error('reject');
+      throw new AdmissionError('capacity');
     const token = sessionTokenFromCookie(
       request.headers.cookie,
       options.auth.config.secureCookies,
@@ -151,7 +165,7 @@ export function attachWebsocketHub(
       countConnections((state) => state.actorId === authenticated.account.id) >=
       limits.maxConnectionsPerAccount
     )
-      throw new Error('reject');
+      throw new AdmissionError('capacity');
     pending.set(request, { ...authenticated, token });
   }
 
@@ -189,17 +203,21 @@ export function attachWebsocketHub(
       void handleMessage(socket, state, data, isBinary);
     });
     socket.on('error', () => {
-      cleanup(socket);
+      cleanup(socket, 'internal');
     });
-    socket.on('close', () => {
-      cleanup(socket);
+    socket.on('close', (code) => {
+      cleanup(socket, closeOutcome(code));
     });
   });
 
-  function cleanup(socket: WebSocket): void {
-    if (!connections.delete(socket)) return;
-    metrics.increment('realtime_connection_closed');
+  function cleanup(socket: WebSocket, reason: string): void {
+    const state = connections.get(socket);
+    if (!state || !connections.delete(socket)) return;
+    outboundQueueBytes = Math.max(0, outboundQueueBytes - state.outboundBytes);
+    state.outboundBytes = 0;
+    metrics.increment('realtime_connection_closed', { reason });
     reportConnections();
+    reportOutboundQueue();
   }
 
   function reportConnections(): void {
@@ -211,6 +229,10 @@ export function attachWebsocketHub(
         0,
       ),
     );
+  }
+
+  function reportOutboundQueue(): void {
+    metrics.gauge('realtime_outbound_queue_bytes', outboundQueueBytes);
   }
 
   function consume(state: ConnectionState): boolean {
@@ -274,6 +296,9 @@ export function attachWebsocketHub(
     }
     if (parsed.data.type === 'unsubscribe') {
       state.subscriptions.delete(parsed.data.spaceId);
+      metrics.increment('realtime_subscription_changed', {
+        reason: 'removed',
+      });
       reportConnections();
       safeSend(socket, state, {
         version: 1,
@@ -302,6 +327,7 @@ export function attachWebsocketHub(
         state.actorId,
       );
       state.subscriptions.add(parsed.data.spaceId);
+      metrics.increment('realtime_subscription_changed', { reason: 'added' });
       reportConnections();
       safeSend(socket, state, {
         version: 1,
@@ -348,8 +374,13 @@ export function attachWebsocketHub(
       return false;
     }
     state.outboundBytes += bytes;
+    outboundQueueBytes += bytes;
+    reportOutboundQueue();
     socket.send(payload, (error) => {
-      state.outboundBytes = Math.max(0, state.outboundBytes - bytes);
+      const released = Math.min(bytes, state.outboundBytes);
+      state.outboundBytes -= released;
+      outboundQueueBytes = Math.max(0, outboundQueueBytes - released);
+      reportOutboundQueue();
       if (error) socket.terminate();
     });
     return true;
@@ -374,6 +405,9 @@ export function attachWebsocketHub(
           await service.authorizeSpaceSubscription(spaceId, state.actorId);
         } catch {
           state.subscriptions.delete(spaceId);
+          metrics.increment('realtime_subscription_changed', {
+            reason: 'revalidated',
+          });
           safeSend(socket, state, {
             version: 1,
             type: 'error',
@@ -395,9 +429,12 @@ export function attachWebsocketHub(
     limits.revalidateMs,
   );
   authorizationCheck.unref();
+  reportConnections();
+  reportOutboundQueue();
 
   return {
     broadcast(spaceId, rawEvent) {
+      const startedAt = Date.now();
       const event = realtimeEnvelopeSchema.parse(rawEvent);
       const sequence = (sequences.get(spaceId) ?? 0) + 1;
       sequences.set(spaceId, sequence);
@@ -408,8 +445,23 @@ export function attachWebsocketHub(
         sequence,
         event,
       });
+      let delivered = 0;
       for (const [socket, state] of connections)
-        if (state.subscriptions.has(spaceId)) safeSend(socket, state, delivery);
+        if (
+          state.subscriptions.has(spaceId) &&
+          safeSend(socket, state, delivery)
+        )
+          delivered += 1;
+      metrics.increment('realtime_delivery', {
+        reason: delivered > 0 ? 'success' : 'no_subscriber',
+      });
+      metrics.observe?.(
+        'realtime_delivery_duration_ms',
+        Date.now() - startedAt,
+        {
+          outcome: delivered > 0 ? 'success' : 'no_subscriber',
+        },
+      );
     },
     async close() {
       if (draining) return;
@@ -448,4 +500,11 @@ export function attachWebsocketHub(
       };
     },
   };
+}
+
+function closeOutcome(code: number): string {
+  if (code === 1000) return 'normal';
+  if (code === 1001) return 'shutdown';
+  if (code === 1007 || code === 1008 || code === 1013) return 'policy';
+  return 'internal';
 }

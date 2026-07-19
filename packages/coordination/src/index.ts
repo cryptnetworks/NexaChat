@@ -20,6 +20,15 @@ export interface EphemeralCoordination {
   close(): Promise<void>;
 }
 
+export interface CoordinationObserver {
+  event(
+    operation:
+      'connect' | 'operation' | 'retry' | 'timeout' | 'degradation' | 'close',
+    outcome: 'success' | 'failure' | 'degraded',
+    durationMs: number,
+  ): void;
+}
+
 export class CoordinationError extends Error {
   constructor(
     readonly code: 'invalid_coordination' | 'coordination_unavailable',
@@ -28,7 +37,10 @@ export class CoordinationError extends Error {
   }
 }
 
+class CoordinationTimeoutError extends Error {}
+
 interface Client {
+  readonly isOpen?: boolean;
   connect(): Promise<unknown>;
   ping(): Promise<string>;
   get(key: string): Promise<string | null>;
@@ -46,11 +58,13 @@ interface Client {
 export class ValkeyCoordination implements EphemeralCoordination {
   private failures = 0;
   private openUntil = 0;
+  private connected = false;
   private readonly client: Client;
 
   constructor(
     private readonly config: CoordinationConfig,
     client?: Client,
+    private readonly observer?: CoordinationObserver,
   ) {
     validateConfig(config);
     this.client =
@@ -62,20 +76,37 @@ export class ValkeyCoordination implements EphemeralCoordination {
           reconnectStrategy: false,
         },
       });
-    this.client.on('error', () => undefined);
+    this.client.on('error', () => {
+      this.connected = false;
+    });
   }
 
   async verify(): Promise<void> {
+    const startedAt = Date.now();
+    const retrying = this.failures > 0;
     try {
-      await bounded(this.client.connect(), this.config.connectTimeoutMs);
+      if (!this.connected) {
+        if (!this.client.isOpen)
+          await bounded(this.client.connect(), this.config.connectTimeoutMs);
+        this.connected = true;
+      }
       if (
         (await bounded(this.client.ping(), this.config.operationTimeoutMs)) !==
         'PONG'
       )
         throw unavailable();
       this.success();
-    } catch {
+      this.report('connect', 'success', startedAt);
+      if (retrying) this.report('retry', 'success', startedAt);
+    } catch (error) {
+      this.connected = false;
       this.failure();
+      this.report(
+        error instanceof CoordinationTimeoutError ? 'timeout' : 'connect',
+        'failure',
+        startedAt,
+      );
+      if (retrying) this.report('retry', 'failure', startedAt);
       throw unavailable();
     }
   }
@@ -114,21 +145,43 @@ export class ValkeyCoordination implements EphemeralCoordination {
   }
 
   async close(): Promise<void> {
+    const startedAt = Date.now();
     try {
       await bounded(this.client.quit(), this.config.operationTimeoutMs);
-    } catch {
-      this.client.destroy();
+      this.report('close', 'success', startedAt);
+    } catch (error) {
+      try {
+        this.client.destroy();
+      } catch {
+        this.report('close', 'failure', startedAt);
+        throw unavailable();
+      }
+      if (error instanceof CoordinationTimeoutError)
+        this.report('timeout', 'failure', startedAt);
+      this.report('close', 'degraded', startedAt);
+    } finally {
+      this.connected = false;
     }
   }
 
   private async execute<T>(operation: () => Promise<T>): Promise<T> {
-    if (Date.now() < this.openUntil) throw unavailable();
+    const startedAt = Date.now();
+    if (startedAt < this.openUntil) {
+      this.report('degradation', 'degraded', startedAt);
+      throw unavailable();
+    }
     try {
       const result = await bounded(operation(), this.config.operationTimeoutMs);
       this.success();
+      this.report('operation', 'success', startedAt);
       return result;
-    } catch {
+    } catch (error) {
       this.failure();
+      this.report(
+        error instanceof CoordinationTimeoutError ? 'timeout' : 'operation',
+        'failure',
+        startedAt,
+      );
       throw unavailable();
     }
   }
@@ -156,6 +209,18 @@ export class ValkeyCoordination implements EphemeralCoordination {
     this.failures += 1;
     if (this.failures >= this.config.circuitFailures)
       this.openUntil = Date.now() + this.config.circuitResetMs;
+  }
+
+  private report(
+    operation: Parameters<CoordinationObserver['event']>[0],
+    outcome: Parameters<CoordinationObserver['event']>[1],
+    startedAt: number,
+  ): void {
+    try {
+      this.observer?.event(operation, outcome, Date.now() - startedAt);
+    } catch {
+      // Observability cannot change coordination behavior.
+    }
   }
 }
 
@@ -186,7 +251,7 @@ async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
       promise,
       new Promise<T>((_, reject) => {
         timeout = setTimeout(() => {
-          reject(unavailable());
+          reject(new CoordinationTimeoutError());
         }, timeoutMs);
       }),
     ]);

@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 import {
   AuthenticationService,
@@ -15,6 +15,7 @@ import {
 } from '@nexa/realtime-contracts';
 import { buildApp } from '../src/app.js';
 import type { AuthRuntime } from '../src/auth-routes.js';
+import { Telemetry } from '../src/telemetry.js';
 import { attachWebsocketHub, type WebsocketLimits } from '../src/websocket.js';
 
 const origin = 'http://web.test';
@@ -61,6 +62,7 @@ describe('secure real WebSocket integration', () => {
   let app: ReturnType<typeof buildApp>;
   let endpoint: string;
   let limits: Partial<WebsocketLimits>;
+  let telemetry: Telemetry;
 
   beforeEach(async () => {
     service = new InMemoryCommunityService();
@@ -72,6 +74,7 @@ describe('secure real WebSocket integration', () => {
       revalidateMs: 20,
       drainMs: 100,
     };
+    telemetry = new Telemetry({ traceSampleRate: 0 });
     app = buildApp(service);
     await app.listen({ host: '127.0.0.1', port: 0 });
     attach();
@@ -89,6 +92,7 @@ describe('secure real WebSocket integration', () => {
       auth,
       trustedOrigin: origin,
       limits,
+      metrics: telemetry.websocketMetrics(),
     });
   }
 
@@ -177,6 +181,51 @@ describe('secure real WebSocket integration', () => {
       subscriptions: 1,
     });
     socket.close(1000);
+  });
+
+  it('publishes bounded connection, subscription, delivery, queue, and close metrics', async () => {
+    const owner = await identity('metrics-owner');
+    const community = await service.createCommunity(
+      owner.account.id,
+      'Metrics',
+    );
+    const space = await service.createTextSpace(
+      community.id,
+      owner.account.id,
+      'metrics',
+    );
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    await subscribe(socket, space.id);
+
+    const delivery = nextMessage(socket);
+    app.websocketHub?.broadcast(
+      space.id,
+      envelope(space.id, owner.account.id, 'metrics'),
+    );
+    await delivery;
+    const closeEvent = closed(socket);
+    socket.close(1000);
+    await closeEvent;
+    await vi.waitFor(() => {
+      expect(telemetry.metrics.render()).toContain(
+        'event="realtime_connection_closed",outcome="normal"',
+      );
+    });
+
+    const metrics = telemetry.metrics.render();
+    expect(metrics).toContain('event="realtime_connection_opened"');
+    expect(metrics).toContain('event="realtime_subscription_changed"');
+    expect(metrics).toContain('event="realtime_delivery"');
+    expect(metrics).toContain(
+      'event="realtime_connection_closed",outcome="normal"',
+    );
+    expect(metrics).toContain('state="connections"');
+    expect(metrics).toContain('state="subscriptions"');
+    expect(metrics).toContain('state="queue"');
+    expect(metrics).toContain('nexa_websocket_delivery_duration_seconds_count');
+    expect(metrics).not.toContain(owner.account.id);
+    expect(metrics).not.toContain(space.id);
   });
 
   it('rejects anonymous, spoofed-origin, revoked, and suspended sessions during connection establishment', async () => {
@@ -394,6 +443,15 @@ describe('secure real WebSocket integration', () => {
       envelope(first.id, owner.account.id, 'x'.repeat(4_000)),
     );
     await expect(slowClose).resolves.toBe(1013);
+    await vi.waitFor(() => {
+      const metrics = telemetry.metrics.render();
+      expect(metrics).toContain(
+        'event="realtime_slow_consumer",outcome="observed"',
+      );
+      expect(metrics).toContain(
+        'event="realtime_connection_closed",outcome="policy"',
+      );
+    });
   });
 
   it('drains on shutdown and releases state across repeated isolated connections', async () => {
@@ -418,6 +476,16 @@ describe('secure real WebSocket integration', () => {
     expect(app.websocketHub?.snapshot?.()).toEqual({
       connections: 0,
       subscriptions: 0,
+    });
+    await vi.waitFor(() => {
+      const metrics = telemetry.metrics.render();
+      expect(metrics).toContain(
+        'event="realtime_connection_closed",outcome="shutdown"',
+      );
+      expect(metrics).toContain('nexa_websocket_state{state="connections"} 0');
+      expect(metrics).toContain(
+        'nexa_websocket_state{state="subscriptions"} 0',
+      );
     });
   });
 });

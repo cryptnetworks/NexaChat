@@ -15,6 +15,10 @@ export interface RuntimeConfig {
     shutdownTimeoutMs: number;
     rateLimit: number;
     rateWindowMs: number;
+    logLevel: 'debug' | 'info' | 'warn' | 'error';
+  };
+  observability: {
+    traceSampleRate: number;
   };
   database: PostgresConfig;
   objectStorage: { enabled: boolean; config?: ObjectStorageConfig };
@@ -65,6 +69,8 @@ const keys = new Set([
   'NEXA_SERVER_SHUTDOWN_TIMEOUT_MS',
   'NEXA_SERVER_RATE_LIMIT',
   'NEXA_SERVER_RATE_WINDOW_SECONDS',
+  'NEXA_LOG_LEVEL',
+  'NEXA_TRACE_SAMPLE_RATE',
   'NEXA_WEB_ORIGIN',
   'NEXA_SECURE_COOKIES',
   'NEXA_SESSION_ABSOLUTE_SECONDS',
@@ -247,6 +253,19 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
           3_600,
           'NEXA_SERVER_RATE_WINDOW_SECONDS',
         ) * 1_000,
+      logLevel: choice(env.NEXA_LOG_LEVEL ?? 'info', 'NEXA_LOG_LEVEL', [
+        'debug',
+        'info',
+        'warn',
+        'error',
+      ] as const),
+    },
+    observability: {
+      traceSampleRate: ratio(
+        env.NEXA_TRACE_SAMPLE_RATE,
+        mode === 'production' ? 0.01 : 1,
+        'NEXA_TRACE_SAMPLE_RATE',
+      ),
     },
     database: {
       connectionString,
@@ -544,6 +563,18 @@ function bool(
   if (value === 'true') return true;
   if (value === 'false') return false;
   return fail(key, 'must be true or false');
+}
+function ratio(
+  value: string | undefined,
+  fallback: number,
+  key: string,
+): number {
+  if (value !== undefined && !value.trim())
+    fail(key, 'must be a number from 0 to 1');
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1)
+    fail(key, 'must be a number from 0 to 1');
+  return parsed;
 }
 function choice<const T extends readonly string[]>(
   value: string,

@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from 'fastify';
 import {
   communitySchema,
   communityPageSchema,
@@ -50,6 +55,13 @@ import {
   type AuthRuntime,
 } from './auth-routes.js';
 import type { RuntimeConfig } from './config.js';
+import { Telemetry, type TraceContext } from './telemetry.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    drainHttp?: () => Promise<void>;
+  }
+}
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
@@ -57,25 +69,53 @@ export function buildApp(
   auth?: AuthRuntime,
   authorization?: AuthorizationService,
   serverConfig?: RuntimeConfig['server'],
+  telemetry: Telemetry = new Telemetry({ traceSampleRate: 0 }),
 ): FastifyInstance {
   const app = Fastify({
     bodyLimit: serverConfig?.bodyLimitBytes ?? 16_384,
     requestTimeout: serverConfig?.requestTimeoutMs ?? 15_000,
+    logController: new LogController({ disableRequestLogging: true }),
     logger: {
+      level: serverConfig?.logLevel ?? 'info',
+      base: { service: 'nexa-chat' },
       redact: [
+        'err',
+        'error',
+        'req',
+        'res',
         'req.headers.authorization',
         'req.headers.cookie',
+        'req.headers.x-nexa-csrf',
         'req.body.password',
         'req.body.token',
         'req.body.inviteToken',
+        'req.body.body',
+        'req.body.content',
+        'req.body.bytes',
+        'req.body.username',
+        'req.body.displayName',
+        'req.query.token',
+        'res.headers.set-cookie',
         'password',
         'token',
         'cookie',
         'authorization',
+        'message.body',
+        'attachment.bytes',
       ],
       ...(auth?.logStream ? { stream: auth.logStream } : {}),
     },
+    requestIdHeader: false,
     genReqId: () => randomUUID(),
+  });
+  telemetry.setLogSink((record) => {
+    if (
+      (record.event === 'dependency.state_changed' &&
+        record.status === 'degraded') ||
+      record.event === 'dependency.close_forced'
+    )
+      app.log.warn(record, 'dependency degraded');
+    else app.log.info(record, 'telemetry event');
   });
   const requestLimit = serverConfig?.rateLimit ?? 1_000;
   const requestWindowMs = serverConfig?.rateWindowMs ?? 60_000;
@@ -83,9 +123,92 @@ export function buildApp(
     string,
     { count: number; startedAt: number }
   >();
+  const requestStartedAt = new WeakMap<object, number>();
+  const requestContexts = new WeakMap<object, TraceContext>();
+  const applicationRequests = new WeakSet<object>();
+  const finalizedRequests = new WeakSet<object>();
+  const httpDrainWaiters = new Set<() => void>();
+  let activeRequests = 0;
+  let activeApplicationRequests = 0;
+  const finalizeRequest = (
+    request: FastifyRequest,
+    statusCode: number,
+  ):
+    | { durationMs: number; route: string; traceId: string | undefined }
+    | undefined => {
+    if (finalizedRequests.has(request)) return undefined;
+    finalizedRequests.add(request);
+    const startedAt = requestStartedAt.get(request) ?? Date.now();
+    requestStartedAt.delete(request);
+    const context = requestContexts.get(request);
+    requestContexts.delete(request);
+    activeRequests = Math.max(0, activeRequests - 1);
+    if (applicationRequests.delete(request)) {
+      activeApplicationRequests = Math.max(0, activeApplicationRequests - 1);
+      if (activeApplicationRequests === 0) {
+        for (const resolve of httpDrainWaiters) resolve();
+        httpDrainWaiters.clear();
+      }
+    }
+    telemetry.activeRequests(activeRequests);
+    const durationMs = Date.now() - startedAt;
+    const route = request.routeOptions.url ?? 'unmatched';
+    telemetry.recordHttp(request.method, route, statusCode, durationMs);
+    telemetry.completeRequestSpan(
+      statusCode >= 500 || statusCode === 499 ? 'failure' : 'success',
+      durationMs,
+      context,
+    );
+    return { durationMs, route, traceId: context?.traceId };
+  };
+  app.drainHttp = () =>
+    activeApplicationRequests === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          httpDrainWaiters.add(resolve);
+        });
   app.addHook('onRequest', (request, reply, done) => {
+    const traceparent = Array.isArray(request.headers.traceparent)
+      ? request.headers.traceparent[0]
+      : request.headers.traceparent;
+    const context = telemetry.createContext(traceparent, request.id);
+    telemetry.enter(context);
+    requestContexts.set(request, context);
     reply.header('x-request-id', request.id);
     reply.header('x-api-version', '1');
+    reply.header('traceparent', telemetry.traceparent(context));
+    activeRequests += 1;
+    requestStartedAt.set(request, Date.now());
+    telemetry.activeRequests(activeRequests);
+    request.log.info(
+      {
+        event: 'http.request.started',
+        correlationId: request.id,
+        traceId: context.traceId,
+        method: request.method,
+      },
+      'request started',
+    );
+    const operationalRequest = isOperationalRequest(request.url);
+    if (readiness.isDraining?.() && !operationalRequest) {
+      request.log.warn(
+        {
+          event: 'http.request.rejected',
+          correlationId: request.id,
+          traceId: context.traceId,
+          errorType: 'lifecycle',
+          errorCode: 'server_draining',
+        },
+        'request rejected',
+      );
+      sendApiError(reply, 503, 'dependency_unavailable', request.id);
+      done();
+      return;
+    }
+    if (operationalRequest) {
+      done();
+      return;
+    }
     const now = Date.now();
     const current = requestBuckets.get(request.ip);
     const bucket =
@@ -111,24 +234,80 @@ export function buildApp(
       const oldest = requestBuckets.keys().next().value;
       if (oldest) requestBuckets.delete(oldest);
     }
+    applicationRequests.add(request);
+    activeApplicationRequests += 1;
     done();
   });
 
-  app.get('/health/live', () => ({ status: 'ok' }));
+  app.addHook('onResponse', (request, reply, done) => {
+    const completed = finalizeRequest(request, reply.statusCode);
+    if (!completed) {
+      done();
+      return;
+    }
+    request.log.info(
+      {
+        event: 'http.request.completed',
+        correlationId: request.id,
+        traceId: completed.traceId,
+        method: request.method,
+        route: completed.route,
+        statusCode: reply.statusCode,
+        durationMs: completed.durationMs,
+      },
+      'request completed',
+    );
+    done();
+  });
+
+  app.addHook('onRequestAbort', (request, done) => {
+    const completed = finalizeRequest(request, 499);
+    if (completed)
+      request.log.warn(
+        {
+          event: 'http.request.aborted',
+          correlationId: request.id,
+          traceId: completed.traceId,
+          method: request.method,
+          route: completed.route,
+          statusCode: 499,
+          durationMs: completed.durationMs,
+        },
+        'request aborted',
+      );
+    done();
+  });
+
+  app.get('/health/live', (_request, reply) =>
+    reply.header('cache-control', 'no-store').send({ status: 'ok' }),
+  );
+  app.get('/health/startup', (_request, reply) => {
+    const started = readiness.isStarted?.() ?? true;
+    return reply
+      .header('cache-control', 'no-store')
+      .code(started ? 200 : 503)
+      .send({ status: started ? 'started' : 'starting' });
+  });
   app.get('/health/ready', async (_request, reply) => {
     const result = await readiness.check();
+    reply.header('cache-control', 'no-store');
     if (!result.ready) {
-      reply.header('cache-control', 'no-store');
       reply.header('retry-after', '5');
     }
     return reply.code(result.ready ? 200 : 503).send({
-      status: result.ready ? 'ready' : 'unavailable',
-      storage: result.storage,
-      ...(result.schemaVersion === undefined
-        ? {}
-        : { schemaVersion: result.schemaVersion }),
+      status: result.ready
+        ? result.degraded
+          ? 'degraded'
+          : 'ready'
+        : 'unavailable',
     });
   });
+  app.get('/metrics', (_request, reply) =>
+    reply
+      .header('cache-control', 'no-store')
+      .type('text/plain; version=0.0.4; charset=utf-8')
+      .send(telemetry.metrics.render()),
+  );
 
   if (auth) registerAuthRoutes(app, auth);
 
@@ -365,17 +544,24 @@ export function buildApp(
         if (actorId !== input.authorId) throw new AuthorizationError('deny');
       }
       const key = input.idempotencyKey ?? request.id;
-      const existing = await service.persistence.messages.findByIdempotencyKey(
-        input.authorId,
-        request.params.spaceId,
-        key,
-      );
-      const message = await service.postMessage(
-        request.params.spaceId,
-        input.authorId,
-        input.body,
-        key,
-        input.replyToId ?? null,
+      const { existing, message } = await telemetry.withSpan(
+        'message.command',
+        async () => {
+          const existing =
+            await service.persistence.messages.findByIdempotencyKey(
+              input.authorId,
+              request.params.spaceId,
+              key,
+            );
+          const message = await service.postMessage(
+            request.params.spaceId,
+            input.authorId,
+            input.body,
+            key,
+            input.replyToId ?? null,
+          );
+          return { existing, message };
+        },
       );
       const event: RealtimeEnvelope = {
         version: 1,
@@ -385,7 +571,10 @@ export function buildApp(
         correlationId: request.id,
         payload: { message },
       };
-      if (!existing) app.websocketHub?.broadcast(request.params.spaceId, event);
+      if (!existing)
+        await telemetry.withSpan('realtime.publish', () => {
+          app.websocketHub?.broadcast(request.params.spaceId, event);
+        });
       return reply.code(201).send(messageSchema.parse(message));
     },
   );
@@ -411,11 +600,13 @@ export function buildApp(
     async (request, reply) => {
       const input = updateMessageSchema.parse(request.body);
       const actorId = await verifiedActor(request, auth, input.actorId, true);
-      const message = await service.editMessage(
-        request.params.messageId,
-        actorId,
-        input.body,
-        input.expectedVersion,
+      const message = await telemetry.withSpan('message.command', () =>
+        service.editMessage(
+          request.params.messageId,
+          actorId,
+          input.body,
+          input.expectedVersion,
+        ),
       );
       const event: RealtimeEnvelope = {
         version: 1,
@@ -425,7 +616,9 @@ export function buildApp(
         correlationId: request.id,
         payload: { message },
       };
-      app.websocketHub?.broadcast(message.spaceId, event);
+      await telemetry.withSpan('realtime.publish', () => {
+        app.websocketHub?.broadcast(message.spaceId, event);
+      });
       return reply.send(messageSchema.parse(message));
     },
   );
@@ -435,10 +628,12 @@ export function buildApp(
     async (request, reply) => {
       const input = deleteMessageSchema.parse(request.body);
       const actorId = await verifiedActor(request, auth, input.actorId, true);
-      const message = await service.deleteMessage(
-        request.params.messageId,
-        actorId,
-        input.expectedVersion,
+      const message = await telemetry.withSpan('message.command', () =>
+        service.deleteMessage(
+          request.params.messageId,
+          actorId,
+          input.expectedVersion,
+        ),
       );
       const event: RealtimeEnvelope = {
         version: 1,
@@ -448,7 +643,9 @@ export function buildApp(
         correlationId: request.id,
         payload: { message },
       };
-      app.websocketHub?.broadcast(message.spaceId, event);
+      await telemetry.withSpan('realtime.publish', () => {
+        app.websocketHub?.broadcast(message.spaceId, event);
+      });
       return reply.send(messageSchema.parse(message));
     },
   );
@@ -528,8 +725,17 @@ export function buildApp(
   });
 
   app.setErrorHandler((error, request, reply) => {
-    request.log.warn(
-      { err: error, correlationId: request.id },
+    const diagnostic = safeErrorDiagnostic(error);
+    const log = diagnostic.unexpected ? request.log.error : request.log.warn;
+    log.call(
+      request.log,
+      {
+        event: 'http.request.rejected',
+        correlationId: request.id,
+        traceId: telemetry.currentContext()?.traceId,
+        errorType: diagnostic.type,
+        errorCode: diagnostic.code,
+      },
       'request rejected',
     );
     if (error instanceof DomainError) {
@@ -558,6 +764,7 @@ export function buildApp(
     )
       return sendApiError(reply, 409, 'conflict', request.id);
     if (error instanceof AuthenticationError) {
+      telemetry.authenticationFailure(error.code);
       const status =
         error.code === 'rate_limited'
           ? 429
@@ -572,10 +779,14 @@ export function buildApp(
         status === 429 ? 60 : undefined,
       );
     }
-    if (error instanceof AuthorizationError)
+    if (error instanceof AuthorizationError) {
+      if (!error.observed) telemetry.authorizationDecision('deny');
       return sendApiError(reply, 404, 'not_found', request.id);
-    if (error instanceof HttpSecurityError)
+    }
+    if (error instanceof HttpSecurityError) {
+      telemetry.authenticationFailure(error.code);
       return sendApiError(reply, 403, error.code, request.id);
+    }
     if (
       typeof error === 'object' &&
       error !== null &&
@@ -654,13 +865,64 @@ export interface StorageReadinessResult {
   ready: boolean;
   storage: 'development-memory' | 'postgresql';
   schemaVersion?: number;
+  degraded?: boolean;
+  dependencies?: Record<string, 'ok' | 'degraded' | 'disabled'>;
 }
 
 export interface StorageReadiness {
   check(): Promise<StorageReadinessResult>;
+  isStarted?(): boolean;
+  isDraining?(): boolean;
+  beginDrain?(): void;
 }
 
 const memoryReadiness: StorageReadiness = {
   check: () =>
     Promise.resolve({ ready: true, storage: 'development-memory' as const }),
 };
+
+const operationalPaths = new Set([
+  '/health/live',
+  '/health/startup',
+  '/health/ready',
+  '/metrics',
+]);
+
+function isOperationalRequest(url: string): boolean {
+  return operationalPaths.has(url.split('?', 1)[0] ?? '');
+}
+
+function safeErrorDiagnostic(error: unknown): {
+  type: string;
+  code: string;
+  unexpected: boolean;
+} {
+  if (error instanceof AuthenticationError)
+    return { type: 'authentication', code: error.code, unexpected: false };
+  if (error instanceof AuthorizationError)
+    return { type: 'authorization', code: 'denied', unexpected: false };
+  if (error instanceof HttpSecurityError)
+    return { type: 'request_security', code: error.code, unexpected: false };
+  if (error instanceof DomainError)
+    return { type: 'domain', code: error.code, unexpected: false };
+  if (error instanceof Error && error.name === 'ZodError')
+    return { type: 'validation', code: 'invalid_request', unexpected: false };
+  if (typeof error === 'object' && error !== null && 'statusCode' in error) {
+    if (error.statusCode === 413)
+      return {
+        type: 'request',
+        code: 'payload_too_large',
+        unexpected: false,
+      };
+    if (error.statusCode === 400)
+      return { type: 'validation', code: 'invalid_request', unexpected: false };
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === '23505'
+  )
+    return { type: 'database', code: 'conflict', unexpected: false };
+  return { type: 'internal', code: 'internal_error', unexpected: true };
+}

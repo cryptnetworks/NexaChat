@@ -14,11 +14,17 @@ describe('PostgreSQL pool diagnostics', () => {
     pool.emit('error', error);
 
     expect(diagnostic).toHaveBeenCalledWith(
-      JSON.stringify({ event: 'postgres.pool.error', code: '57P01' }),
+      JSON.stringify({ event: 'postgres.pool.error', code: 'pool_error' }),
     );
-    expect(diagnostic.mock.calls.flat().join(' ')).not.toContain(
+    const payload = diagnostic.mock.calls.flat().join(' ');
+    for (const secret of [
       'private database detail',
-    );
+      '57P01',
+      config.connectionString,
+      'private-user',
+      'private-password',
+    ])
+      expect(payload).not.toContain(secret);
     await pool.end();
   });
 });

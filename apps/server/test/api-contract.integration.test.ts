@@ -39,6 +39,7 @@ describe('standard API errors and request metadata', () => {
         shutdownTimeoutMs: 1_000,
         rateLimit: 10,
         rateWindowMs: 60_000,
+        logLevel: 'info',
       },
     );
     const oversized = await app.inject({
@@ -52,8 +53,11 @@ describe('standard API errors and request metadata', () => {
       retryable: false,
     });
     for (let index = 0; index < 9; index += 1)
-      await app.inject({ method: 'GET', url: '/health/live' });
-    const limited = await app.inject({ method: 'GET', url: '/health/live' });
+      await app.inject({ method: 'GET', url: '/v1/not-a-route' });
+    const limited = await app.inject({
+      method: 'GET',
+      url: '/v1/not-a-route',
+    });
     expect(limited.statusCode).toBe(429);
     expect(errorResponseSchema.parse(limited.json())).toMatchObject({
       error: 'rate_limited',
@@ -74,10 +78,7 @@ describe('standard API errors and request metadata', () => {
     expect(response.headers['x-api-version']).toBe('1');
     expect(response.headers['retry-after']).toBe('5');
     expect(response.headers['cache-control']).toBe('no-store');
-    expect(response.json()).toEqual({
-      status: 'unavailable',
-      storage: 'postgresql',
-    });
+    expect(response.json()).toEqual({ status: 'unavailable' });
     await app.close();
   });
 });

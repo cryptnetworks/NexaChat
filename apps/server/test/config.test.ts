@@ -29,6 +29,90 @@ describe('runtime configuration', () => {
     expect(config.coordination.enabled).toBe(false);
   });
 
+  it('uses mode-aware observability defaults', () => {
+    const developmentConfig = parseRuntimeConfig(development);
+    const testConfig = parseRuntimeConfig({
+      ...development,
+      NODE_ENV: 'test',
+    });
+    const productionConfig = parseRuntimeConfig(production);
+
+    expect(developmentConfig.server.logLevel).toBe('info');
+    expect(testConfig.server.logLevel).toBe('info');
+    expect(productionConfig.server.logLevel).toBe('info');
+    expect(developmentConfig.observability.traceSampleRate).toBe(1);
+    expect(testConfig.observability.traceSampleRate).toBe(1);
+    expect(productionConfig.observability.traceSampleRate).toBe(0.01);
+  });
+
+  it.each(['debug', 'info', 'warn', 'error'] as const)(
+    'accepts the %s log level',
+    (logLevel) => {
+      expect(
+        parseRuntimeConfig({
+          ...production,
+          NEXA_LOG_LEVEL: logLevel,
+        }).server.logLevel,
+      ).toBe(logLevel);
+    },
+  );
+
+  it.each([
+    ['0', 0],
+    ['0.125', 0.125],
+    ['1', 1],
+  ])('accepts trace sample rate %s', (value, expected) => {
+    expect(
+      parseRuntimeConfig({
+        ...production,
+        NEXA_TRACE_SAMPLE_RATE: value,
+      }).observability.traceSampleRate,
+    ).toBe(expected);
+  });
+
+  it.each([
+    ['NEXA_LOG_LEVEL', 'verbose'],
+    ['NEXA_TRACE_SAMPLE_RATE', 'NaN'],
+    ['NEXA_TRACE_SAMPLE_RATE', 'Infinity'],
+    ['NEXA_TRACE_SAMPLE_RATE', '-Infinity'],
+    ['NEXA_TRACE_SAMPLE_RATE', '-0.0001'],
+    ['NEXA_TRACE_SAMPLE_RATE', '1.0001'],
+    ['NEXA_TRACE_SAMPLE_RATE', 'not-a-number-private-value'],
+    ['NEXA_TRACE_SAMPLE_RATE', ''],
+  ])('rejects invalid %s without exposing its value', (key, value) => {
+    try {
+      parseRuntimeConfig({ ...development, [key]: value });
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigurationError);
+      const diagnostic = safeConfigurationDiagnostic(error);
+      expect(diagnostic.key).toBe(key);
+      if (value !== '') {
+        expect(error instanceof Error ? error.message : '').not.toContain(
+          value,
+        );
+        expect(JSON.stringify(diagnostic)).not.toContain(value);
+      }
+    }
+  });
+
+  it('rejects unknown observability settings without exposing their values', () => {
+    const value = 'private-unsupported-exporter';
+    try {
+      parseRuntimeConfig({
+        ...development,
+        NEXA_TELEMETRY_EXPORTER: value,
+      });
+      throw new Error('expected failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigurationError);
+      const diagnostic = safeConfigurationDiagnostic(error);
+      expect(diagnostic.key).toBe('NEXA_TELEMETRY_EXPORTER');
+      expect(error instanceof Error ? error.message : '').not.toContain(value);
+      expect(JSON.stringify(diagnostic)).not.toContain(value);
+    }
+  });
+
   it('parses bounded ephemeral coordination settings', () => {
     const config = parseRuntimeConfig({
       ...development,

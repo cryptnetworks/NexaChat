@@ -128,9 +128,16 @@ export function evaluatePermission(input: EvaluationInput): DecisionMetadata {
 
 export class AuthorizationError extends Error {
   readonly publicCode = 'not_found';
-  constructor(readonly reason: DecisionMetadata['reason']) {
+  constructor(
+    readonly reason: DecisionMetadata['reason'],
+    readonly observed = false,
+  ) {
     super('authorization denied');
   }
+}
+
+export interface AuthorizationObserver {
+  decision(permission: Permission, decision: 'allow' | 'deny'): void;
 }
 
 export interface AuthorizationSnapshot {
@@ -156,17 +163,26 @@ export interface AuthorizationStore {
 }
 
 export class AuthorizationService {
-  constructor(private readonly store: AuthorizationStore) {}
+  constructor(
+    private readonly store: AuthorizationStore,
+    private readonly observer?: AuthorizationObserver,
+  ) {}
   async preview(
     actorId: string,
     permission: Permission,
     scopes: readonly Scope[],
   ): Promise<DecisionMetadata> {
-    return evaluatePermission({
+    const result = evaluatePermission({
       ...(await this.store.snapshot(actorId, scopes)),
       permission,
       scopes,
     });
+    try {
+      this.observer?.decision(permission, result.allowed ? 'allow' : 'deny');
+    } catch {
+      // Observability cannot change an authorization decision.
+    }
+    return result;
   }
   async enforce(
     actorId: string,
@@ -174,7 +190,7 @@ export class AuthorizationService {
     scopes: readonly Scope[],
   ): Promise<DecisionMetadata> {
     const result = await this.preview(actorId, permission, scopes);
-    if (!result.allowed) throw new AuthorizationError(result.reason);
+    if (!result.allowed) throw new AuthorizationError(result.reason, true);
     return result;
   }
   async setDecision(

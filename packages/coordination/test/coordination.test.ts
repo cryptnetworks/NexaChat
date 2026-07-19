@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CoordinationError,
   ValkeyCoordination,
   type CoordinationConfig,
+  type CoordinationObserver,
 } from '../src/index.js';
 
 const liveEndpoint = process.env.COORDINATION_TEST_URL;
 const integration = liveEndpoint ? describe : describe.skip;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('Valkey coordination bounds', () => {
   it('namespaces values, requires expiry, and provides atomic NX behavior', async () => {
@@ -59,6 +64,152 @@ describe('Valkey coordination bounds', () => {
           fake(),
         ),
     ).toThrow(new CoordinationError('invalid_coordination'));
+  });
+});
+
+describe('Valkey coordination observer', () => {
+  it('cannot change successful authoritative operations when the observer throws', async () => {
+    const client = fake();
+    client.set.mockResolvedValue('OK');
+    const observer = {
+      event: vi.fn<CoordinationObserver['event']>(() => {
+        throw new Error('telemetry unavailable');
+      }),
+    };
+    const store = new ValkeyCoordination(config, client, observer);
+
+    await expect(store.verify()).resolves.toBeUndefined();
+    await expect(
+      store.setIfAbsent('private:key', 'private-value', 10),
+    ).resolves.toBe(true);
+    await expect(store.get('private:key')).resolves.toBeUndefined();
+    await expect(store.close()).resolves.toBeUndefined();
+
+    expect(observer.event).toHaveBeenCalled();
+    expect(client.destroy).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed verification and observes recovery on a repeated verify', async () => {
+    const providerMessage = 'private provider connection detail';
+    const client = fake();
+    client.connect
+      .mockRejectedValueOnce(new Error(providerMessage))
+      .mockResolvedValueOnce(undefined);
+    const observer = { event: vi.fn<CoordinationObserver['event']>() };
+    const privateConfig = {
+      ...config,
+      url: 'redis://private-user:private-password@127.0.0.1:1',
+    };
+    const store = new ValkeyCoordination(privateConfig, client, observer);
+
+    await expect(store.verify()).rejects.toMatchObject({
+      code: 'coordination_unavailable',
+    });
+    await expect(store.verify()).resolves.toBeUndefined();
+
+    expect(client.connect).toHaveBeenCalledTimes(2);
+    expect(client.ping).toHaveBeenCalledOnce();
+    expect(
+      observer.event.mock.calls.map(([operation, outcome]) => [
+        operation,
+        outcome,
+      ]),
+    ).toEqual([
+      ['connect', 'failure'],
+      ['connect', 'success'],
+      ['retry', 'success'],
+    ]);
+    for (const call of observer.event.mock.calls) {
+      expect(call[2]).toBeTypeOf('number');
+      expect(call[2]).toBeGreaterThanOrEqual(0);
+    }
+    const payload = JSON.stringify(observer.event.mock.calls);
+    for (const secret of [
+      providerMessage,
+      privateConfig.url,
+      'private-user',
+      'private-password',
+    ])
+      expect(payload).not.toContain(secret);
+  });
+
+  it('emits safe success and failure outcomes without keys, values, or provider messages', async () => {
+    const key = 'private:key';
+    const value = 'private-value';
+    const providerMessage = 'private provider operation detail';
+    const client = fake();
+    client.get.mockRejectedValueOnce(new Error(providerMessage));
+    const observer = { event: vi.fn<CoordinationObserver['event']>() };
+    const store = new ValkeyCoordination(config, client, observer);
+
+    await expect(store.set(key, value, 10)).resolves.toBeUndefined();
+    await expect(store.get(key)).rejects.toMatchObject({
+      code: 'coordination_unavailable',
+    });
+
+    expect(
+      observer.event.mock.calls.map(([operation, outcome]) => [
+        operation,
+        outcome,
+      ]),
+    ).toEqual([
+      ['operation', 'success'],
+      ['operation', 'failure'],
+    ]);
+    for (const call of observer.event.mock.calls) {
+      expect(call[2]).toBeTypeOf('number');
+      expect(call[2]).toBeGreaterThanOrEqual(0);
+    }
+    const payload = JSON.stringify(observer.event.mock.calls);
+    for (const secret of [key, value, providerMessage, config.url])
+      expect(payload).not.toContain(secret);
+  });
+
+  it('classifies a bounded operation timeout without exposing operation data', async () => {
+    vi.useFakeTimers();
+    const client = fake();
+    client.get.mockReturnValue(new Promise<string | null>(() => {}));
+    const observer = { event: vi.fn<CoordinationObserver['event']>() };
+    const store = new ValkeyCoordination(config, client, observer);
+
+    const operation = store.get('private:key');
+    const rejection = expect(operation).rejects.toMatchObject({
+      code: 'coordination_unavailable',
+    });
+    await vi.advanceTimersByTimeAsync(config.operationTimeoutMs);
+    await rejection;
+
+    expect(observer.event).toHaveBeenCalledWith(
+      'timeout',
+      'failure',
+      expect.any(Number),
+    );
+    expect(JSON.stringify(observer.event.mock.calls)).not.toContain(
+      'private:key',
+    );
+  });
+
+  it('reports a timed-out graceful close and forced-close degradation', async () => {
+    vi.useFakeTimers();
+    const client = fake();
+    client.quit.mockReturnValue(new Promise<unknown>(() => {}));
+    const observer = { event: vi.fn<CoordinationObserver['event']>() };
+    const store = new ValkeyCoordination(config, client, observer);
+
+    const closing = store.close();
+    await vi.advanceTimersByTimeAsync(config.operationTimeoutMs);
+    await expect(closing).resolves.toBeUndefined();
+
+    expect(client.destroy).toHaveBeenCalledOnce();
+    expect(
+      observer.event.mock.calls.map(([operation, outcome]) => [
+        operation,
+        outcome,
+      ]),
+    ).toEqual([
+      ['timeout', 'failure'],
+      ['close', 'degraded'],
+    ]);
   });
 });
 
