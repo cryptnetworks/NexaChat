@@ -20,6 +20,24 @@ const profile = {
   updatedAt: '2026-07-19T12:00:00.000Z',
   version: 1,
 };
+const sessionFixtures = [
+  {
+    handle: 'sess_AAAAAAAAAAAAAAAA',
+    createdAt: '2026-07-19T10:00:00.000Z',
+    lastSeenAt: '2026-07-19T12:00:00.000Z',
+    recentAuthAt: '2026-07-19T10:00:00.000Z',
+    expiresAt: '2026-07-26T10:00:00.000Z',
+    current: true,
+  },
+  {
+    handle: 'sess_BBBBBBBBBBBBBBBB',
+    createdAt: '2026-07-18T10:00:00.000Z',
+    lastSeenAt: '2026-07-18T12:00:00.000Z',
+    recentAuthAt: '2026-07-18T10:00:00.000Z',
+    expiresAt: '2026-07-25T10:00:00.000Z',
+    current: false,
+  },
+];
 const community = {
   id: ids.community,
   ownerId: ids.account,
@@ -55,14 +73,16 @@ async function mockApplicationApi(
   failAccount = false,
   authenticatedProfile = false,
 ) {
+  let signedIn = authenticatedProfile;
+  let sessions = [...sessionFixtures];
   await page.route('**/v1/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === '/v1/account' && request.method() === 'GET') {
       await fulfillJson(
         route,
-        authenticatedProfile ? profile : { error: 'unauthenticated' },
-        authenticatedProfile ? 200 : 401,
+        signedIn ? profile : { error: 'unauthenticated' },
+        signedIn ? 200 : 401,
       );
     } else if (path === '/v1/account' && request.method() === 'PATCH') {
       const body = request.postDataJSON() as {
@@ -71,6 +91,24 @@ async function mockApplicationApi(
       };
       await fulfillJson(route, { ...profile, ...body, version: 2 });
     } else if (path === '/v1/account/password') {
+      await route.fulfill({ status: 204 });
+    } else if (path === '/v1/sessions' && request.method() === 'GET') {
+      await fulfillJson(route, sessions);
+    } else if (
+      path.startsWith('/v1/sessions/sess_') &&
+      request.method() === 'DELETE'
+    ) {
+      const handle = path.split('/').at(-1);
+      sessions = sessions.filter((session) => session.handle !== handle);
+      await route.fulfill({ status: 204 });
+    } else if (path === '/v1/sessions/revoke-others') {
+      sessions = sessions.filter((session) => session.current);
+      await route.fulfill({ status: 204 });
+    } else if (path === '/v1/auth/login' || path === '/v1/auth/register') {
+      signedIn = true;
+      await fulfillJson(route, account, path.endsWith('/register') ? 201 : 200);
+    } else if (path === '/v1/auth/logout') {
+      signedIn = false;
       await route.fulfill({ status: 204 });
     } else if (path === '/v1/dev/accounts') {
       await fulfillJson(
@@ -156,6 +194,58 @@ test('password change is labelled, keyboard operable, private, and announced', a
   await expect(section.getByRole('status')).toContainText('Password changed.');
   await expect(section.getByLabel('Current password')).toHaveValue('');
   await expectNoAutomatedWcagViolations(page);
+});
+
+test('registration, login, device inventory, confirmation, and tab sync are accessible', async ({
+  page,
+}) => {
+  await mockApplicationApi(page);
+  await page.goto('/');
+  await expect(
+    page.getByRole('region', { name: 'Account access' }),
+  ).toBeVisible();
+  await expectNoAutomatedWcagViolations(page);
+  await page.getByLabel('Username', { exact: true }).first().fill('Ada');
+  await page
+    .getByLabel('Password', { exact: true })
+    .first()
+    .fill('safe password value');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  const inventory = page.getByRole('region', { name: 'Signed-in devices' });
+  await expect(inventory.getByText('Current device')).toBeVisible();
+  await expect(inventory.getByText('Other signed-in device')).toBeVisible();
+  await expect(page.getByText('sess_BBBBBBBBBBBBBBBB')).toHaveCount(0);
+  await inventory.getByRole('button', { name: 'Sign out device' }).click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(
+    confirmation.getByRole('button', { name: 'Confirm sign-out' }),
+  ).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(
+    confirmation.getByRole('button', { name: 'Cancel' }),
+  ).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(confirmation).toHaveCount(0);
+  await expect(
+    inventory.getByRole('button', { name: 'Sign out device' }),
+  ).toBeFocused();
+  await inventory.getByRole('button', { name: 'Sign out device' }).click();
+  await confirmation.getByRole('button', { name: 'Confirm sign-out' }).click();
+  await expect(inventory.getByRole('status')).toContainText(
+    'selected device was signed out',
+  );
+  await expect(inventory.getByText('Other signed-in device')).toHaveCount(0);
+  await expectNoAutomatedWcagViolations(page);
+
+  await page.evaluate(() => {
+    const channel = new BroadcastChannel('nexa-session-v1');
+    channel.postMessage({ type: 'signed_out' });
+    channel.close();
+  });
+  await expect(
+    page.getByRole('region', { name: 'Account access' }),
+  ).toBeVisible();
 });
 
 async function expectNoAutomatedWcagViolations(page: Page) {

@@ -128,6 +128,60 @@ describe('AuthenticationService', () => {
     ).rejects.toMatchObject({ code: 'unauthenticated' });
   });
 
+  it('uses public handles for owned and all-other session revocation', async () => {
+    const { service, store } = fixture();
+    const first = await service.register(input('session-owner'));
+    const second = await service.login({
+      username: 'session-owner',
+      password,
+      source: 'two',
+    });
+    const third = await service.login({
+      username: 'session-owner',
+      password,
+      source: 'three',
+    });
+    expect(second.session.record.publicHandle).toMatch(/^sess_/u);
+    expect(second.session.record.publicHandle).not.toContain(
+      second.session.record.id,
+    );
+    await expect(
+      service.revokeOwnedSession(
+        first.account.id,
+        'sess_AAAAAAAAAAAAAAAA',
+        '00000000-0000-4000-8000-000000000010',
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      service.revokeOwnedSession(
+        first.account.id,
+        second.session.record.publicHandle,
+        '00000000-0000-4000-8000-000000000011',
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      service.authenticate(second.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    await service.logoutOthers(
+      first.account.id,
+      first.session.record.id,
+      '00000000-0000-4000-8000-000000000012',
+    );
+    await expect(
+      service.authenticate(first.session.token),
+    ).resolves.toBeDefined();
+    await expect(
+      service.authenticate(third.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(store.securityEvents.map((event) => event.action)).toEqual([
+      'account.session.revoke',
+      'account.sessions.revoke_others',
+    ]);
+    expect(JSON.stringify(store.securityEvents)).not.toContain(
+      second.session.record.publicHandle,
+    );
+  });
+
   it('changes credentials once under races, rotates sessions, and emits safe evidence', async () => {
     const { service, store } = fixture();
     const registered = await service.register(input('credentials'));
@@ -441,10 +495,43 @@ class MemoryAuthStore implements AuthStore {
     });
     return true;
   }
+  async revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ) {
+    const value = [...this.sessions.values()].find(
+      (session) =>
+        session.accountId === accountId &&
+        session.publicHandle === publicHandle &&
+        !session.revokedAt,
+    );
+    if (!value) return undefined;
+    const revoked = { ...value, revokedAt };
+    this.sessions.set(value.id, revoked);
+    return revoked;
+  }
   async revokeAllSessions(accountId: string, revokedAt: string) {
     let count = 0;
     for (const [id, value] of this.sessions)
       if (value.accountId === accountId && !value.revokedAt) {
+        this.sessions.set(id, { ...value, revokedAt });
+        count += 1;
+      }
+    return count;
+  }
+  async revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ) {
+    let count = 0;
+    for (const [id, value] of this.sessions)
+      if (
+        value.accountId === accountId &&
+        value.id !== currentSessionId &&
+        !value.revokedAt
+      ) {
         this.sessions.set(id, { ...value, revokedAt });
         count += 1;
       }

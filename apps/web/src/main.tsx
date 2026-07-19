@@ -1,8 +1,10 @@
-import { StrictMode, useEffect, useRef, useState } from 'react';
+import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   websocketServerMessageSchema,
+  authSessionSchema,
   type AccountResponse,
+  type AuthSessionResponse,
   type AuthProfileResponse,
   type CommunityResponse,
   type CategoryResponse,
@@ -24,6 +26,10 @@ import {
   createRateLimitedAnnouncer,
   type RateLimitedAnnouncer,
 } from './accessibility.js';
+import {
+  publishSessionSignal,
+  subscribeSessionSignals,
+} from './session-sync.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -78,6 +84,21 @@ async function mutate(path: string, body: unknown): Promise<void> {
     );
 }
 
+async function sessionMutation(
+  path: string,
+  method: 'DELETE' | 'POST' = 'POST',
+): Promise<void> {
+  const response = await fetch(path, {
+    method,
+    headers: { 'x-nexa-csrf': '1' },
+  });
+  if (!response.ok)
+    throw publicRequestError(
+      response.status,
+      response.headers.get('retry-after'),
+    );
+}
+
 function App() {
   const [account, setAccount] = useState<AccountResponse>();
   const [community, setCommunity] = useState<CommunityResponse>();
@@ -86,6 +107,17 @@ function App() {
   const [spaces, setSpaces] = useState<SpaceResponse[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [profile, setProfile] = useState<AuthProfileResponse>();
+  const [authState, setAuthState] = useState<
+    'loading' | 'signed-in' | 'signed-out'
+  >('loading');
+  const [authStatus, setAuthStatus] = useState('Checking your session…');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [sessions, setSessions] = useState<AuthSessionResponse[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionStatus, setSessionStatus] = useState('');
+  const [pendingRevocation, setPendingRevocation] = useState<string | null>(
+    null,
+  );
   const [profileStatus, setProfileStatus] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [passwordStatus, setPasswordStatus] = useState('');
@@ -102,6 +134,10 @@ function App() {
   const beginButton = useRef<HTMLButtonElement>(null);
   const restoreBeginFocus = useRef(false);
   const conversationHeading = useRef<HTMLHeadingElement>(null);
+  const confirmRevocationButton = useRef<HTMLButtonElement>(null);
+  const confirmationDialog = useRef<HTMLDivElement>(null);
+  const sessionsHeading = useRef<HTMLHeadingElement>(null);
+  const revocationTrigger = useRef<HTMLButtonElement>(null);
   const realtimeAnnouncer = useRef<RateLimitedAnnouncer | null>(null);
   const realtimeCursor = useRef({
     sequence: 0,
@@ -113,18 +149,98 @@ function App() {
       history.replaceState(null, '', `${location.pathname}${location.search}`);
   }, [inviteToken]);
 
-  useEffect(() => {
-    let active = true;
-    void fetch('/v1/account')
-      .then(async (response) => {
-        if (active && response.ok)
-          setProfile((await response.json()) as AuthProfileResponse);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
+  const endLocalSession = useCallback((message: string) => {
+    setProfile(undefined);
+    setSessions([]);
+    setAccount(undefined);
+    setCommunity(undefined);
+    setSpace(undefined);
+    setMessages([]);
+    setAuthState('signed-out');
+    setAuthStatus(message);
   }, []);
+
+  const refreshIdentity = useCallback(async () => {
+    try {
+      const response = await fetch('/v1/account');
+      if (!response.ok) {
+        endLocalSession(
+          response.status === 401
+            ? 'Sign in to continue.'
+            : 'Your session could not be verified. Sign in again.',
+        );
+        return;
+      }
+      const nextProfile = (await response.json()) as AuthProfileResponse;
+      setProfile(nextProfile);
+      setAuthState('signed-in');
+      setAuthStatus('');
+      setSessionsLoading(true);
+      const sessionResponse = await fetch('/v1/sessions');
+      if (!sessionResponse.ok) {
+        if (sessionResponse.status === 401)
+          endLocalSession('Your session ended. Sign in again.');
+        else setSessionStatus('Unable to load signed-in devices.');
+        return;
+      }
+      setSessions(
+        authSessionSchema.array().parse(await sessionResponse.json()),
+      );
+      setSessionStatus('');
+    } catch {
+      endLocalSession('Account services are unavailable. Try again.');
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [endLocalSession]);
+
+  useEffect(() => {
+    void refreshIdentity();
+  }, [refreshIdentity]);
+
+  useEffect(
+    () =>
+      subscribeSessionSignals((signal) => {
+        if (signal === 'signed_out') {
+          endLocalSession('Your session ended in another tab.');
+          return;
+        }
+        void refreshIdentity();
+      }),
+    [endLocalSession, refreshIdentity],
+  );
+
+  useEffect(() => {
+    if (!pendingRevocation) return;
+    confirmRevocationButton.current?.focus();
+    const dialog = confirmationDialog.current;
+    if (!dialog) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setPendingRevocation(null);
+        queueMicrotask(() => revocationTrigger.current?.focus());
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = [
+        ...dialog.querySelectorAll<HTMLButtonElement>('button'),
+      ];
+      const first = controls.at(0);
+      const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    dialog.addEventListener('keydown', handleKeyDown);
+    return () => {
+      dialog.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [pendingRevocation]);
 
   useEffect(
     () => () => {
@@ -161,7 +277,7 @@ function App() {
   }, [account, inviteToken]);
 
   useEffect(() => {
-    if (!account || !space) return;
+    if (!profile || !account || !space) return;
     let active = true;
     setLoadingHistory(true);
     setError('');
@@ -183,10 +299,10 @@ function App() {
     return () => {
       active = false;
     };
-  }, [account, space]);
+  }, [account, profile, space]);
 
   useEffect(() => {
-    if (!account || !space) return;
+    if (!profile || !account || !space) return;
     let active = true;
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
@@ -258,8 +374,13 @@ function App() {
           return;
         }
         const control = websocketServerMessageSchema.safeParse(raw);
-        if (control.success && control.data.type === 'error')
-          setError(`Realtime connection rejected (${control.data.error})`);
+        if (control.success && control.data.type === 'error') {
+          if (control.data.error === 'unauthenticated') {
+            endLocalSession('Your session ended. Sign in again.');
+            publishSessionSignal('signed_out');
+          } else
+            setError(`Realtime connection rejected (${control.data.error})`);
+        }
       };
       socket.onclose = (event) => {
         if (!active || event.code === 1000 || event.code === 1001) return;
@@ -280,7 +401,7 @@ function App() {
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       socket?.close(1000, 'space changed');
     };
-  }, [account, space]);
+  }, [account, endLocalSession, profile, space]);
 
   async function begin() {
     try {
@@ -421,6 +542,8 @@ function App() {
     try {
       await mutate('/v1/account/password', { currentPassword, newPassword });
       form.reset();
+      publishSessionSignal('credentials_rotated');
+      await refreshIdentity();
       setPasswordStatus(
         'Password changed. Other signed-in devices have been signed out.',
       );
@@ -430,6 +553,90 @@ function App() {
       );
     } finally {
       setChangingPassword(false);
+    }
+  }
+
+  async function registerAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setAuthBusy(true);
+    setAuthStatus('Creating account…');
+    try {
+      await post('/v1/auth/register', {
+        username: data.get('registration-username'),
+        displayName: data.get('registration-display-name'),
+        password: data.get('registration-password'),
+      });
+      await refreshIdentity();
+      publishSessionSignal('sessions_changed');
+      setAuthStatus('Account created and signed in.');
+    } catch {
+      setAuthStatus(
+        'Account could not be created. Check the fields and try again.',
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function loginAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setAuthBusy(true);
+    setAuthStatus('Signing in…');
+    try {
+      await post('/v1/auth/login', {
+        username: data.get('login-username'),
+        password: data.get('login-password'),
+      });
+      form.reset();
+      await refreshIdentity();
+      publishSessionSignal('sessions_changed');
+      setAuthStatus('Signed in.');
+    } catch {
+      setAuthStatus('Sign-in failed. Check your entries and try again.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function logout() {
+    setSessionStatus('Signing out…');
+    try {
+      await sessionMutation('/v1/auth/logout');
+    } finally {
+      endLocalSession('Signed out.');
+      publishSessionSignal('signed_out');
+    }
+  }
+
+  async function confirmSessionRevocation() {
+    if (!pendingRevocation) return;
+    const selection = pendingRevocation;
+    setPendingRevocation(null);
+    queueMicrotask(() => sessionsHeading.current?.focus());
+    setSessionsLoading(true);
+    setSessionStatus('Updating signed-in devices…');
+    try {
+      if (selection === 'others')
+        await sessionMutation('/v1/sessions/revoke-others');
+      else
+        await sessionMutation(
+          `/v1/sessions/${encodeURIComponent(selection)}`,
+          'DELETE',
+        );
+      await refreshIdentity();
+      publishSessionSignal('sessions_changed');
+      setSessionStatus(
+        selection === 'others'
+          ? 'All other devices were signed out.'
+          : 'The selected device was signed out.',
+      );
+    } catch {
+      setSessionStatus('Signed-in devices could not be updated. Try again.');
+    } finally {
+      setSessionsLoading(false);
     }
   }
 
@@ -446,8 +653,94 @@ function App() {
           <p className="eyebrow">Community</p>
           <h1 id="community-heading">{community?.name ?? 'Nexa Chat'}</h1>
           <p className="muted">A calm place for shared work.</p>
+          {authState === 'loading' && (
+            <p role="status" aria-live="polite">
+              {authStatus}
+            </p>
+          )}
+          {authState === 'signed-out' && (
+            <section className="account-access" aria-label="Account access">
+              <h2>Sign in</h2>
+              <form onSubmit={(event) => void loginAccount(event)}>
+                <label htmlFor="login-username">Username</label>
+                <input
+                  id="login-username"
+                  name="login-username"
+                  autoComplete="username"
+                  minLength={3}
+                  maxLength={32}
+                  required
+                />
+                <label htmlFor="login-password">Password</label>
+                <input
+                  id="login-password"
+                  name="login-password"
+                  type="password"
+                  autoComplete="current-password"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                />
+                <button type="submit" disabled={authBusy} aria-busy={authBusy}>
+                  {authBusy ? 'Working…' : 'Sign in'}
+                </button>
+              </form>
+              <h2>Create account</h2>
+              <form onSubmit={(event) => void registerAccount(event)}>
+                <label htmlFor="registration-username">Username</label>
+                <input
+                  id="registration-username"
+                  name="registration-username"
+                  autoComplete="username"
+                  minLength={3}
+                  maxLength={32}
+                  required
+                />
+                <label htmlFor="registration-display-name">Display name</label>
+                <input
+                  id="registration-display-name"
+                  name="registration-display-name"
+                  autoComplete="name"
+                  maxLength={80}
+                  required
+                />
+                <label htmlFor="registration-password">Password</label>
+                <input
+                  id="registration-password"
+                  name="registration-password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                />
+                <button type="submit" disabled={authBusy} aria-busy={authBusy}>
+                  {authBusy ? 'Working…' : 'Create account'}
+                </button>
+              </form>
+              <p role="status" aria-live="polite" aria-atomic="true">
+                {authStatus}
+              </p>
+            </section>
+          )}
           {profile && (
             <div className="account-controls">
+              <section
+                className="profile-editor account-summary"
+                aria-labelledby="account-summary-heading"
+              >
+                <h2 id="account-summary-heading">Account</h2>
+                <p>
+                  <strong>{profile.displayName}</strong>
+                  <br />@{profile.username}
+                </p>
+                <button type="button" onClick={() => void logout()}>
+                  Sign out
+                </button>
+                <p role="status" aria-live="polite" aria-atomic="true">
+                  {authStatus}
+                </p>
+              </section>
               <section
                 className="profile-editor"
                 aria-labelledby="profile-heading"
@@ -534,6 +827,105 @@ function App() {
                 </form>
                 <p role="status" aria-live="polite" aria-atomic="true">
                   {passwordStatus}
+                </p>
+              </section>
+              <section
+                className="profile-editor session-inventory"
+                aria-labelledby="sessions-heading"
+                aria-busy={sessionsLoading}
+              >
+                <h2 id="sessions-heading" ref={sessionsHeading} tabIndex={-1}>
+                  Signed-in devices
+                </h2>
+                <p className="muted">
+                  Device names and precise locations are not collected.
+                </p>
+                {sessionsLoading && <p>Loading signed-in devices…</p>}
+                {!sessionsLoading && sessions.length === 0 && (
+                  <p className="empty">No active sessions were found.</p>
+                )}
+                {!sessionsLoading && sessions.length > 0 && (
+                  <ul>
+                    {sessions.map((session) => (
+                      <li key={session.handle}>
+                        <strong>
+                          {session.current
+                            ? 'Current device'
+                            : 'Other signed-in device'}
+                        </strong>
+                        <span>
+                          Active {accessibleTimestamp(session.lastSeenAt)}
+                        </span>
+                        <span>
+                          Signed in {accessibleTimestamp(session.createdAt)}
+                        </span>
+                        {!session.current && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              revocationTrigger.current = event.currentTarget;
+                              setPendingRevocation(session.handle);
+                            }}
+                          >
+                            Sign out device
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <button
+                  type="button"
+                  disabled={
+                    sessionsLoading ||
+                    !sessions.some((session) => !session.current)
+                  }
+                  onClick={(event) => {
+                    revocationTrigger.current = event.currentTarget;
+                    setPendingRevocation('others');
+                  }}
+                >
+                  Sign out all other devices
+                </button>
+                {pendingRevocation && (
+                  <div
+                    ref={confirmationDialog}
+                    className="confirmation"
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-labelledby="revoke-confirmation-heading"
+                    aria-describedby="revoke-confirmation-description"
+                  >
+                    <h3 id="revoke-confirmation-heading">
+                      Confirm device sign-out
+                    </h3>
+                    <p id="revoke-confirmation-description">
+                      {pendingRevocation === 'others'
+                        ? 'Every other signed-in device will lose access immediately.'
+                        : 'This signed-in device will lose access immediately.'}
+                    </p>
+                    <button
+                      ref={confirmRevocationButton}
+                      type="button"
+                      onClick={() => void confirmSessionRevocation()}
+                    >
+                      Confirm sign-out
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingRevocation(null);
+                        queueMicrotask(() =>
+                          revocationTrigger.current?.focus(),
+                        );
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                <p role="status" aria-live="polite" aria-atomic="true">
+                  {sessionStatus}
                 </p>
               </section>
             </div>
