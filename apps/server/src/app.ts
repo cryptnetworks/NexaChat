@@ -1,16 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
+  accountSchema,
+  communitySchema,
   createCommunitySchema,
   createDevAccountSchema,
   createMessageSchema,
   createSpaceSchema,
+  messageSchema,
+  spaceSchema,
 } from '@nexa/api-contracts';
-import { DomainError, InMemoryCommunityService } from '@nexa/domain';
+import {
+  CommunityService,
+  DomainError,
+  InMemoryCommunityService,
+} from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 
 export function buildApp(
-  service = new InMemoryCommunityService(),
+  service: CommunityService = new InMemoryCommunityService(),
+  readiness: StorageReadiness = memoryReadiness,
 ): FastifyInstance {
   const app = Fastify({
     logger: {
@@ -20,10 +29,16 @@ export function buildApp(
   });
 
   app.get('/health/live', () => ({ status: 'ok' }));
-  app.get('/health/ready', () => ({
-    status: 'ready',
-    storage: 'development-memory',
-  }));
+  app.get('/health/ready', async (_request, reply) => {
+    const result = await readiness.check();
+    return reply.code(result.ready ? 200 : 503).send({
+      status: result.ready ? 'ready' : 'unavailable',
+      storage: result.storage,
+      ...(result.schemaVersion === undefined
+        ? {}
+        : { schemaVersion: result.schemaVersion }),
+    });
+  });
 
   app.post('/v1/dev/accounts', async (request, reply) => {
     if (
@@ -33,14 +48,22 @@ export function buildApp(
       return reply.code(404).send({ error: 'not_found' });
     }
     const input = createDevAccountSchema.parse(request.body);
-    return reply.code(201).send(service.createAccount(input.displayName));
+    return reply
+      .code(201)
+      .send(
+        accountSchema.parse(await service.createAccount(input.displayName)),
+      );
   });
 
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
     return reply
       .code(201)
-      .send(service.createCommunity(input.ownerId, input.name));
+      .send(
+        communitySchema.parse(
+          await service.createCommunity(input.ownerId, input.name),
+        ),
+      );
   });
 
   app.post<{ Params: { communityId: string } }>(
@@ -50,10 +73,12 @@ export function buildApp(
       return reply
         .code(201)
         .send(
-          service.createTextSpace(
-            request.params.communityId,
-            input.actorId,
-            input.name,
+          spaceSchema.parse(
+            await service.createTextSpace(
+              request.params.communityId,
+              input.actorId,
+              input.name,
+            ),
           ),
         );
     },
@@ -63,7 +88,7 @@ export function buildApp(
     '/v1/spaces/:spaceId/messages',
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
-      const message = service.postMessage(
+      const message = await service.postMessage(
         request.params.spaceId,
         input.authorId,
         input.body,
@@ -77,7 +102,7 @@ export function buildApp(
         payload: { message },
       };
       app.websocketHub?.broadcast(request.params.spaceId, event);
-      return reply.code(201).send(message);
+      return reply.code(201).send(messageSchema.parse(message));
     },
   );
 
@@ -91,7 +116,13 @@ export function buildApp(
         .code(error.code === 'forbidden' ? 403 : 404)
         .send({ error: error.code, correlationId: request.id });
     }
-    if (error instanceof Error && error.name === 'ZodError')
+    if (
+      (error instanceof Error && error.name === 'ZodError') ||
+      (typeof error === 'object' &&
+        error !== null &&
+        'statusCode' in error &&
+        error.statusCode === 400)
+    )
       return reply
         .code(400)
         .send({ error: 'invalid_request', correlationId: request.id });
@@ -102,3 +133,18 @@ export function buildApp(
 
   return app;
 }
+
+export interface StorageReadinessResult {
+  ready: boolean;
+  storage: 'development-memory' | 'postgresql';
+  schemaVersion?: number;
+}
+
+export interface StorageReadiness {
+  check(): Promise<StorageReadinessResult>;
+}
+
+const memoryReadiness: StorageReadiness = {
+  check: () =>
+    Promise.resolve({ ready: true, storage: 'development-memory' as const }),
+};

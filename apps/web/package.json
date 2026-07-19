@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "GPL-3.0-only",
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nexa/api-contracts": "0.1.0",
     "@nexa/realtime-contracts": "0.1.0",
     "react": "19.1.0",
     "react-dom": "19.1.0"

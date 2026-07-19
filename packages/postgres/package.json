@@ -1,5 +1,5 @@
 {
-  "name": "@nexa/realtime-contracts",
+  "name": "@nexa/postgres",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nexa/api-contracts": "0.1.0",
-    "zod": "3.25.76"
+    "@nexa/domain": "0.1.0",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.20.0"
   }
 }
