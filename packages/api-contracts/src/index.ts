@@ -40,7 +40,59 @@ export const createCommunitySchema = z
     name,
   })
   .strict();
-export const createSpaceSchema = z.object({ actorId: id, name }).strict();
+export const actorSchema = z.object({ actorId: id }).strict();
+export const pageQuerySchema = z
+  .object({
+    actorId: id,
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z
+      .string()
+      .max(256)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+  })
+  .strict();
+export const versionedNameSchema = z
+  .object({ actorId: id, name, expectedVersion: z.number().int().positive() })
+  .strict();
+export const membershipStatusSchema = z.enum([
+  'active',
+  'invited',
+  'left',
+  'removed',
+  'suspended',
+]);
+export const changeMembershipSchema = z
+  .object({
+    actorId: id,
+    accountId: id,
+    status: membershipStatusSchema,
+    expectedVersion: z.number().int().positive().optional(),
+  })
+  .strict();
+export const createCategorySchema = z.object({ actorId: id, name }).strict();
+export const updateCategorySchema = z
+  .object({
+    actorId: id,
+    name: name.optional(),
+    position: z.number().int().nonnegative().optional(),
+    archived: z.boolean().optional(),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export const createSpaceSchema = z
+  .object({ actorId: id, name, categoryId: id.nullable().optional() })
+  .strict();
+export const updateSpaceSchema = z
+  .object({
+    actorId: id,
+    name: name.optional(),
+    position: z.number().int().nonnegative().optional(),
+    categoryId: id.nullable().optional(),
+    archived: z.boolean().optional(),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
 export const createMessageSchema = z
   .object({
     authorId: id,
@@ -83,12 +135,47 @@ export const permissionPreviewResponseSchema = z.object({
 });
 
 export const accountSchema = z.object({ id, displayName: name });
-export const communitySchema = z.object({ id, ownerId: id, name });
+export const communitySchema = z.object({
+  id,
+  ownerId: id,
+  name,
+  archivedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
+export const membershipSchema = z.object({
+  id,
+  communityId: id,
+  accountId: id,
+  status: membershipStatusSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
+export const categorySchema = z.object({
+  id,
+  communityId: id,
+  name,
+  position: z.number().int().nonnegative(),
+  archivedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
 export const spaceSchema = z.object({
   id,
   communityId: id,
   name,
   kind: z.literal('text'),
+  categoryId: id.nullable(),
+  position: z.number().int().nonnegative(),
+  archivedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
+export const communityPageSchema = z.object({
+  items: z.array(communitySchema),
+  nextCursor: z.string().nullable(),
+});
+export const spacePageSchema = z.object({
+  items: z.array(spaceSchema),
+  nextCursor: z.string().nullable(),
 });
 export const messageSchema = z.object({
   id,
@@ -109,6 +196,9 @@ export const errorResponseSchema = z.object({
     'rate_limited',
     'unauthenticated',
     'csrf_rejected',
+    'conflict',
+    'stale_write',
+    'sole_owner',
   ]),
   correlationId: id.optional(),
 });
@@ -141,6 +231,10 @@ export type AuthAccountResponse = z.infer<typeof authAccountSchema>;
 export type AuthSessionResponse = z.infer<typeof authSessionSchema>;
 export type CreateCommunityRequest = z.infer<typeof createCommunitySchema>;
 export type CreateSpaceRequest = z.infer<typeof createSpaceSchema>;
+export type UpdateSpaceRequest = z.infer<typeof updateSpaceSchema>;
+export type CreateCategoryRequest = z.infer<typeof createCategorySchema>;
+export type UpdateCategoryRequest = z.infer<typeof updateCategorySchema>;
+export type ChangeMembershipRequest = z.infer<typeof changeMembershipSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageSchema>;
 export type PermissionPreviewRequest = z.infer<
   typeof permissionPreviewRequestSchema
@@ -150,6 +244,8 @@ export type PermissionPreviewResponse = z.infer<
 >;
 export type AccountResponse = z.infer<typeof accountSchema>;
 export type CommunityResponse = z.infer<typeof communitySchema>;
+export type MembershipResponse = z.infer<typeof membershipSchema>;
+export type CategoryResponse = z.infer<typeof categorySchema>;
 export type SpaceResponse = z.infer<typeof spaceSchema>;
 export type MessageResponse = z.infer<typeof messageSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;

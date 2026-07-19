@@ -74,7 +74,12 @@ export function attachWebsocketHub(
       } catch (error) {
         send(client, {
           type: 'error',
-          error: error instanceof DomainError ? error.code : 'invalid_message',
+          error:
+            error instanceof DomainError && error.code === 'forbidden'
+              ? 'forbidden'
+              : error instanceof DomainError && error.code === 'not_found'
+                ? 'not_found'
+                : 'invalid_message',
         });
       }
     }

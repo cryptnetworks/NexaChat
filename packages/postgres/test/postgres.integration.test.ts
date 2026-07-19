@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CommunityService } from '@nexa/domain';
 import {
   CURRENT_SCHEMA_VERSION,
   MigrationError,
@@ -106,7 +107,13 @@ describe('PostgreSQL persistence', () => {
     const now = new Date('2026-01-02T03:04:05.000Z').toISOString();
     const later = new Date('2026-01-03T03:04:05.000Z').toISOString();
     const account = { id: randomUUID(), displayName: 'Ada' };
-    const community = { id: randomUUID(), ownerId: account.id, name: 'Core' };
+    const community = {
+      id: randomUUID(),
+      ownerId: account.id,
+      name: 'Core',
+      archivedAt: null,
+      version: 1,
+    };
     const membership = {
       id: randomUUID(),
       communityId: community.id,
@@ -114,6 +121,7 @@ describe('PostgreSQL persistence', () => {
       status: 'active' as const,
       createdAt: now,
       updatedAt: now,
+      version: 1,
     };
     const category = {
       id: randomUUID(),
@@ -121,6 +129,7 @@ describe('PostgreSQL persistence', () => {
       name: 'General',
       position: 0,
       archivedAt: null,
+      version: 1,
     };
     const space = {
       id: randomUUID(),
@@ -130,6 +139,7 @@ describe('PostgreSQL persistence', () => {
       kind: 'text' as const,
       position: 0,
       archivedAt: null,
+      version: 1,
     };
     const message = {
       id: randomUUID(),
@@ -197,6 +207,8 @@ describe('PostgreSQL persistence', () => {
         id: randomUUID(),
         ownerId: randomUUID(),
         name: 'bad',
+        archivedAt: null,
+        version: 1,
       }),
     ).rejects.toMatchObject({ code: '23503' });
   });
@@ -217,6 +229,50 @@ describe('PostgreSQL persistence', () => {
     ).rejects.toThrow('abort');
     expect(await store.accounts.findById(rolledBack.id)).toBeUndefined();
   });
+
+  it('persists lifecycle pagination, stale writes, archival, and historical references', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const service = new CommunityService(persistence);
+    const owner = await service.createAccount('Lifecycle owner');
+    const community = await service.createCommunity(owner.id, 'Lifecycle');
+    const category = await service.createCategory(
+      owner.id,
+      community.id,
+      'General',
+    );
+    const first = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'first',
+      category.id,
+    );
+    await service.createTextSpace(community.id, owner.id, 'second');
+    const pageOne = await service.listSpaces(owner.id, community.id, {
+      limit: 1,
+    });
+    expect(pageOne.items).toHaveLength(1);
+    if (!pageOne.nextCursor) throw new Error('expected a second page');
+    const pageTwo = await service.listSpaces(owner.id, community.id, {
+      limit: 1,
+      cursor: pageOne.nextCursor,
+    });
+    expect(pageTwo.items).toHaveLength(1);
+    const message = await service.postMessage(first.id, owner.id, 'History');
+    const archived = await service.updateSpace(owner.id, first.id, {
+      archived: true,
+      expectedVersion: first.version,
+    });
+    expect(archived.archivedAt).toBeTypeOf('string');
+    await expect(
+      service.updateSpace(owner.id, first.id, {
+        name: 'stale',
+        expectedVersion: first.version,
+      }),
+    ).rejects.toMatchObject({ code: 'stale_write' });
+    await expect(persistence.messages.findById(message.id)).resolves.toEqual(
+      message,
+    );
+  });
 });
 
 describe('PostgreSQL authorization persistence', () => {
@@ -231,6 +287,8 @@ describe('PostgreSQL authorization persistence', () => {
       id: randomUUID(),
       ownerId: owner.id,
       name: 'Authorization',
+      archivedAt: null,
+      version: 1,
     };
     await persistence.communities.create(community);
     const now = new Date().toISOString();
@@ -241,6 +299,7 @@ describe('PostgreSQL authorization persistence', () => {
       status: 'active',
       createdAt: now,
       updatedAt: now,
+      version: 1,
     });
     await persistence.memberships.create({
       id: randomUUID(),
@@ -249,6 +308,7 @@ describe('PostgreSQL authorization persistence', () => {
       status: 'active',
       createdAt: now,
       updatedAt: now,
+      version: 1,
     });
     const role = await authorization.putRole({
       id: randomUUID(),
@@ -306,13 +366,13 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3]);
+    expect(applied).toEqual([1, 2, 3, 4]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
   });
 
-  it('upgrades an existing schema version 2 to version 3', async () => {
+  it('upgrades an existing schema version 2 through the current version', async () => {
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     const migrations = await readMigrations(migrationsDirectory);
     await pool.query(`CREATE TABLE nexa_schema_migrations (
@@ -333,9 +393,9 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(3);
-    expect(applied).toEqual([3]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(3);
+    ).resolves.toBe(4);
+    expect(applied).toEqual([3, 4]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(4);
   });
 
   it('rejects missing and incompatible migration history', async () => {

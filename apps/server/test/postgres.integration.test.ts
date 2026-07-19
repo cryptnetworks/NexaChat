@@ -99,17 +99,33 @@ describe('PostgreSQL-backed API', () => {
     const account = accountResponse.json<{ id: string }>();
     const cookie = accountResponse.headers['set-cookie'];
     expect(cookie).toBeTypeOf('string');
-    const communityResponse = await firstApp.inject({
+    const csrfRejected = await firstApp.inject({
       method: 'POST',
       url: '/v1/communities',
       headers: { cookie },
+      payload: { ownerId: account.id, name: 'Rejected' },
+    });
+    expect(csrfRejected.statusCode).toBe(403);
+    expect(csrfRejected.json()).toMatchObject({ error: 'csrf_rejected' });
+    const communityResponse = await firstApp.inject({
+      method: 'POST',
+      url: '/v1/communities',
+      headers: {
+        cookie,
+        origin: 'http://localhost:5173',
+        'x-nexa-csrf': '1',
+      },
       payload: { ownerId: account.id, name: 'Persistent' },
     });
     const community = communityResponse.json<{ id: string }>();
     const spaceResponse = await firstApp.inject({
       method: 'POST',
       url: `/v1/communities/${community.id}/spaces`,
-      headers: { cookie },
+      headers: {
+        cookie,
+        origin: 'http://localhost:5173',
+        'x-nexa-csrf': '1',
+      },
       payload: { actorId: account.id, name: 'general' },
     });
     const space = spaceResponse.json<{ id: string }>();
@@ -130,7 +146,11 @@ describe('PostgreSQL-backed API', () => {
     const message = await secondApp.inject({
       method: 'POST',
       url: `/v1/spaces/${space.id}/messages`,
-      headers: { cookie },
+      headers: {
+        cookie,
+        origin: 'http://localhost:5173',
+        'x-nexa-csrf': '1',
+      },
       payload: { authorId: account.id, body: 'survived restart' },
     });
     expect(message.statusCode).toBe(201);
@@ -140,7 +160,7 @@ describe('PostgreSQL-backed API', () => {
     expect(ready.json()).toEqual({
       status: 'ready',
       storage: 'postgresql',
-      schemaVersion: 3,
+      schemaVersion: 4,
     });
     await secondApp.close();
     await second.pool.end();

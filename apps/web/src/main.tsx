@@ -4,6 +4,7 @@ import {
   websocketServerMessageSchema,
   type AccountResponse,
   type CommunityResponse,
+  type CategoryResponse,
   type SpaceResponse,
 } from '@nexa/api-contracts';
 import {
@@ -29,11 +30,15 @@ function App() {
   const [account, setAccount] = useState<AccountResponse>();
   const [community, setCommunity] = useState<CommunityResponse>();
   const [space, setSpace] = useState<SpaceResponse>();
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  const [spaces, setSpaces] = useState<SpaceResponse[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   async function begin() {
     try {
+      setLoading(true);
       setError('');
       const nextAccount = await post<AccountResponse>('/v1/dev/accounts', {
         displayName: 'Local Explorer',
@@ -42,13 +47,23 @@ function App() {
         ownerId: nextAccount.id,
         name: 'Field Notes',
       });
+      const category = await post<CategoryResponse>(
+        `/v1/communities/${nextCommunity.id}/categories`,
+        { actorId: nextAccount.id, name: 'General' },
+      );
       const nextSpace = await post<SpaceResponse>(
         `/v1/communities/${nextCommunity.id}/spaces`,
-        { actorId: nextAccount.id, name: 'trailhead' },
+        {
+          actorId: nextAccount.id,
+          name: 'trailhead',
+          categoryId: category.id,
+        },
       );
       setAccount(nextAccount);
       setCommunity(nextCommunity);
       setSpace(nextSpace);
+      setCategories([category]);
+      setSpaces([nextSpace]);
       const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
       const socket = new WebSocket(
         `${protocol}://${location.host}/v1/realtime`,
@@ -85,6 +100,8 @@ function App() {
       };
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to start');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -108,9 +125,33 @@ function App() {
         <p className="eyebrow">Community</p>
         <h1>{community?.name ?? 'Nexa Chat'}</h1>
         <p className="muted">A calm place for shared work.</p>
-        {space && (
-          <nav aria-label="Spaces">
-            <span className="space">⌁ {space.name}</span>
+        {community && (
+          <nav aria-label="Community navigation">
+            {categories.length === 0 && (
+              <p className="empty">No categories yet.</p>
+            )}
+            {categories.map((category) => (
+              <section
+                key={category.id}
+                aria-labelledby={`category-${category.id}`}
+              >
+                <h2 id={`category-${category.id}`}>{category.name}</h2>
+                {spaces
+                  .filter((item) => item.categoryId === category.id)
+                  .map((item) => (
+                    <button
+                      key={item.id}
+                      className="space"
+                      aria-current={item.id === space?.id ? 'page' : undefined}
+                      onClick={() => {
+                        setSpace(item);
+                      }}
+                    >
+                      ⌁ {item.name}
+                    </button>
+                  ))}
+              </section>
+            ))}
           </nav>
         )}
       </aside>
@@ -130,7 +171,13 @@ function App() {
               This guided development flow creates a local identity, community,
               and text space.
             </p>
-            <button onClick={() => void begin()}>Create the demo space</button>
+            <button
+              onClick={() => void begin()}
+              disabled={loading}
+              aria-busy={loading}
+            >
+              {loading ? 'Creating…' : 'Create the demo space'}
+            </button>
             {error && (
               <p role="alert" className="error">
                 {error}

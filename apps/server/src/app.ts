@@ -2,6 +2,17 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   communitySchema,
+  communityPageSchema,
+  membershipSchema,
+  categorySchema,
+  spacePageSchema,
+  pageQuerySchema,
+  actorSchema,
+  versionedNameSchema,
+  changeMembershipSchema,
+  createCategorySchema,
+  updateCategorySchema,
+  updateSpaceSchema,
   createCommunitySchema,
   createMessageSchema,
   createSpaceSchema,
@@ -24,6 +35,7 @@ import {
 import {
   HttpSecurityError,
   authenticateRequest,
+  authenticateMutation,
   registerAuthRoutes,
   type AuthRuntime,
 } from './auth-routes.js';
@@ -85,7 +97,7 @@ export function buildApp(
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
     if (authorization && auth) {
-      const actorId = (await authenticateRequest(request, auth)).account.id;
+      const actorId = (await authenticateMutation(request, auth)).account.id;
       if (actorId !== input.ownerId) throw new AuthorizationError('deny');
     }
     return reply
@@ -97,12 +109,171 @@ export function buildApp(
       );
   });
 
+  app.get('/v1/communities', async (request, reply) => {
+    const input = pageQuerySchema.parse(request.query);
+    const actorId = await verifiedActor(request, auth, input.actorId);
+    return reply.send(
+      communityPageSchema.parse(
+        await service.listCommunities(actorId, {
+          limit: input.limit,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+        }),
+      ),
+    );
+  });
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        communitySchema.parse(
+          await service.getCommunity(actorId, request.params.communityId),
+        ),
+      );
+    },
+  );
+
+  app.patch<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId',
+    async (request, reply) => {
+      const input = versionedNameSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        communitySchema.parse(
+          await service.updateCommunity(
+            actorId,
+            request.params.communityId,
+            input.name,
+            input.expectedVersion,
+          ),
+        ),
+      );
+    },
+  );
+
+  app.delete<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId',
+    async (request, reply) => {
+      const input = actorSchema
+        .extend({ expectedVersion: versionedNameSchema.shape.expectedVersion })
+        .strict()
+        .parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        communitySchema.parse(
+          await service.archiveCommunity(
+            actorId,
+            request.params.communityId,
+            input.expectedVersion,
+          ),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/memberships',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        (
+          await service.listMemberships(actorId, request.params.communityId)
+        ).map((value) => membershipSchema.parse(value)),
+      );
+    },
+  );
+
+  app.put<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/memberships',
+    async (request, reply) => {
+      const input = changeMembershipSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        membershipSchema.parse(
+          await service.changeMembership(
+            actorId,
+            request.params.communityId,
+            input.accountId,
+            input.status,
+            input.expectedVersion,
+          ),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/categories',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        (await service.listCategories(actorId, request.params.communityId)).map(
+          (value) => categorySchema.parse(value),
+        ),
+      );
+    },
+  );
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/categories',
+    async (request, reply) => {
+      const input = createCategorySchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply
+        .code(201)
+        .send(
+          categorySchema.parse(
+            await service.createCategory(
+              actorId,
+              request.params.communityId,
+              input.name,
+            ),
+          ),
+        );
+    },
+  );
+  app.patch<{ Params: { categoryId: string } }>(
+    '/v1/categories/:categoryId',
+    async (request, reply) => {
+      const input = updateCategorySchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        categorySchema.parse(
+          await service.updateCategory(
+            actorId,
+            request.params.categoryId,
+            input,
+          ),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/spaces',
+    async (request, reply) => {
+      const input = pageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        spacePageSchema.parse(
+          await service.listSpaces(actorId, request.params.communityId, {
+            limit: input.limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          }),
+        ),
+      );
+    },
+  );
+
   app.post<{ Params: { communityId: string } }>(
     '/v1/communities/:communityId/spaces',
     async (request, reply) => {
       const input = createSpaceSchema.parse(request.body);
       if (authorization && auth) {
-        const actorId = (await authenticateRequest(request, auth)).account.id;
+        const actorId = (await authenticateMutation(request, auth)).account.id;
         if (actorId !== input.actorId) throw new AuthorizationError('deny');
       }
       return reply
@@ -113,9 +284,23 @@ export function buildApp(
               request.params.communityId,
               input.actorId,
               input.name,
+              input.categoryId ?? null,
             ),
           ),
         );
+    },
+  );
+
+  app.patch<{ Params: { spaceId: string } }>(
+    '/v1/spaces/:spaceId',
+    async (request, reply) => {
+      const input = updateSpaceSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        spaceSchema.parse(
+          await service.updateSpace(actorId, request.params.spaceId, input),
+        ),
+      );
     },
   );
 
@@ -124,7 +309,7 @@ export function buildApp(
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
       if (authorization && auth) {
-        const actorId = (await authenticateRequest(request, auth)).account.id;
+        const actorId = (await authenticateMutation(request, auth)).account.id;
         if (actorId !== input.authorId) throw new AuthorizationError('deny');
       }
       const message = await service.postMessage(
@@ -152,9 +337,24 @@ export function buildApp(
     );
     if (error instanceof DomainError) {
       return reply
-        .code(error.code === 'forbidden' ? 403 : 404)
+        .code(
+          error.code === 'forbidden'
+            ? 403
+            : error.code === 'not_found'
+              ? 404
+              : 409,
+        )
         .send({ error: error.code, correlationId: request.id });
     }
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === '23505'
+    )
+      return reply
+        .code(409)
+        .send({ error: 'conflict', correlationId: request.id });
     if (error instanceof AuthenticationError) {
       return reply
         .code(
@@ -190,6 +390,22 @@ export function buildApp(
   });
 
   return app;
+}
+
+async function verifiedActor(
+  request: Parameters<typeof authenticateRequest>[0],
+  auth: AuthRuntime | undefined,
+  claimedActorId: string,
+  mutation = false,
+): Promise<string> {
+  if (!auth) return claimedActorId;
+  const actorId = (
+    await (mutation
+      ? authenticateMutation(request, auth)
+      : authenticateRequest(request, auth))
+  ).account.id;
+  if (actorId !== claimedActorId) throw new AuthorizationError('deny');
+  return actorId;
 }
 
 export interface StorageReadinessResult {

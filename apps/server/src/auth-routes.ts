@@ -103,6 +103,15 @@ export async function authenticateRequest(
   return runtime.service.authenticate(token);
 }
 
+export async function authenticateMutation(
+  request: FastifyRequest,
+  runtime: AuthRuntime,
+): Promise<AuthenticatedSession> {
+  enforceOrigin(request, runtime.config);
+  enforceCsrf(request);
+  return authenticateRequest(request, runtime);
+}
+
 function enforceOrigin(request: FastifyRequest, config: AuthHttpConfig): void {
   if (request.headers.origin !== config.trustedOrigin)
     throw new HttpSecurityError('csrf_rejected');

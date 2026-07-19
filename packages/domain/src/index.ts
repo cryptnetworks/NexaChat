@@ -1,33 +1,36 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+export type MembershipStatus =
+  'active' | 'invited' | 'left' | 'removed' | 'suspended';
+
 export interface Account {
   id: string;
   displayName: string;
 }
-
 export interface Community {
   id: string;
   name: string;
   ownerId: string;
+  archivedAt: string | null;
+  version: number;
 }
-
 export interface Membership {
   id: string;
   communityId: string;
   accountId: string;
-  status: 'active' | 'invited' | 'left' | 'removed' | 'suspended';
+  status: MembershipStatus;
   createdAt: string;
   updatedAt: string;
+  version: number;
 }
-
 export interface Category {
   id: string;
   communityId: string;
   name: string;
   position: number;
   archivedAt: string | null;
+  version: number;
 }
-
 export interface Space {
   id: string;
   communityId: string;
@@ -36,8 +39,8 @@ export interface Space {
   kind: 'text';
   position: number;
   archivedAt: string | null;
+  version: number;
 }
-
 export interface Message {
   id: string;
   spaceId: string;
@@ -45,7 +48,6 @@ export interface Message {
   body: string;
   createdAt: string;
 }
-
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -54,6 +56,14 @@ export interface SessionRecord {
   lastSeenAt: string;
   expiresAt: string;
   revokedAt: string | null;
+}
+export interface Page<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+export interface ListPage {
+  limit: number;
+  cursor?: string;
 }
 
 export interface Persistence {
@@ -64,6 +74,17 @@ export interface Persistence {
   communities: {
     create(community: Community): Promise<Community>;
     findById(id: string): Promise<Community | undefined>;
+    listVisible(accountId: string, page: ListPage): Promise<Page<Community>>;
+    update(
+      id: string,
+      name: string,
+      expectedVersion: number,
+    ): Promise<Community | undefined>;
+    archive(
+      id: string,
+      expectedVersion: number,
+      archivedAt: string,
+    ): Promise<Community | undefined>;
   };
   memberships: {
     create(membership: Membership): Promise<Membership>;
@@ -71,18 +92,41 @@ export interface Persistence {
       communityId: string,
       accountId: string,
     ): Promise<Membership | undefined>;
+    list(communityId: string): Promise<Membership[]>;
+    updateStatus(
+      id: string,
+      status: MembershipStatus,
+      expectedVersion: number,
+      updatedAt: string,
+    ): Promise<Membership | undefined>;
   };
   categories: {
     create(category: Category): Promise<Category>;
     findById(id: string): Promise<Category | undefined>;
-    rename(id: string, name: string): Promise<Category | undefined>;
+    list(communityId: string, includeArchived?: boolean): Promise<Category[]>;
+    update(
+      id: string,
+      input: Pick<Category, 'name' | 'position' | 'archivedAt'>,
+      expectedVersion: number,
+    ): Promise<Category | undefined>;
     remove(id: string): Promise<boolean>;
+    rename(id: string, name: string): Promise<Category | undefined>;
   };
   spaces: {
     create(space: Space): Promise<Space>;
     findById(id: string): Promise<Space | undefined>;
-    rename(id: string, name: string): Promise<Space | undefined>;
+    list(
+      communityId: string,
+      page: ListPage,
+      includeArchived?: boolean,
+    ): Promise<Page<Space>>;
+    update(
+      id: string,
+      input: Pick<Space, 'name' | 'position' | 'categoryId' | 'archivedAt'>,
+      expectedVersion: number,
+    ): Promise<Space | undefined>;
     remove(id: string): Promise<boolean>;
+    rename(id: string, name: string): Promise<Space | undefined>;
   };
   messages: {
     create(message: Message): Promise<Message>;
@@ -98,17 +142,45 @@ export interface Persistence {
 }
 
 export class DomainError extends Error {
-  constructor(public readonly code: 'not_found' | 'forbidden') {
+  constructor(
+    public readonly code:
+      'not_found' | 'forbidden' | 'conflict' | 'stale_write' | 'sole_owner',
+  ) {
     super(code);
   }
 }
-
 export interface AuthorizationGateway {
   enforce(
     actorId: string,
-    permission: 'space.manage' | 'message.create' | 'space.view',
+    permission:
+      | 'community.view'
+      | 'community.manage'
+      | 'membership.view'
+      | 'membership.manage'
+      | 'category.view'
+      | 'category.manage'
+      | 'space.manage'
+      | 'message.create'
+      | 'space.view',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
+}
+
+const normalizeName = (value: string): string =>
+  value.trim().replace(/\s+/g, ' ').normalize('NFKC');
+function name(value: string): string {
+  const normalized = normalizeName(value);
+  if (!normalized || normalized.length > 80) throw new DomainError('conflict');
+  return normalized;
+}
+function page(input: ListPage): ListPage {
+  if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
+    throw new DomainError('conflict');
+  return input;
+}
+function position(value: number): number {
+  if (!Number.isInteger(value) || value < 0) throw new DomainError('conflict');
+  return value;
 }
 
 export class CommunityService {
@@ -116,19 +188,23 @@ export class CommunityService {
     public readonly persistence: Persistence,
     private readonly authorization?: AuthorizationGateway,
   ) {}
-
   createAccount(displayName: string): Promise<Account> {
-    return this.persistence.accounts.create({ id: randomUUID(), displayName });
+    return this.persistence.accounts.create({
+      id: randomUUID(),
+      displayName: name(displayName),
+    });
   }
 
-  async createCommunity(ownerId: string, name: string): Promise<Community> {
+  async createCommunity(ownerId: string, value: string): Promise<Community> {
     if (!(await this.persistence.accounts.findById(ownerId)))
       throw new DomainError('not_found');
     return this.persistence.transaction(async (persistence) => {
       const community = await persistence.communities.create({
         id: randomUUID(),
         ownerId,
-        name,
+        name: name(value),
+        archivedAt: null,
+        version: 1,
       });
       const now = new Date().toISOString();
       await persistence.memberships.create({
@@ -138,32 +214,269 @@ export class CommunityService {
         status: 'active',
         createdAt: now,
         updatedAt: now,
+        version: 1,
       });
       return community;
     });
   }
 
+  async listCommunities(
+    actorId: string,
+    input: ListPage,
+  ): Promise<Page<Community>> {
+    return this.persistence.communities.listVisible(actorId, page(input));
+  }
+  async getCommunity(actorId: string, id: string): Promise<Community> {
+    const community = await this.community(id);
+    await this.enforce(actorId, 'community.view', [{ type: 'community', id }]);
+    return community;
+  }
+  async updateCommunity(
+    actorId: string,
+    id: string,
+    value: string,
+    expectedVersion: number,
+  ): Promise<Community> {
+    await this.community(id);
+    await this.enforce(actorId, 'community.manage', [
+      { type: 'community', id },
+    ]);
+    return this.saved(
+      await this.persistence.communities.update(
+        id,
+        name(value),
+        expectedVersion,
+      ),
+    );
+  }
+  async archiveCommunity(
+    actorId: string,
+    id: string,
+    expectedVersion: number,
+  ): Promise<Community> {
+    await this.community(id);
+    await this.enforce(actorId, 'community.manage', [
+      { type: 'community', id },
+    ]);
+    return this.saved(
+      await this.persistence.communities.archive(
+        id,
+        expectedVersion,
+        new Date().toISOString(),
+      ),
+    );
+  }
+
+  async changeMembership(
+    actorId: string,
+    communityId: string,
+    accountId: string,
+    status: MembershipStatus,
+    expectedVersion?: number,
+  ): Promise<Membership> {
+    const community = await this.community(communityId);
+    const existing =
+      await this.persistence.memberships.findByCommunityAndAccount(
+        communityId,
+        accountId,
+      );
+    if (actorId === accountId && status === 'left')
+      await this.enforce(actorId, 'membership.view', [
+        { type: 'community', id: communityId },
+      ]);
+    else
+      await this.enforce(actorId, 'membership.manage', [
+        { type: 'community', id: communityId },
+      ]);
+    if (community.ownerId === accountId && status !== 'active')
+      throw new DomainError('sole_owner');
+    const now = new Date().toISOString();
+    if (!existing) {
+      if (!(await this.persistence.accounts.findById(accountId)))
+        throw new DomainError('not_found');
+      return this.persistence.memberships.create({
+        id: randomUUID(),
+        communityId,
+        accountId,
+        status,
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+      });
+    }
+    return this.saved(
+      await this.persistence.memberships.updateStatus(
+        existing.id,
+        status,
+        expectedVersion ?? existing.version,
+        now,
+      ),
+    );
+  }
+  async listMemberships(
+    actorId: string,
+    communityId: string,
+  ): Promise<Membership[]> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'membership.view', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.memberships.list(communityId);
+  }
+
+  async createCategory(
+    actorId: string,
+    communityId: string,
+    value: string,
+  ): Promise<Category> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'category.manage', [
+      { type: 'community', id: communityId },
+    ]);
+    const position = (await this.persistence.categories.list(communityId))
+      .length;
+    return this.persistence.categories.create({
+      id: randomUUID(),
+      communityId,
+      name: name(value),
+      position,
+      archivedAt: null,
+      version: 1,
+    });
+  }
+  async listCategories(
+    actorId: string,
+    communityId: string,
+  ): Promise<Category[]> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'category.view', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.categories.list(communityId);
+  }
+  async updateCategory(
+    actorId: string,
+    id: string,
+    input: {
+      name?: string | undefined;
+      position?: number | undefined;
+      archived?: boolean | undefined;
+      expectedVersion: number;
+    },
+  ): Promise<Category> {
+    const current = await this.persistence.categories.findById(id);
+    if (!current) throw new DomainError('not_found');
+    await this.enforce(actorId, 'category.manage', [
+      { type: 'community', id: current.communityId },
+      { type: 'category', id },
+    ]);
+    return this.saved(
+      await this.persistence.categories.update(
+        id,
+        {
+          name: input.name === undefined ? current.name : name(input.name),
+          position:
+            input.position === undefined
+              ? current.position
+              : position(input.position),
+          archivedAt: input.archived
+            ? new Date().toISOString()
+            : current.archivedAt,
+        },
+        input.expectedVersion,
+      ),
+    );
+  }
+
   async createTextSpace(
     communityId: string,
     actorId: string,
-    name: string,
+    value: string,
+    categoryId: string | null = null,
   ): Promise<Space> {
-    const community = await this.persistence.communities.findById(communityId);
-    if (!community) throw new DomainError('not_found');
-    if (this.authorization)
-      await this.authorization.enforce(actorId, 'space.manage', [
-        { type: 'community', id: communityId },
-      ]);
-    else if (community.ownerId !== actorId) throw new DomainError('forbidden');
+    await this.community(communityId);
+    await this.enforce(actorId, 'space.manage', [
+      { type: 'community', id: communityId },
+    ]);
+    if (categoryId) {
+      const category = await this.persistence.categories.findById(categoryId);
+      if (
+        !category ||
+        category.communityId !== communityId ||
+        category.archivedAt
+      )
+        throw new DomainError('not_found');
+    }
+    const position = (
+      await this.persistence.spaces.list(communityId, { limit: 100 })
+    ).items.length;
     return this.persistence.spaces.create({
       id: randomUUID(),
       communityId,
-      categoryId: null,
-      name,
+      categoryId,
+      name: name(value),
       kind: 'text',
-      position: 0,
+      position,
       archivedAt: null,
+      version: 1,
     });
+  }
+  async listSpaces(
+    actorId: string,
+    communityId: string,
+    input: ListPage,
+  ): Promise<Page<Space>> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'space.view', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.spaces.list(communityId, page(input));
+  }
+  async updateSpace(
+    actorId: string,
+    id: string,
+    input: {
+      name?: string | undefined;
+      position?: number | undefined;
+      categoryId?: string | null | undefined;
+      archived?: boolean | undefined;
+      expectedVersion: number;
+    },
+  ): Promise<Space> {
+    const current = await this.persistence.spaces.findById(id);
+    if (!current) throw new DomainError('not_found');
+    await this.enforce(actorId, 'space.manage', [
+      { type: 'community', id: current.communityId },
+      { type: 'space', id },
+    ]);
+    const categoryId =
+      input.categoryId === undefined ? current.categoryId : input.categoryId;
+    if (categoryId) {
+      const category = await this.persistence.categories.findById(categoryId);
+      if (
+        !category ||
+        category.communityId !== current.communityId ||
+        category.archivedAt
+      )
+        throw new DomainError('not_found');
+    }
+    return this.saved(
+      await this.persistence.spaces.update(
+        id,
+        {
+          name: input.name === undefined ? current.name : name(input.name),
+          position:
+            input.position === undefined
+              ? current.position
+              : position(input.position),
+          categoryId,
+          archivedAt: input.archived
+            ? new Date().toISOString()
+            : current.archivedAt,
+        },
+        input.expectedVersion,
+      ),
+    );
   }
 
   async postMessage(
@@ -172,16 +485,25 @@ export class CommunityService {
     body: string,
   ): Promise<Message> {
     const space = await this.persistence.spaces.findById(spaceId);
-    if (!space || !(await this.persistence.accounts.findById(authorId)))
+    if (
+      !space ||
+      space.archivedAt ||
+      !(await this.persistence.accounts.findById(authorId))
+    )
       throw new DomainError('not_found');
-    if (this.authorization)
-      await this.authorization.enforce(authorId, 'message.create', [
-        { type: 'community', id: space.communityId },
-        ...(space.categoryId
-          ? [{ type: 'category' as const, id: space.categoryId }]
-          : []),
-        { type: 'space', id: space.id },
-      ]);
+    if (space.categoryId) {
+      const category = await this.persistence.categories.findById(
+        space.categoryId,
+      );
+      if (!category || category.archivedAt) throw new DomainError('not_found');
+    }
+    await this.enforce(authorId, 'message.create', [
+      { type: 'community', id: space.communityId },
+      ...(space.categoryId
+        ? [{ type: 'category' as const, id: space.categoryId }]
+        : []),
+      { type: 'space', id: space.id },
+    ]);
     return this.persistence.messages.create({
       id: randomUUID(),
       spaceId,
@@ -190,27 +512,64 @@ export class CommunityService {
       createdAt: new Date().toISOString(),
     });
   }
-
   async authorizeSpaceSubscription(
     spaceId: string,
     actorId: string,
   ): Promise<void> {
     const space = await this.persistence.spaces.findById(spaceId);
-    if (!space || !(await this.persistence.accounts.findById(actorId)))
+    if (
+      !space ||
+      space.archivedAt ||
+      !(await this.persistence.accounts.findById(actorId))
+    )
       throw new DomainError('not_found');
-    const community = await this.persistence.communities.findById(
-      space.communityId,
-    );
-    if (!community) throw new DomainError('not_found');
-    if (this.authorization)
-      await this.authorization.enforce(actorId, 'space.view', [
-        { type: 'community', id: community.id },
-        ...(space.categoryId
-          ? [{ type: 'category' as const, id: space.categoryId }]
-          : []),
-        { type: 'space', id: space.id },
-      ]);
-    else if (community.ownerId !== actorId) throw new DomainError('forbidden');
+    if (space.categoryId) {
+      const category = await this.persistence.categories.findById(
+        space.categoryId,
+      );
+      if (!category || category.archivedAt) throw new DomainError('not_found');
+    }
+    await this.enforce(actorId, 'space.view', [
+      { type: 'community', id: space.communityId },
+      ...(space.categoryId
+        ? [{ type: 'category' as const, id: space.categoryId }]
+        : []),
+      { type: 'space', id: space.id },
+    ]);
+  }
+  private async community(id: string): Promise<Community> {
+    const value = await this.persistence.communities.findById(id);
+    if (!value || value.archivedAt) throw new DomainError('not_found');
+    return value;
+  }
+  private async enforce(
+    actorId: string,
+    permission: Parameters<AuthorizationGateway['enforce']>[1],
+    scopes: Parameters<AuthorizationGateway['enforce']>[2],
+  ): Promise<void> {
+    if (this.authorization) {
+      await this.authorization.enforce(actorId, permission, scopes);
+      return;
+    }
+    const communityId = scopes.find((scope) => scope.type === 'community')?.id;
+    const community = communityId
+      ? await this.persistence.communities.findById(communityId)
+      : undefined;
+    const membership = communityId
+      ? await this.persistence.memberships.findByCommunityAndAccount(
+          communityId,
+          actorId,
+        )
+      : undefined;
+    if (
+      !community ||
+      (community.ownerId !== actorId && membership?.status !== 'active')
+    )
+      throw new DomainError('forbidden');
+  }
+  private saved<T>(value: T | undefined): T {
+    if (!value) throw new DomainError('stale_write');
+    return value;
   }
 }
 
@@ -223,18 +582,27 @@ type MemoryState = {
   messages: Map<string, Message>;
   sessions: Map<string, SessionRecord>;
 };
-
-function copyState(state: MemoryState): MemoryState {
-  return {
-    accounts: new Map(state.accounts),
-    communities: new Map(state.communities),
-    memberships: new Map(state.memberships),
-    categories: new Map(state.categories),
-    spaces: new Map(state.spaces),
-    messages: new Map(state.messages),
-    sessions: new Map(state.sessions),
-  };
-}
+const clone = (state: MemoryState): MemoryState => ({
+  accounts: new Map(state.accounts),
+  communities: new Map(state.communities),
+  memberships: new Map(state.memberships),
+  categories: new Map(state.categories),
+  spaces: new Map(state.spaces),
+  messages: new Map(state.messages),
+  sessions: new Map(state.sessions),
+});
+const cursor = (id: string): string => Buffer.from(id).toString('base64url');
+const after = (value?: string): string =>
+  value ? Buffer.from(value, 'base64url').toString() : '';
+const positionCursor = (position: number, id: string): string =>
+  Buffer.from(`${String(position)}:${id}`).toString('base64url');
+const afterPosition = (value?: string): [number, string] => {
+  if (!value) return [-1, ''];
+  const [position, id = ''] = Buffer.from(value, 'base64url')
+    .toString()
+    .split(':');
+  return [Number(position), id];
+};
 
 export class InMemoryPersistence implements Persistence {
   private state: MemoryState = {
@@ -246,115 +614,252 @@ export class InMemoryPersistence implements Persistence {
     messages: new Map(),
     sessions: new Map(),
   };
-
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
-    create: async (account: Account) => {
-      this.state.accounts.set(account.id, account);
-      return account;
-    },
+    create: async (v: Account) => (this.state.accounts.set(v.id, v), v),
     findById: async (id: string) => this.state.accounts.get(id),
   };
-
   readonly communities = {
-    create: async (community: Community) => {
-      this.state.communities.set(community.id, community);
-      return community;
+    create: async (v: Community) => {
+      if (
+        [...this.state.communities.values()].some(
+          (c) =>
+            c.ownerId === v.ownerId &&
+            !c.archivedAt &&
+            c.name.toLocaleLowerCase() === v.name.toLocaleLowerCase(),
+        )
+      )
+        throw new DomainError('conflict');
+      this.state.communities.set(v.id, v);
+      return v;
     },
     findById: async (id: string) => this.state.communities.get(id),
+    listVisible: async (accountId: string, p: ListPage) => {
+      const membershipIds = new Set(
+        [...this.state.memberships.values()]
+          .filter((m) => m.accountId === accountId && m.status === 'active')
+          .map((m) => m.communityId),
+      );
+      const values = [...this.state.communities.values()]
+        .filter((c) => !c.archivedAt && membershipIds.has(c.id))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .filter((v) => v.id > after(p.cursor));
+      const items = values.slice(0, p.limit);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor: values.length > p.limit && last ? cursor(last.id) : null,
+      };
+    },
+    update: async (id: string, value: string, version: number) =>
+      this.updateMap(this.state.communities, id, version, (v) => ({
+        ...v,
+        name: value,
+      })),
+    archive: async (id: string, version: number, archivedAt: string) =>
+      this.updateMap(this.state.communities, id, version, (v) => ({
+        ...v,
+        archivedAt,
+      })),
   };
-
   readonly memberships = {
-    create: async (membership: Membership) => {
-      this.state.memberships.set(membership.id, membership);
-      return membership;
+    create: async (v: Membership) => {
+      if (
+        [...this.state.memberships.values()].some(
+          (m) => m.communityId === v.communityId && m.accountId === v.accountId,
+        )
+      )
+        throw new DomainError('conflict');
+      this.state.memberships.set(v.id, v);
+      return v;
     },
     findByCommunityAndAccount: async (communityId: string, accountId: string) =>
       [...this.state.memberships.values()].find(
-        (membership) =>
-          membership.communityId === communityId &&
-          membership.accountId === accountId,
+        (m) => m.communityId === communityId && m.accountId === accountId,
       ),
+    list: async (communityId: string) =>
+      [...this.state.memberships.values()]
+        .filter((m) => m.communityId === communityId)
+        .sort(
+          (a, b) =>
+            a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+        ),
+    updateStatus: async (
+      id: string,
+      status: MembershipStatus,
+      version: number,
+      updatedAt: string,
+    ) =>
+      this.updateMap(this.state.memberships, id, version, (v) => ({
+        ...v,
+        status,
+        updatedAt,
+      })),
   };
-
   readonly categories = {
-    create: async (category: Category) => {
-      this.state.categories.set(category.id, category);
-      return category;
+    create: async (v: Category) => {
+      this.uniqueCategory(v);
+      this.state.categories.set(v.id, v);
+      return v;
     },
     findById: async (id: string) => this.state.categories.get(id),
-    rename: async (id: string, name: string) => {
-      const category = this.state.categories.get(id);
-      if (!category) return undefined;
-      const renamed = { ...category, name };
-      this.state.categories.set(id, renamed);
-      return renamed;
+    list: async (communityId: string, includeArchived = false) =>
+      [...this.state.categories.values()]
+        .filter(
+          (v) =>
+            v.communityId === communityId && (includeArchived || !v.archivedAt),
+        )
+        .sort(order),
+    update: async (
+      id: string,
+      input: Pick<Category, 'name' | 'position' | 'archivedAt'>,
+      version: number,
+    ) => {
+      const current = this.state.categories.get(id);
+      if (!current || current.version !== version) return undefined;
+      const next = { ...current, ...input, version: version + 1 };
+      this.uniqueCategory(next, id);
+      this.state.categories.set(id, next);
+      return next;
     },
     remove: async (id: string) => this.state.categories.delete(id),
+    rename: async (id: string, value: string) => {
+      const current = this.state.categories.get(id);
+      return current
+        ? this.categories.update(
+            id,
+            { ...current, name: value },
+            current.version,
+          )
+        : undefined;
+    },
   };
-
   readonly spaces = {
-    create: async (space: Space) => {
-      this.state.spaces.set(space.id, space);
-      return space;
+    create: async (v: Space) => {
+      this.uniqueSpace(v);
+      this.state.spaces.set(v.id, v);
+      return v;
     },
     findById: async (id: string) => this.state.spaces.get(id),
-    rename: async (id: string, name: string) => {
-      const space = this.state.spaces.get(id);
-      if (!space) return undefined;
-      const renamed = { ...space, name };
-      this.state.spaces.set(id, renamed);
-      return renamed;
+    list: async (communityId: string, p: ListPage, includeArchived = false) => {
+      const [afterOrder, afterId] = afterPosition(p.cursor);
+      const values = [...this.state.spaces.values()]
+        .filter(
+          (v) =>
+            v.communityId === communityId &&
+            (includeArchived || !v.archivedAt) &&
+            (v.categoryId === null ||
+              includeArchived ||
+              !this.state.categories.get(v.categoryId)?.archivedAt),
+        )
+        .sort(order)
+        .filter(
+          (v) =>
+            v.position > afterOrder ||
+            (v.position === afterOrder && v.id > afterId),
+        );
+      const items = values.slice(0, p.limit);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          values.length > p.limit && last
+            ? positionCursor(last.position, last.id)
+            : null,
+      };
+    },
+    update: async (
+      id: string,
+      input: Pick<Space, 'name' | 'position' | 'categoryId' | 'archivedAt'>,
+      version: number,
+    ) => {
+      const current = this.state.spaces.get(id);
+      if (!current || current.version !== version) return undefined;
+      const next = { ...current, ...input, version: version + 1 };
+      this.uniqueSpace(next, id);
+      this.state.spaces.set(id, next);
+      return next;
     },
     remove: async (id: string) => this.state.spaces.delete(id),
-  };
-
-  readonly messages = {
-    create: async (message: Message) => {
-      this.state.messages.set(message.id, message);
-      return message;
+    rename: async (id: string, value: string) => {
+      const current = this.state.spaces.get(id);
+      return current
+        ? this.spaces.update(id, { ...current, name: value }, current.version)
+        : undefined;
     },
+  };
+  readonly messages = {
+    create: async (v: Message) => (this.state.messages.set(v.id, v), v),
     findById: async (id: string) => this.state.messages.get(id),
     remove: async (id: string) => this.state.messages.delete(id),
   };
-
   readonly sessions = {
-    create: async (session: SessionRecord) => {
-      this.state.sessions.set(session.id, session);
-      return session;
-    },
-    findByTokenHash: async (tokenHash: string) =>
-      [...this.state.sessions.values()].find(
-        (session) => session.tokenHash === tokenHash,
-      ),
+    create: async (v: SessionRecord) => (this.state.sessions.set(v.id, v), v),
+    findByTokenHash: async (value: string) =>
+      [...this.state.sessions.values()].find((v) => v.tokenHash === value),
     revoke: async (id: string, revokedAt: string) => {
-      const session = this.state.sessions.get(id);
-      if (!session) return false;
-      this.state.sessions.set(id, { ...session, revokedAt });
+      const v = this.state.sessions.get(id);
+      if (!v) return false;
+      this.state.sessions.set(id, { ...v, revokedAt });
       return true;
     },
   };
   /* eslint-enable @typescript-eslint/require-await */
-
-  async transaction<T>(
-    work: (persistence: Persistence) => Promise<T>,
-  ): Promise<T> {
-    const snapshot = copyState(this.state);
+  async transaction<T>(work: (p: Persistence) => Promise<T>): Promise<T> {
+    const before = clone(this.state);
     try {
       return await work(this);
     } catch (error) {
-      this.state = snapshot;
+      this.state = before;
       throw error;
     }
   }
+  private updateMap<T extends { version: number }>(
+    map: Map<string, T>,
+    id: string,
+    version: number,
+    change: (value: T) => T,
+  ): T | undefined {
+    const current = map.get(id);
+    if (!current || current.version !== version) return undefined;
+    const next = { ...change(current), version: version + 1 };
+    map.set(id, next);
+    return next;
+  }
+  private uniqueCategory(value: Category, except?: string) {
+    if (
+      !value.archivedAt &&
+      [...this.state.categories.values()].some(
+        (v) =>
+          v.id !== except &&
+          v.communityId === value.communityId &&
+          !v.archivedAt &&
+          v.name.toLocaleLowerCase() === value.name.toLocaleLowerCase(),
+      )
+    )
+      throw new DomainError('conflict');
+  }
+  private uniqueSpace(value: Space, except?: string) {
+    if (
+      !value.archivedAt &&
+      [...this.state.spaces.values()].some(
+        (v) =>
+          v.id !== except &&
+          v.communityId === value.communityId &&
+          !v.archivedAt &&
+          v.name.toLocaleLowerCase() === value.name.toLocaleLowerCase(),
+      )
+    )
+      throw new DomainError('conflict');
+  }
 }
-
+const order = <T extends { position: number; id: string }>(a: T, b: T) =>
+  a.position - b.position || a.id.localeCompare(b.id);
 export class InMemoryCommunityService extends CommunityService {
   constructor(persistence = new InMemoryPersistence()) {
     super(persistence);
   }
 }
-
 export function hashSessionToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }

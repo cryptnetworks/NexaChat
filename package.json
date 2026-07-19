@@ -23,7 +23,7 @@
     "test:auth": "vitest run packages/auth/test apps/server/test/config.test.ts apps/server/test/auth.integration.test.ts",
     "test:authorization": "vitest run packages/authorization/test apps/server/test/authorization.integration.test.ts",
     "test:config": "vitest run apps/server/test/config.test.ts",
-    "test:http": "vitest run apps/server/test/http.integration.test.ts",
+    "test:http": "vitest run apps/server/test/http.integration.test.ts apps/server/test/community-lifecycle.integration.test.ts",
     "test:postgres": "vitest run packages/postgres/test apps/server/test/postgres.integration.test.ts",
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
