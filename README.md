@@ -88,7 +88,7 @@ Before adding `apps/desktop`, install the stable Rust toolchain (including `rust
 
 ## Current limitations
 
-- PostgreSQL persistence is implemented. Valkey and object storage are not connected to application flows.
+- PostgreSQL persistence and a private S3-compatible object-storage adapter are implemented. Attachment application flows and Valkey are not connected.
 - Real-time sequences are intentionally process-local and are gap signals, not durable replay cursors; HTTP history remains authoritative after reconnects and server restarts.
 - The web client provides keyboard-accessible community/category/space navigation and loading, empty, and error states; lifecycle administration forms are not yet exposed.
 - There is no desktop application scaffold until the documented toolchain is available.

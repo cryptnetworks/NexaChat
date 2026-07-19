@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import type { PostgresConfig } from '@nexa/postgres';
 import type { PasswordHashParameters } from '@nexa/auth';
+import type { ObjectStorageConfig } from '@nexa/object-storage';
 
 export type RuntimeMode = 'development' | 'test' | 'production';
 export interface RuntimeConfig {
@@ -15,6 +16,7 @@ export interface RuntimeConfig {
     rateWindowMs: number;
   };
   database: PostgresConfig;
+  objectStorage: { enabled: boolean; config?: ObjectStorageConfig };
   authentication: {
     trustedOrigin: string;
     secureCookies: boolean;
@@ -78,6 +80,11 @@ const keys = new Set([
   'NEXA_DATABASE_QUERY_TIMEOUT_MS',
   'NEXA_MIGRATIONS_DIR',
   'NEXA_ENABLE_DEV_AUTH',
+  'NEXA_OBJECT_STORAGE_ENABLED',
+  'NEXA_OBJECT_STORAGE_CREATE_BUCKET',
+  'NEXA_OBJECT_STORAGE_MAX_BYTES',
+  'NEXA_OBJECT_STORAGE_TIMEOUT_MS',
+  'NEXA_OBJECT_STORAGE_CLEANUP_PAGE_SIZE',
   'NEXA_WS_MAX_CONNECTIONS',
   'NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT',
   'NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS',
@@ -148,6 +155,32 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   );
   if (mode !== 'development' && devIdentity)
     fail('NEXA_ENABLE_DEV_AUTH', 'is supported only in development');
+  const objectStorageEnabled = bool(
+    env.NEXA_OBJECT_STORAGE_ENABLED,
+    false,
+    'NEXA_OBJECT_STORAGE_ENABLED',
+  );
+  const storageEndpoint = objectStorageEnabled
+    ? required(env, 'S3_ENDPOINT')
+    : undefined;
+  if (objectStorageEnabled && mode === 'production') {
+    const parsed = url(
+      storageEndpoint ?? fail('S3_ENDPOINT', 'is required'),
+      'S3_ENDPOINT',
+    );
+    if (parsed.protocol !== 'https:')
+      fail('S3_ENDPOINT', 'must use HTTPS in production');
+  }
+  const createBucket = bool(
+    env.NEXA_OBJECT_STORAGE_CREATE_BUCKET,
+    mode === 'development',
+    'NEXA_OBJECT_STORAGE_CREATE_BUCKET',
+  );
+  if (objectStorageEnabled && mode === 'production' && createBucket)
+    fail(
+      'NEXA_OBJECT_STORAGE_CREATE_BUCKET',
+      'cannot be enabled in production',
+    );
   return {
     mode,
     server: {
@@ -223,6 +256,43 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       migrationsDirectory:
         env.NEXA_MIGRATIONS_DIR ??
         fileURLToPath(new URL('../migrations', import.meta.url)),
+    },
+    objectStorage: {
+      enabled: objectStorageEnabled,
+      ...(objectStorageEnabled
+        ? {
+            config: {
+              endpoint: storageEndpoint ?? fail('S3_ENDPOINT', 'is required'),
+              region: env.S3_REGION ?? 'us-east-1',
+              accessKeyId: required(env, 'S3_ACCESS_KEY'),
+              secretAccessKey: required(env, 'S3_SECRET_KEY'),
+              bucket: required(env, 'S3_BUCKET'),
+              forcePathStyle: true,
+              createBucket,
+              maxObjectBytes: int(
+                env.NEXA_OBJECT_STORAGE_MAX_BYTES,
+                26_214_400,
+                1,
+                104_857_600,
+                'NEXA_OBJECT_STORAGE_MAX_BYTES',
+              ),
+              operationTimeoutMs: int(
+                env.NEXA_OBJECT_STORAGE_TIMEOUT_MS,
+                5_000,
+                100,
+                60_000,
+                'NEXA_OBJECT_STORAGE_TIMEOUT_MS',
+              ),
+              cleanupPageSize: int(
+                env.NEXA_OBJECT_STORAGE_CLEANUP_PAGE_SIZE,
+                100,
+                1,
+                1_000,
+                'NEXA_OBJECT_STORAGE_CLEANUP_PAGE_SIZE',
+              ),
+            },
+          }
+        : {}),
     },
     authentication: {
       trustedOrigin,

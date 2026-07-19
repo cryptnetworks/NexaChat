@@ -1,6 +1,7 @@
 import { buildApp } from './app.js';
 import { parseRuntimeConfig, safeConfigurationDiagnostic } from './config.js';
 import { initializeDatabase } from './database.js';
+import { initializeObjectStorage } from './object-storage.js';
 import { attachWebsocketHub } from './websocket.js';
 
 let config;
@@ -14,6 +15,7 @@ try {
   throw error;
 }
 
+const objectStorage = await initializeObjectStorage(config.objectStorage);
 const database = await initializeDatabase(
   config.database,
   config.authentication,
@@ -41,6 +43,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         ?.close()
         .then(() => app.close())
         .then(() => database.pool.end())
+        .then(() => objectStorage?.close())
         .then(() => process.exit(0)),
   );
 }
