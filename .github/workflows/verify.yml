@@ -44,6 +44,10 @@ jobs:
       - run: npm run verify:security-policy
       - run: npm run verify:backup-policy
       - run: npm test
+      - name: Install accessibility test browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser accessibility gate
+        run: npm run test:accessibility
       - run: npm run build
       - run: docker compose config --quiet
       - name: Validate production Compose model

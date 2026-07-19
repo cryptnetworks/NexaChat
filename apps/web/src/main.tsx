@@ -17,6 +17,11 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
+import {
+  accessibleTimestamp,
+  createRateLimitedAnnouncer,
+  type RateLimitedAnnouncer,
+} from './accessibility.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -53,6 +58,11 @@ function App() {
     useState<InvitationPreviewResponse>();
   const [createdInvite, setCreatedInvite] = useState('');
   const [inviteStatus, setInviteStatus] = useState('');
+  const [realtimeAnnouncement, setRealtimeAnnouncement] = useState('');
+  const beginButton = useRef<HTMLButtonElement>(null);
+  const restoreBeginFocus = useRef(false);
+  const conversationHeading = useRef<HTMLHeadingElement>(null);
+  const realtimeAnnouncer = useRef<RateLimitedAnnouncer | null>(null);
   const realtimeCursor = useRef({
     sequence: 0,
     seenEventIds: new Set<string>(),
@@ -62,6 +72,24 @@ function App() {
     if (inviteToken)
       history.replaceState(null, '', `${location.pathname}${location.search}`);
   }, [inviteToken]);
+
+  useEffect(
+    () => () => {
+      realtimeAnnouncer.current?.dispose();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (space) conversationHeading.current?.focus();
+  }, [space]);
+
+  useEffect(() => {
+    if (!loading && restoreBeginFocus.current) {
+      restoreBeginFocus.current = false;
+      beginButton.current?.focus();
+    }
+  }, [loading]);
 
   useEffect(() => {
     if (!inviteToken || !account) return;
@@ -170,6 +198,10 @@ function App() {
                 a.id.localeCompare(b.id),
             );
           });
+          realtimeAnnouncer.current ??= createRateLimitedAnnouncer(
+            setRealtimeAnnouncement,
+          );
+          realtimeAnnouncer.current.announceMessage();
           return;
         }
         const control = websocketServerMessageSchema.safeParse(raw);
@@ -226,6 +258,7 @@ function App() {
       setCategories([category]);
       setSpaces([nextSpace]);
     } catch (reason) {
+      restoreBeginFocus.current = true;
       setError(reason instanceof Error ? reason.message : 'Unable to start');
     } finally {
       setLoading(false);
@@ -234,14 +267,22 @@ function App() {
 
   async function send(form: React.FormEvent<HTMLFormElement>) {
     form.preventDefault();
-    const data = new FormData(form.currentTarget);
+    const formElement = form.currentTarget;
+    const data = new FormData(formElement);
     if (!account || !space) return;
-    await post(`/v1/spaces/${space.id}/messages`, {
-      authorId: account.id,
-      body: data.get('message'),
-      idempotencyKey: crypto.randomUUID(),
-    });
-    form.currentTarget.reset();
+    try {
+      setError('');
+      await post(`/v1/spaces/${space.id}/messages`, {
+        authorId: account.id,
+        body: data.get('message'),
+        idempotencyKey: crypto.randomUUID(),
+      });
+      formElement.reset();
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : 'Unable to send message',
+      );
+    }
   }
 
   async function createInvite(form: React.FormEvent<HTMLFormElement>) {
@@ -279,182 +320,219 @@ function App() {
   }
 
   return (
-    <main>
-      <aside>
-        <div className="mark" aria-hidden="true">
-          N
-        </div>
-        <p className="eyebrow">Community</p>
-        <h1>{community?.name ?? 'Nexa Chat'}</h1>
-        <p className="muted">A calm place for shared work.</p>
-        {community && (
-          <nav aria-label="Community navigation">
-            {categories.length === 0 && (
-              <p className="empty">No categories yet.</p>
-            )}
-            {categories.map((category) => (
-              <section
-                key={category.id}
-                aria-labelledby={`category-${category.id}`}
-              >
-                <h2 id={`category-${category.id}`}>{category.name}</h2>
-                {spaces
-                  .filter((item) => item.categoryId === category.id)
-                  .map((item) => (
-                    <button
-                      key={item.id}
-                      className="space"
-                      aria-current={item.id === space?.id ? 'page' : undefined}
-                      onClick={() => {
-                        setSpace(item);
-                      }}
-                    >
-                      ⌁ {item.name}
-                    </button>
-                  ))}
-              </section>
-            ))}
-          </nav>
-        )}
-      </aside>
-      <section className="conversation">
-        <header>
-          <div>
-            <p className="eyebrow">Text space</p>
-            <h2>{space?.name ?? 'Welcome'}</h2>
+    <>
+      <a className="skip-link" href="#conversation-heading">
+        Skip to conversation
+      </a>
+      <main>
+        <aside aria-labelledby="community-heading">
+          <div className="mark" aria-hidden="true">
+            N
           </div>
-          <span className="status">Local development</span>
-        </header>
-        {!space ? (
-          <div className="welcome">
-            <span className="orb">✦</span>
-            <h2>Start a small community</h2>
-            <p>
-              This guided development flow creates a local identity, community,
-              and text space.
-            </p>
-            <button
-              onClick={() => void begin()}
-              disabled={loading}
-              aria-busy={loading}
-            >
-              {loading ? 'Creating…' : 'Create the demo space'}
-            </button>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="messages" aria-live="polite">
-              {loadingHistory && <p className="empty">Loading history…</p>}
-              {!loadingHistory && messages.length === 0 && (
-                <p className="empty">
-                  This space is ready. Write the first note.
-                </p>
+          <p className="eyebrow">Community</p>
+          <h1 id="community-heading">{community?.name ?? 'Nexa Chat'}</h1>
+          <p className="muted">A calm place for shared work.</p>
+          {community && (
+            <nav aria-label="Community navigation">
+              {categories.length === 0 && (
+                <p className="empty">No categories yet.</p>
               )}
-              {messages.map((message) => (
-                <article key={message.id}>
-                  <span className="avatar">LE</span>
-                  <div>
-                    <strong>Local Explorer</strong>
-                    <time>
-                      {new Date(message.createdAt).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </time>
-                    {message.replyToId && (
-                      <p className="muted">Reply to an earlier message</p>
-                    )}
-                    <p>
-                      {message.deletedAt ? (
-                        <span aria-label="Deleted message">
-                          Message deleted
-                        </span>
-                      ) : (
-                        message.body
-                      )}
-                    </p>
-                    {!message.deletedAt &&
-                      message.updatedAt !== message.createdAt && (
-                        <span className="muted" aria-label="Edited message">
-                          Edited
-                        </span>
-                      )}
-                  </div>
-                </article>
+              {categories.map((category) => (
+                <section
+                  key={category.id}
+                  aria-labelledby={`category-${category.id}`}
+                >
+                  <h2 id={`category-${category.id}`}>{category.name}</h2>
+                  {spaces
+                    .filter((item) => item.categoryId === category.id)
+                    .map((item) => (
+                      <button
+                        key={item.id}
+                        className="space"
+                        aria-current={
+                          item.id === space?.id ? 'page' : undefined
+                        }
+                        type="button"
+                        onClick={() => {
+                          setSpace(item);
+                        }}
+                      >
+                        ⌁ {item.name}
+                      </button>
+                    ))}
+                </section>
               ))}
+            </nav>
+          )}
+        </aside>
+        <section
+          className="conversation"
+          aria-labelledby="conversation-heading"
+        >
+          <header>
+            <div>
+              <p className="eyebrow">Text space</p>
+              <h2
+                id="conversation-heading"
+                ref={conversationHeading}
+                tabIndex={-1}
+              >
+                {space?.name ?? 'Welcome'}
+              </h2>
+            </div>
+            <span className="status">Local development</span>
+          </header>
+          {!space ? (
+            <div className="welcome">
+              <span className="orb">✦</span>
+              <h2>Start a small community</h2>
+              <p>
+                This guided development flow creates a local identity,
+                community, and text space.
+              </p>
+              <button
+                ref={beginButton}
+                type="button"
+                onClick={() => void begin()}
+                disabled={loading}
+                aria-busy={loading}
+              >
+                {loading ? 'Creating…' : 'Create the demo space'}
+              </button>
               {error && (
                 <p role="alert" className="error">
                   {error}
                 </p>
               )}
             </div>
-            <form onSubmit={(event) => void send(event)}>
-              <label className="sr-only" htmlFor="message">
-                Message
-              </label>
-              <input
-                id="message"
-                name="message"
-                maxLength={4000}
-                required
-                placeholder={`Write in ${space.name}`}
-              />
-              <button>Send</button>
-            </form>
-            <section aria-labelledby="invitation-heading">
-              <h3 id="invitation-heading">Invitations</h3>
-              {invitePreview && (
-                <div>
-                  <p>
-                    Join <strong>{invitePreview.communityName}</strong> with
-                    this invitation.
+          ) : (
+            <>
+              <div className="messages" aria-busy={loadingHistory}>
+                {loadingHistory && <p className="empty">Loading history…</p>}
+                {!loadingHistory && messages.length === 0 && (
+                  <p className="empty">
+                    This space is ready. Write the first note.
                   </p>
-                  <button onClick={() => void acceptInvite()}>
-                    Accept invitation
-                  </button>
-                </div>
-              )}
-              <form onSubmit={(event) => void createInvite(event)}>
-                <button>Create one-use invitation</button>
-              </form>
-              {createdInvite && (
-                <div>
-                  <label htmlFor="created-invite">New invitation token</label>
-                  <input id="created-invite" value={createdInvite} readOnly />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(createdInvite)
-                        .then(() => {
-                          setInviteStatus('Invitation copied.');
-                        })
-                        .catch(() => {
-                          setInviteStatus(
-                            'Copy failed. Select the invitation manually.',
-                          );
-                        });
-                    }}
+                )}
+                {messages.map((message) => (
+                  <article
+                    key={message.id}
+                    aria-label={`Message from Local Explorer, sent ${accessibleTimestamp(message.createdAt)}`}
                   >
-                    Copy invitation
-                  </button>
-                </div>
-              )}
-              {inviteStatus && (
-                <p role="status" aria-live="polite">
-                  {inviteStatus}
-                </p>
-              )}
-            </section>
-          </>
-        )}
-      </section>
-    </main>
+                    <span className="avatar" aria-hidden="true">
+                      LE
+                    </span>
+                    <div>
+                      <strong>Local Explorer</strong>
+                      <time
+                        dateTime={message.createdAt}
+                        aria-label={`Sent ${accessibleTimestamp(message.createdAt)}`}
+                      >
+                        {new Date(message.createdAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </time>
+                      {message.replyToId && (
+                        <p className="muted">Reply to an earlier message</p>
+                      )}
+                      <p>
+                        {message.deletedAt ? (
+                          <span>Message deleted</span>
+                        ) : (
+                          message.body
+                        )}
+                      </p>
+                      {!message.deletedAt &&
+                        message.updatedAt !== message.createdAt && (
+                          <span className="muted">(edited)</span>
+                        )}
+                    </div>
+                  </article>
+                ))}
+                {error && (
+                  <p role="alert" className="error">
+                    {error}
+                  </p>
+                )}
+              </div>
+              <p
+                className="sr-only"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {realtimeAnnouncement}
+              </p>
+              <form className="composer" onSubmit={(event) => void send(event)}>
+                <label className="sr-only" htmlFor="message">
+                  Message
+                </label>
+                <input
+                  id="message"
+                  name="message"
+                  maxLength={4000}
+                  required
+                  placeholder={`Write in ${space.name}`}
+                />
+                <button type="submit">Send message</button>
+              </form>
+              <section
+                className="invitations"
+                aria-labelledby="invitation-heading"
+              >
+                <h3 id="invitation-heading">Invitations</h3>
+                {invitePreview && (
+                  <div>
+                    <p>
+                      Join <strong>{invitePreview.communityName}</strong> with
+                      this invitation.
+                    </p>
+                    <button type="button" onClick={() => void acceptInvite()}>
+                      Accept invitation
+                    </button>
+                  </div>
+                )}
+                <form
+                  className="invitation-actions"
+                  onSubmit={(event) => void createInvite(event)}
+                >
+                  <button type="submit">Create one-use invitation</button>
+                </form>
+                {createdInvite && (
+                  <div>
+                    <label htmlFor="created-invite">New invitation token</label>
+                    <input id="created-invite" value={createdInvite} readOnly />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(createdInvite)
+                          .then(() => {
+                            setInviteStatus('Invitation copied.');
+                          })
+                          .catch(() => {
+                            setInviteStatus(
+                              'Copy failed. Select the invitation manually.',
+                            );
+                          });
+                      }}
+                    >
+                      Copy invitation
+                    </button>
+                  </div>
+                )}
+                {inviteStatus && (
+                  <p role="status" aria-live="polite">
+                    {inviteStatus}
+                  </p>
+                )}
+              </section>
+            </>
+          )}
+        </section>
+      </main>
+    </>
   );
 }
 

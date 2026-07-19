@@ -26,6 +26,7 @@
     "test:auth": "vitest run packages/auth/test apps/server/test/config.test.ts apps/server/test/auth.integration.test.ts",
     "test:authorization": "vitest run packages/authorization/test apps/server/test/authorization.integration.test.ts",
     "test:architecture": "tsc -p tools/architecture/tsconfig.json && vitest run tools/architecture/check.test.ts",
+    "test:accessibility": "playwright test --config apps/web/playwright.config.ts",
     "test:config": "vitest run apps/server/test/config.test.ts",
     "test:contracts": "vitest run packages/api-contracts/src/error-contract.test.ts packages/realtime-contracts/src/contracts.test.ts packages/realtime-contracts/src/compatibility-fixtures.test.ts",
     "test:coordination": "vitest run packages/coordination/test",
@@ -44,7 +45,9 @@
     "test:security-tools": "bash scripts/test-security-tools.sh"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
     "@types/node": "24.0.15",
     "@types/ws": "8.18.1",
     "esbuild": "0.28.1",
