@@ -43,6 +43,7 @@ npm run test:authorization
 npm run test:config
 npm run test:architecture
 npm run test:contracts
+npm run verify:security-policy
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
@@ -52,6 +53,8 @@ npm run verify:clean-env
 ```
 
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
+
+Pull requests also run immutable dependency review, full-history and proposed-tree secret scanning, pinned static analysis, license/migration/workflow checks, and validated CycloneDX output. Scheduled default-branch verification adds production image scans and BuildKit provenance validation. See the [supply-chain security guide](docs/operations/supply-chain-security.md) for trust boundaries, thresholds, triage, suppressions, and local reproduction.
 
 `npm run verify:clean-env` uses a uniquely named `nexa-chat-clean-verify-*`
 Compose project and per-run API, PostgreSQL, Valkey, and SeaweedFS ports, then

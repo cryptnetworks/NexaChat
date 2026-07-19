@@ -1,0 +1,84 @@
+name: Supply chain security
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * 3'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  source-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 24, cache: npm }
+      - run: npm ci --ignore-scripts
+      - run: npm run verify:security-policy
+      - run: npm audit --audit-level=high
+      - name: Scan repository history and proposed tree for secrets
+        run: bash scripts/run-secret-scan.sh "$RUNNER_TEMP/security-reports"
+      - name: Run pinned static security analysis
+        run: bash scripts/run-static-analysis.sh "$RUNNER_TEMP/security-reports"
+      - name: Prove scanners reject controlled fixtures
+        run: npm run test:security-tools
+      - name: Generate and validate application SBOM
+        run: |
+          npm sbom --sbom-format cyclonedx > "$RUNNER_TEMP/security-reports/nexa-chat.cdx.json"
+          npm run verify:sbom -- "$RUNNER_TEMP/security-reports/nexa-chat.cdx.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: source-security-${{ github.sha }}
+          path: ${{ runner.temp }}/security-reports
+          if-no-files-found: warn
+          retention-days: 30
+
+  production-security:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NEXA_IMAGE_REVISION: ${{ github.sha }}
+      NEXA_IMAGE_VERSION: security-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build production images with BuildKit provenance
+        run: |
+          mkdir -p "$RUNNER_TEMP/build-metadata" "$RUNNER_TEMP/image-reports"
+          docker build --target postgres-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/postgres-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-postgres:security .
+          docker build --target server-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/server-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-server:security .
+          docker build --target edge-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/edge-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-edge:security .
+          docker build --target object-storage-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/object-storage-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-object-storage:security .
+          docker pull valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+      - name: Validate build provenance
+        run: node scripts/verify-build-metadata.mjs "$RUNNER_TEMP/build-metadata" "$NEXA_IMAGE_REVISION" "$NEXA_IMAGE_VERSION"
+      - name: Scan production images and validate image SBOMs
+        run: |
+          bash scripts/scan-production-images.sh "$RUNNER_TEMP/image-reports" \
+            nexa-chat-server:security \
+            nexa-chat-edge:security \
+            nexa-chat-object-storage:security \
+            nexa-chat-postgres:security \
+            valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: production-security-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/build-metadata
+            ${{ runner.temp }}/image-reports
+          if-no-files-found: warn
+          retention-days: 30

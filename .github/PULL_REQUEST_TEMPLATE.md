@@ -21,3 +21,4 @@
 - [ ] Documentation is updated when behavior changes.
 - [ ] No secrets or private data are included.
 - [ ] Dependency changes include upstream/release-note and lockfile review; major updates document compatibility, migration, rollback, and manual testing.
+- [ ] Security suppressions identify an owner, technical rationale, compensating control, and expiration or review date.

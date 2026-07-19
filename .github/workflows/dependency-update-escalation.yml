@@ -5,12 +5,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 jobs:
   escalate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}

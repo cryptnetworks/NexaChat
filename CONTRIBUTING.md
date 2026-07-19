@@ -8,6 +8,8 @@ Workspace dependency changes must comply with `docs/architecture/dependency-boun
 
 Automated and manual dependency changes follow `docs/operations/dependency-updates.md`. Major updates require release-note, compatibility, migration, rollback, and manual-test evidence; no dependency update is eligible for automatic merge.
 
+Security and supply-chain changes follow `docs/operations/supply-chain-security.md`. Reproduce the relevant policy, secret, static, dependency, SBOM, provenance, and container gates locally. Suppressions require a named owner, technical rationale, compensating control, and expiration or review date.
+
 Branches use `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `chore/`, or `security/` plus a short description. Commits use Conventional Commits such as `feat(server): add community creation`.
 
 Pull requests explain the problem and solution, security/privacy/migration/accessibility/operational effects, and a test plan. Visible changes include screenshots. Architecture changes use an ADR. Report vulnerabilities through the process in `SECURITY.md`, not a public issue.

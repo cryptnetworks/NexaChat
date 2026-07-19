@@ -98,4 +98,7 @@ A production backup must consistently cover PostgreSQL and object storage, encry
 
 Run containers as non-root with read-only filesystems where possible, terminate TLS at a maintained proxy, restrict service ports to a private network, rotate secrets, set explicit quotas, collect OpenTelemetry logs/metrics/traces without message content, and handle `SIGTERM` gracefully. Kubernetes is not required.
 
-The initial Compose file is for development services only. Release images, migration automation, signing, scanning, and an update procedure remain planned production work.
+The initial Compose file is for development services only. The production
+profile, migration automation, image scanning, SBOMs, and provenance checks are
+documented separately. Artifact signing and release publication remain distinct,
+explicitly authorized operations.
