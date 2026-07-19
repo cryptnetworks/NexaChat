@@ -40,6 +40,7 @@ jobs:
       - run: npm run build
       - run: npm audit --audit-level=high
       - run: docker compose config --quiet
+      - run: npm run verify:clean-env
       - name: Generate software bill of materials
         run: npm sbom --sbom-format cyclonedx > nexa-chat.cdx.json
       - uses: actions/upload-artifact@v7

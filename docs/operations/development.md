@@ -1,10 +1,48 @@
 # Development and operations
 
+## Reproducible startup
+
+Node 24.18.0 is pinned for nvm, asdf/mise, and tools that consume
+`.node-version`; npm 11.16.0 is pinned in `package.json`. Run `npm run dev:up`
+from the repository root. It rejects a mismatched Node/npm version with a stable
+`toolchain_error`, preserves an existing `.env`, installs the exact lockfile,
+waits for pinned Compose services to become healthy, and then runs both
+development processes in the foreground. Stop the processes with Ctrl-C;
+`docker compose down` stops services without deleting data.
+
 ## Local services
 
 Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and MinIO is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness. `/health/ready` returns `200` only when PostgreSQL is reachable and its schema matches this build; otherwise it returns `503` without exposing connection details.
+
+For a destructive clean smoke test, run `npm run verify:clean-env`. It is bounded
+to Compose project `nexa-chat-clean-verify`, published PostgreSQL port 55432,
+server port 3100, and `/tmp/nexa-chat-clean-verify.log`. Cleanup deletes only
+that project's temporary volume. Do not reuse that project name for valuable
+data. The test proves empty-database migration, HTTP 200 readiness, HTTP 503
+during PostgreSQL loss, and return to 200 after recovery.
+
+## Troubleshooting
+
+- `toolchain_error`: activate Node 24.18.0 with the repository's version-manager
+  file and install npm 11.16.0; do not bypass the check.
+- A published-port conflict: stop the process using 5432/6379/9000/9001, or set
+  `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
+  `MINIO_API_PUBLISHED_PORT`, and `MINIO_CONSOLE_PUBLISHED_PORT` before startup
+  and update matching application URLs in `.env`.
+- A service never becomes healthy: run `docker compose ps` and bounded
+  `docker compose logs --tail=100 <service>`; logs must not be pasted publicly
+  without checking for credentials or private content.
+- `invalid_configuration`: compare key names with `.env.example`; the diagnostic
+  deliberately omits the rejected value.
+- PostgreSQL outage: `/health/live` remains live while `/health/ready` returns 503. Restore PostgreSQL and readiness recovers without restarting the API.
+- Corrupt local disposable data: back up anything needed, then explicitly run
+  `docker compose down --volumes`; this permanently deletes local service data.
+
+If `npm ci` or image pulls fail because a registry is unavailable, stop and
+retry after recovery. Do not switch registries, relax integrity, use `npm
+install`, or replace pinned image digests as an outage workaround.
 
 ## Runtime configuration
 
