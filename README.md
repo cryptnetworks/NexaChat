@@ -54,10 +54,26 @@ npm run verify:clean-env
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
 
 `npm run verify:clean-env` uses a uniquely named `nexa-chat-clean-verify-*`
-Compose project and per-run API, PostgreSQL, Valkey, and MinIO ports, then
+Compose project and per-run API, PostgreSQL, Valkey, and SeaweedFS ports, then
 removes only that project's containers, network, and volumes. It verifies empty-database
 migration, generic health semantics, metrics, required and optional dependency
 outage/recovery, private-value exclusion, and bounded shutdown.
+
+## Production deployment
+
+The hardened single-host profile builds pinned, non-root server and HTTPS edge
+images, publishes only the edge, keeps providers on an internal network, injects
+credentials as file-backed secrets, gates startup on private-bucket creation and
+forward-only migration, and bounds runtime resources and shutdown. Follow the
+[production deployment runbook](docs/operations/production-deployment.md) before
+using `compose.production.yml`; the development Compose file is not a production
+configuration.
+
+Use the isolated end-to-end check before an installation or upgrade:
+
+```sh
+bash scripts/verify-production.sh
+```
 
 ## Architecture
 

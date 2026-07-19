@@ -40,6 +40,7 @@ describe('standard API errors and request metadata', () => {
         rateLimit: 10,
         rateWindowMs: 60_000,
         logLevel: 'info',
+        trustedProxyCidrs: [],
       },
     );
     const oversized = await app.inject({

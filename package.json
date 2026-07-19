@@ -14,7 +14,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present && npm run verify:production-artifacts",
+    "build:production": "npm run build",
     "dev": "npm run dev --workspace @nexa/server & npm run dev --workspace @nexa/web",
     "dev:up": "bash scripts/dev-up.sh",
     "format": "prettier --write .",
@@ -34,12 +35,14 @@
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "verify:production-artifacts": "node scripts/verify-production-artifacts.mjs",
     "verify:clean-env": "bash scripts/verify-clean-environment.sh"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "24.0.15",
     "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
     "eslint": "10.7.0",
     "prettier": "3.9.5",
     "typescript": "5.8.3",

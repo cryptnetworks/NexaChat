@@ -14,6 +14,7 @@ import {
   type RealtimeEnvelope,
 } from '@nexa/realtime-contracts';
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
+import { createClientAddressResolver } from './client-address.js';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -39,6 +40,7 @@ export interface WebsocketMetrics {
 export interface WebsocketHubOptions {
   auth: AuthRuntime;
   trustedOrigin: string;
+  trustedProxyCidrs?: readonly string[];
   limits?: Partial<WebsocketLimits>;
   metrics?: WebsocketMetrics;
 }
@@ -104,10 +106,13 @@ export function attachWebsocketHub(
   options: WebsocketHubOptions,
 ): WebsocketHub {
   const limits = { ...defaults, ...options.limits };
+  const clientAddresses = createClientAddressResolver(
+    options.trustedProxyCidrs,
+  );
   const metrics = options.metrics ?? noopMetrics;
   const pending = new Map<
     IncomingMessage,
-    AuthenticatedSession & { token: string }
+    AuthenticatedSession & { token: string; address: string }
   >();
   const connections = new Map<WebSocket, ConnectionState>();
   const sequences = new Map<string, number>();
@@ -148,7 +153,10 @@ export function attachWebsocketHub(
   ): Promise<void> {
     if (draining) throw new AdmissionError('server_draining');
     if (origin !== options.trustedOrigin) throw new AdmissionError('origin');
-    const address = request.socket.remoteAddress ?? 'unknown';
+    const address = clientAddresses.resolve(
+      request.socket.remoteAddress,
+      request.headers['x-forwarded-for'],
+    );
     if (
       connections.size >= limits.maxConnections ||
       countConnections((state) => state.address === address) >=
@@ -166,7 +174,7 @@ export function attachWebsocketHub(
       limits.maxConnectionsPerAccount
     )
       throw new AdmissionError('capacity');
-    pending.set(request, { ...authenticated, token });
+    pending.set(request, { ...authenticated, token, address });
   }
 
   function countConnections(predicate: (state: ConnectionState) => boolean) {
@@ -186,7 +194,7 @@ export function attachWebsocketHub(
     const state: ConnectionState = {
       actorId: authenticated.account.id,
       token: authenticated.token,
-      address: request.socket.remoteAddress ?? 'unknown',
+      address: authenticated.address,
       subscriptions: new Set(),
       lastSeenAt: now,
       rateStartedAt: now,

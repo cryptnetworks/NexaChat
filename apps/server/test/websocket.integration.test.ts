@@ -63,6 +63,7 @@ describe('secure real WebSocket integration', () => {
   let endpoint: string;
   let limits: Partial<WebsocketLimits>;
   let telemetry: Telemetry;
+  let trustedProxyCidrs: string[];
 
   beforeEach(async () => {
     service = new InMemoryCommunityService();
@@ -75,6 +76,7 @@ describe('secure real WebSocket integration', () => {
       drainMs: 100,
     };
     telemetry = new Telemetry({ traceSampleRate: 0 });
+    trustedProxyCidrs = [];
     app = buildApp(service);
     await app.listen({ host: '127.0.0.1', port: 0 });
     attach();
@@ -91,6 +93,7 @@ describe('secure real WebSocket integration', () => {
     app.websocketHub = attachWebsocketHub(app.server, service, {
       auth,
       trustedOrigin: origin,
+      trustedProxyCidrs,
       limits,
       metrics: telemetry.websocketMetrics(),
     });
@@ -110,10 +113,17 @@ describe('secure real WebSocket integration', () => {
     return issued;
   }
 
-  function connect(cookie: string, selectedOrigin = origin): WebSocket {
+  function connect(
+    cookie: string,
+    selectedOrigin = origin,
+    forwardedFor?: string,
+  ): WebSocket {
     return new WebSocket(endpoint, {
       origin: selectedOrigin,
-      headers: { cookie: `nexa_session=${cookie}` },
+      headers: {
+        cookie: `nexa_session=${cookie}`,
+        ...(forwardedFor ? { 'x-forwarded-for': forwardedFor } : {}),
+      },
     });
   }
 
@@ -452,6 +462,40 @@ describe('secure real WebSocket integration', () => {
         'event="realtime_connection_closed",outcome="policy"',
       );
     });
+  });
+
+  it('applies per-address limits to forwarded clients only from trusted proxies', async () => {
+    await app.websocketHub?.close();
+    limits = {
+      ...limits,
+      maxConnectionsPerAddress: 1,
+      maxConnectionsPerAccount: 4,
+    };
+    const issued = await identity('proxy-limits');
+    attach();
+
+    const direct = connect(issued.session.token, origin, '198.51.100.7');
+    await opened(direct);
+    await expectUpgradeRejected(
+      connect(issued.session.token, origin, '198.51.100.8'),
+      403,
+    );
+    const directClosed = closed(direct);
+    direct.close(1000);
+    await directClosed;
+
+    await app.websocketHub?.close();
+    trustedProxyCidrs = ['127.0.0.1/32'];
+    attach();
+    const first = connect(issued.session.token, origin, '198.51.100.7');
+    const second = connect(issued.session.token, origin, '198.51.100.8');
+    await Promise.all([opened(first), opened(second)]);
+    await expectUpgradeRejected(
+      connect(issued.session.token, origin, '198.51.100.7'),
+      403,
+    );
+    first.close(1000);
+    second.close(1000);
   });
 
   it('drains on shutdown and releases state across repeated isolated connections', async () => {

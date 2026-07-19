@@ -11,6 +11,7 @@ export interface ObjectStorageRuntime {
 export async function initializeObjectStorage(
   runtime: RuntimeConfig['objectStorage'],
   telemetry?: Telemetry,
+  failClosed = false,
 ): Promise<ObjectStorageRuntime> {
   if (!runtime.enabled || !runtime.config)
     return {
@@ -32,6 +33,10 @@ export async function initializeObjectStorage(
   try {
     await check();
   } catch {
+    if (failClosed) {
+      store.close();
+      throw new Error('object_storage_unavailable');
+    }
     process.stderr.write(
       `${JSON.stringify({ event: 'object_storage.degraded', code: 'object_storage_unavailable' })}\n`,
     );

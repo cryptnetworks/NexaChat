@@ -56,10 +56,14 @@ import {
 } from './auth-routes.js';
 import type { RuntimeConfig } from './config.js';
 import { Telemetry, type TraceContext } from './telemetry.js';
+import { createClientAddressResolver } from './client-address.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
     drainHttp?: () => Promise<void>;
+  }
+  interface FastifyRequest {
+    clientAddress: string;
   }
 }
 
@@ -71,6 +75,9 @@ export function buildApp(
   serverConfig?: RuntimeConfig['server'],
   telemetry: Telemetry = new Telemetry({ traceSampleRate: 0 }),
 ): FastifyInstance {
+  const clientAddresses = createClientAddressResolver(
+    serverConfig?.trustedProxyCidrs,
+  );
   const app = Fastify({
     bodyLimit: serverConfig?.bodyLimitBytes ?? 16_384,
     requestTimeout: serverConfig?.requestTimeoutMs ?? 15_000,
@@ -108,6 +115,7 @@ export function buildApp(
     requestIdHeader: false,
     genReqId: () => randomUUID(),
   });
+  app.decorateRequest('clientAddress', 'unknown');
   telemetry.setLogSink((record) => {
     if (
       (record.event === 'dependency.state_changed' &&
@@ -168,6 +176,10 @@ export function buildApp(
           httpDrainWaiters.add(resolve);
         });
   app.addHook('onRequest', (request, reply, done) => {
+    request.clientAddress = clientAddresses.resolve(
+      request.raw.socket.remoteAddress,
+      request.headers['x-forwarded-for'],
+    );
     const traceparent = Array.isArray(request.headers.traceparent)
       ? request.headers.traceparent[0]
       : request.headers.traceparent;
@@ -210,7 +222,7 @@ export function buildApp(
       return;
     }
     const now = Date.now();
-    const current = requestBuckets.get(request.ip);
+    const current = requestBuckets.get(request.clientAddress);
     const bucket =
       !current || now - current.startedAt >= requestWindowMs
         ? { count: 0, startedAt: now }
@@ -229,7 +241,10 @@ export function buildApp(
       done();
       return;
     }
-    requestBuckets.set(request.ip, { ...bucket, count: bucket.count + 1 });
+    requestBuckets.set(request.clientAddress, {
+      ...bucket,
+      count: bucket.count + 1,
+    });
     if (requestBuckets.size > 10_000) {
       const oldest = requestBuckets.keys().next().value;
       if (oldest) requestBuckets.delete(oldest);
@@ -719,7 +734,11 @@ export function buildApp(
     const actorId = await verifiedActor(request, auth, input.actorId, true);
     return reply.send(
       membershipSchema.parse(
-        await service.acceptInvitation(actorId, input.token, request.ip),
+        await service.acceptInvitation(
+          actorId,
+          input.token,
+          request.clientAddress,
+        ),
       ),
     );
   });

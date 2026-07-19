@@ -1,10 +1,11 @@
 import { createPostgresPool, migratePostgres } from '@nexa/postgres';
 import { parseRuntimeConfig, safeConfigurationDiagnostic } from './config.js';
+import { loadFileBackedSecrets } from './secrets.js';
 
 async function run(): Promise<void> {
   let config;
   try {
-    config = parseRuntimeConfig(process.env);
+    config = parseRuntimeConfig(loadFileBackedSecrets(process.env));
   } catch (error) {
     process.stderr.write(
       `${JSON.stringify({ event: 'configuration.invalid', ...safeConfigurationDiagnostic(error) })}\n`,

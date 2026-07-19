@@ -12,7 +12,7 @@ development processes in the foreground. Stop the processes with Ctrl-C;
 
 ## Local services
 
-Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and MinIO is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
+Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness,
 `/health/startup` reports completed initialization, and `/health/ready` returns
@@ -25,7 +25,7 @@ for probe semantics, telemetry privacy, alerts, and local smoke checks.
 For a destructive clean smoke test, run `npm run verify:clean-env`. Each run uses
 a uniquely named `nexa-chat-clean-verify-*` Compose project, per-run API and
 provider ports, a private temporary log, and project-scoped PostgreSQL, Valkey,
-and MinIO volumes. The bounded cleanup trap removes only those disposable
+and SeaweedFS volumes. The bounded cleanup trap removes only those disposable
 resources. The script verifies the toolchain, lockfile install, Compose
 configuration, empty-database migration, generic health and metrics,
 PostgreSQL-required outage/recovery, optional Valkey and object-storage
@@ -36,9 +36,9 @@ point this test at shared or production providers.
 
 - `toolchain_error`: activate Node 24.18.0 with the repository's version-manager
   file and install npm 11.16.0; do not bypass the check.
-- A published-port conflict: stop the process using 5432/6379/9000/9001, or set
+- A published-port conflict: stop the process using 5432/6379/8333, or set
   `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
-  `MINIO_API_PUBLISHED_PORT`, and `MINIO_CONSOLE_PUBLISHED_PORT` before startup
+  `S3_PUBLISHED_PORT` before startup
   and update matching application URLs in `.env`.
 - A service never becomes healthy: run `docker compose ps` and bounded
   `docker compose logs --tail=100 <service>`; logs must not be pasted publicly

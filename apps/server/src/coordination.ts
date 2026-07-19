@@ -11,6 +11,7 @@ export interface CoordinationRuntime {
 export async function initializeCoordination(
   runtime: RuntimeConfig['coordination'],
   telemetry?: Telemetry,
+  failClosed = false,
 ): Promise<CoordinationRuntime> {
   if (!runtime.enabled || !runtime.config)
     return {
@@ -32,6 +33,10 @@ export async function initializeCoordination(
   try {
     await check();
   } catch {
+    if (failClosed) {
+      await coordination.close();
+      throw new Error('coordination_unavailable');
+    }
     process.stderr.write(
       `${JSON.stringify({ event: 'coordination.degraded', code: 'coordination_unavailable' })}\n`,
     );

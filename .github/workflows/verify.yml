@@ -40,8 +40,42 @@ jobs:
       - run: npm run build
       - run: npm audit --audit-level=high
       - run: docker compose config --quiet
+      - name: Validate production Compose model
+        env:
+          NEXA_SECRET_DIR: /tmp/nexa-chat-ci-secrets
+          NEXA_PUBLIC_ORIGIN: https://chat.example.test
+          NEXA_IMAGE_TAG: verify
+          NEXA_IMAGE_VERSION: verify
+          NEXA_IMAGE_REVISION: ${{ github.sha }}
+        run: docker compose -f compose.production.yml config --quiet
       - run: npm run verify:clean-env
+      - name: Build production runtime images
+        run: |
+          docker build --target postgres-runtime --build-arg NEXA_IMAGE_REVISION="$GITHUB_SHA" --build-arg NEXA_IMAGE_VERSION="verify-$GITHUB_SHA" --tag nexa-chat-postgres:verify .
+          docker build --target server-runtime --build-arg NEXA_IMAGE_REVISION="$GITHUB_SHA" --build-arg NEXA_IMAGE_VERSION="verify-$GITHUB_SHA" --tag nexa-chat-server:verify .
+          docker build --target edge-runtime --build-arg NEXA_IMAGE_REVISION="$GITHUB_SHA" --build-arg NEXA_IMAGE_VERSION="verify-$GITHUB_SHA" --tag nexa-chat-edge:verify .
+          docker build --target object-storage-runtime --build-arg NEXA_IMAGE_REVISION="$GITHUB_SHA" --build-arg NEXA_IMAGE_VERSION="verify-$GITHUB_SHA" --tag nexa-chat-object-storage:verify .
+          docker pull valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+      - name: Scan production images and generate image SBOMs
+        id: image_scan
+        continue-on-error: true
+        run: |
+          bash scripts/scan-production-images.sh "$RUNNER_TEMP/nexa-image-sbom" \
+            nexa-chat-server:verify \
+            nexa-chat-edge:verify \
+            nexa-chat-object-storage:verify \
+            nexa-chat-postgres:verify \
+            valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
       - name: Generate software bill of materials
+        if: always()
         run: npm sbom --sbom-format cyclonedx > nexa-chat.cdx.json
       - uses: actions/upload-artifact@v7
-        with: { name: sbom, path: nexa-chat.cdx.json }
+        if: always()
+        with:
+          name: sbom
+          path: |
+            nexa-chat.cdx.json
+            ${{ runner.temp }}/nexa-image-sbom/*.json
+      - name: Enforce image scan gate
+        if: steps.image_scan.outcome == 'failure'
+        run: exit 1

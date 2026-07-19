@@ -9,8 +9,7 @@ port_offset=$(( $$ % 500 ))
 server_port=$(( 31000 + port_offset ))
 postgres_port=$(( 55000 + port_offset ))
 valkey_port=$(( 56000 + port_offset ))
-minio_api_port=$(( 57000 + port_offset ))
-minio_console_port=$(( 58000 + port_offset ))
+s3_port=$(( 57000 + port_offset ))
 
 process_exited() {
   local pid="$1"
@@ -96,8 +95,7 @@ docker compose config --quiet
 
 export POSTGRES_PUBLISHED_PORT="$postgres_port"
 export VALKEY_PUBLISHED_PORT="$valkey_port"
-export MINIO_API_PUBLISHED_PORT="$minio_api_port"
-export MINIO_CONSOLE_PUBLISHED_PORT="$minio_console_port"
+export S3_PUBLISHED_PORT="$s3_port"
 export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
 export NEXA_SERVER_PORT="$server_port"
 export NEXA_SERVER_HOST=127.0.0.1
@@ -108,7 +106,7 @@ export NEXA_COORDINATION_ENABLED=true
 export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export NEXA_OBJECT_STORAGE_ENABLED=true
 export NEXA_OBJECT_STORAGE_CREATE_BUCKET=true
-export S3_ENDPOINT="http://127.0.0.1:${minio_api_port}"
+export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
 export S3_ACCESS_KEY='nexa-local'
 export S3_SECRET_KEY='change-this-local-secret'
 export S3_BUCKET='nexa-observability-verify'

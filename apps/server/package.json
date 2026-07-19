@@ -5,10 +5,13 @@
   "type": "module",
   "license": "GPL-3.0-only",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/build-server-production.mjs",
+    "build:production": "npm run build",
     "dev": "tsx watch src/main.ts",
     "migrate": "tsx src/migrate.ts",
-    "start": "node dist/main.js",
+    "migrate:production": "node dist-production/migrate.mjs",
+    "start": "node dist-production/main.mjs",
+    "start:production": "node dist-production/main.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

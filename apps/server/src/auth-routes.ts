@@ -32,7 +32,7 @@ export function registerAuthRoutes(
     const input = registrationSchema.parse(request.body);
     const result = await runtime.service.register({
       ...input,
-      source: request.ip,
+      source: request.clientAddress,
     });
     setSessionCookie(reply, result.session.token, runtime.config);
     return reply.code(201).send(authAccountSchema.parse(result.account));
@@ -43,7 +43,7 @@ export function registerAuthRoutes(
     const input = loginSchema.parse(request.body);
     const result = await runtime.service.login({
       ...input,
-      source: request.ip,
+      source: request.clientAddress,
     });
     setSessionCookie(reply, result.session.token, runtime.config);
     return reply.send(authAccountSchema.parse(result.account));

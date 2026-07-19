@@ -8,7 +8,7 @@ The adapter is deliberately not an HTTP delivery layer. Callers must authorize t
 
 Set the `S3_*` values and the bounded `NEXA_OBJECT_STORAGE_*` values documented in `.env.example`. Production requires an HTTPS endpoint, disables automatic bucket creation, and refuses to start if creation is enabled. Startup verifies that the bucket exists and conservatively rejects any bucket policy because safely proving arbitrary policies private is provider-specific. Provider failures emit only the stable `object_storage.degraded` event and `object_storage_unavailable` code; endpoints, credentials, keys, and provider details are excluded.
 
-Local development may create the configured bucket. The Compose MinIO credentials match `.env.example`; enable the adapter only when MinIO is running.
+Local development may create the configured bucket. The Compose SeaweedFS credentials match `.env.example`; enable the adapter only when SeaweedFS is running.
 
 ## Integrity, cleanup, and recovery
 

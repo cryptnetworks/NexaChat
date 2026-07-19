@@ -3,10 +3,16 @@ import type { PostgresConfig } from '@nexa/postgres';
 import type { PasswordHashParameters } from '@nexa/auth';
 import type { ObjectStorageConfig } from '@nexa/object-storage';
 import type { CoordinationConfig } from '@nexa/coordination';
+import { parseTrustedProxyCidrs } from './client-address.js';
 
 export type RuntimeMode = 'development' | 'test' | 'production';
+export type DeploymentProfile = 'standard' | 'single-host-private';
 export interface RuntimeConfig {
   mode: RuntimeMode;
+  deployment: {
+    profile: DeploymentProfile;
+    publicUrl: string;
+  };
   server: {
     host: string;
     port: number;
@@ -16,6 +22,7 @@ export interface RuntimeConfig {
     rateLimit: number;
     rateWindowMs: number;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
+    trustedProxyCidrs: string[];
   };
   observability: {
     traceSampleRate: number;
@@ -62,6 +69,9 @@ export class ConfigurationError extends Error {
 const keys = new Set([
   'NODE_ENV',
   'DATABASE_URL',
+  'NEXA_DEPLOYMENT_PROFILE',
+  'NEXA_PUBLIC_URL',
+  'NEXA_TRUSTED_PROXY_CIDRS',
   'NEXA_SERVER_HOST',
   'NEXA_SERVER_PORT',
   'NEXA_SERVER_BODY_LIMIT_BYTES',
@@ -125,6 +135,21 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     'test',
     'production',
   ] as const);
+  const deploymentProfile = choice(
+    env.NEXA_DEPLOYMENT_PROFILE ?? 'standard',
+    'NEXA_DEPLOYMENT_PROFILE',
+    ['standard', 'single-host-private'] as const,
+  );
+  if (mode !== 'production' && deploymentProfile !== 'standard')
+    fail(
+      'NEXA_DEPLOYMENT_PROFILE',
+      'single-host-private is supported only in production',
+    );
+  if (mode === 'production' && env.NODE_TLS_REJECT_UNAUTHORIZED === '0')
+    fail(
+      'NODE_TLS_REJECT_UNAUTHORIZED',
+      'cannot disable certificate verification in production',
+    );
   const connectionString = required(env, 'DATABASE_URL');
   const databaseUrl = url(connectionString, 'DATABASE_URL');
   if (
@@ -132,12 +157,50 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     databaseUrl.protocol !== 'postgresql:'
   )
     fail('DATABASE_URL', 'must use the postgres or postgresql scheme');
+  if (mode === 'production')
+    validateProductionDatabase(databaseUrl, deploymentProfile);
   const trustedOrigin = origin(
     required(env, 'NEXA_WEB_ORIGIN'),
     'NEXA_WEB_ORIGIN',
   );
   if (mode === 'production' && !trustedOrigin.startsWith('https:'))
     fail('NEXA_WEB_ORIGIN', 'must use HTTPS in production');
+  const publicUrl = origin(
+    mode === 'production'
+      ? required(env, 'NEXA_PUBLIC_URL')
+      : (env.NEXA_PUBLIC_URL ?? trustedOrigin),
+    'NEXA_PUBLIC_URL',
+  );
+  if (mode === 'production') {
+    if (!publicUrl.startsWith('https:'))
+      fail('NEXA_PUBLIC_URL', 'must use HTTPS in production');
+    if (publicUrl !== trustedOrigin)
+      fail('NEXA_PUBLIC_URL', 'must match NEXA_WEB_ORIGIN in production');
+    const hostname = new URL(publicUrl).hostname;
+    if (isLocalHostname(hostname))
+      fail('NEXA_PUBLIC_URL', 'must not use a local hostname in production');
+  }
+  let trustedProxyCidrs: string[];
+  try {
+    trustedProxyCidrs = parseTrustedProxyCidrs(
+      env.NEXA_TRUSTED_PROXY_CIDRS,
+      mode === 'production',
+    );
+  } catch (error) {
+    fail(
+      'NEXA_TRUSTED_PROXY_CIDRS',
+      error instanceof Error ? error.message : 'must contain valid CIDRs',
+    );
+  }
+  if (
+    deploymentProfile === 'single-host-private' &&
+    (trustedProxyCidrs.length !== 1 ||
+      !/^\d+\.\d+\.\d+\.\d+\/32$/u.test(trustedProxyCidrs[0] ?? ''))
+  )
+    fail(
+      'NEXA_TRUSTED_PROXY_CIDRS',
+      'single-host-private requires exactly one IPv4 /32 edge address',
+    );
   const secureCookies = bool(
     env.NEXA_SECURE_COOKIES,
     mode === 'production',
@@ -180,11 +243,16 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     ? required(env, 'S3_ENDPOINT')
     : undefined;
   if (objectStorageEnabled && mode === 'production') {
-    const parsed = url(
-      storageEndpoint ?? fail('S3_ENDPOINT', 'is required'),
-      'S3_ENDPOINT',
+    const parsed = new URL(
+      origin(
+        storageEndpoint ?? fail('S3_ENDPOINT', 'is required'),
+        'S3_ENDPOINT',
+      ),
     );
-    if (parsed.protocol !== 'https:')
+    if (
+      parsed.protocol !== 'https:' &&
+      !isSingleHostObjectStorage(parsed, deploymentProfile)
+    )
       fail('S3_ENDPOINT', 'must use HTTPS in production');
   }
   const createBucket = bool(
@@ -205,15 +273,37 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const coordinationUrl = coordinationEnabled
     ? required(env, 'REDIS_URL')
     : undefined;
-  if (
-    coordinationEnabled &&
-    mode === 'production' &&
-    url(coordinationUrl ?? fail('REDIS_URL', 'is required'), 'REDIS_URL')
-      .protocol !== 'rediss:'
-  )
-    fail('REDIS_URL', 'must use TLS in production');
+  if (coordinationEnabled && mode === 'production') {
+    const parsed = url(
+      coordinationUrl ?? fail('REDIS_URL', 'is required'),
+      'REDIS_URL',
+    );
+    if (!parsed.password)
+      fail('REDIS_URL', 'must include authentication in production');
+    if (
+      parsed.protocol !== 'rediss:' &&
+      !isSingleHostCoordination(parsed, deploymentProfile)
+    )
+      fail('REDIS_URL', 'must use TLS in production');
+  }
+  if (deploymentProfile === 'single-host-private') {
+    if (!coordinationEnabled)
+      fail(
+        'NEXA_COORDINATION_ENABLED',
+        'must be enabled for the single-host-private profile',
+      );
+    if (!objectStorageEnabled)
+      fail(
+        'NEXA_OBJECT_STORAGE_ENABLED',
+        'must be enabled for the single-host-private profile',
+      );
+  }
   return {
     mode,
+    deployment: {
+      profile: deploymentProfile,
+      publicUrl,
+    },
     server: {
       host: env.NEXA_SERVER_HOST ?? '0.0.0.0',
       port: int(env.NEXA_SERVER_PORT, 3000, 1, 65_535, 'NEXA_SERVER_PORT'),
@@ -259,6 +349,7 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
         'warn',
         'error',
       ] as const),
+      trustedProxyCidrs,
     },
     observability: {
       traceSampleRate: ratio(
@@ -597,6 +688,132 @@ function origin(value: string, key: string): string {
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== value)
     fail(key, 'must be an exact HTTP or HTTPS origin without a path');
   return parsed.origin;
+}
+function validateProductionDatabase(
+  parsed: URL,
+  profile: DeploymentProfile,
+): void {
+  if (!parsed.username || !parsed.password)
+    fail('DATABASE_URL', 'must include authentication in production');
+  if (parsed.pathname.length <= 1)
+    fail('DATABASE_URL', 'must include a database name');
+  if (parsed.hash) fail('DATABASE_URL', 'must not contain a fragment');
+  validateProductionDatabaseParameters(parsed);
+  if (isSingleHostDatabase(parsed, profile)) return;
+  validateProductionDatabaseTls(parsed);
+}
+function validateProductionDatabaseParameters(parsed: URL): void {
+  const allowed = new Set([
+    'sslmode',
+    'sslcert',
+    'sslkey',
+    'sslrootcert',
+    'sslnegotiation',
+  ]);
+  const seen = new Set<string>();
+  for (const [key] of parsed.searchParams.entries()) {
+    if (!allowed.has(key))
+      fail('DATABASE_URL', 'contains unsupported query parameters');
+    if (seen.has(key))
+      fail('DATABASE_URL', 'must not contain duplicate query parameters');
+    seen.add(key);
+  }
+}
+function validateProductionDatabaseTls(parsed: URL): void {
+  const tlsParameters = new Set([
+    'ssl',
+    'sslcert',
+    'sslkey',
+    'sslmode',
+    'sslnegotiation',
+    'sslrootcert',
+    'uselibpqcompat',
+  ]);
+  const entries = [...parsed.searchParams.entries()];
+  if (
+    entries.some(
+      ([key]) =>
+        tlsParameters.has(key.toLowerCase()) && key !== key.toLowerCase(),
+    )
+  )
+    fail('DATABASE_URL', 'TLS parameter names must use lowercase');
+  if (parsed.searchParams.has('uselibpqcompat'))
+    fail('DATABASE_URL', 'must not enable libpq compatibility in production');
+  if (parsed.searchParams.has('ssl'))
+    fail('DATABASE_URL', 'must not combine ssl with sslmode in production');
+  for (const key of tlsParameters) {
+    const values = parsed.searchParams.getAll(key);
+    if (values.length > 1)
+      fail('DATABASE_URL', 'must not contain duplicate TLS parameters');
+    if (key !== 'sslmode' && values.some((value) => !value))
+      fail('DATABASE_URL', 'TLS parameters cannot be empty');
+  }
+  const sslModes = parsed.searchParams.getAll('sslmode');
+  if (sslModes.length !== 1 || sslModes[0] !== 'verify-full')
+    fail('DATABASE_URL', 'must use sslmode=verify-full in production');
+}
+function isSingleHostDatabase(
+  parsed: URL,
+  profile: DeploymentProfile,
+): boolean {
+  return (
+    profile === 'single-host-private' &&
+    (parsed.protocol === 'postgres:' || parsed.protocol === 'postgresql:') &&
+    parsed.hostname === 'postgres' &&
+    parsed.port === '5432' &&
+    parsed.pathname.length > 1 &&
+    !parsed.hash &&
+    [...parsed.searchParams.keys()].length <= 1 &&
+    [...parsed.searchParams.keys()].every((key) => key === 'sslmode') &&
+    [null, 'disable'].includes(parsed.searchParams.get('sslmode'))
+  );
+}
+function isSingleHostCoordination(
+  parsed: URL,
+  profile: DeploymentProfile,
+): boolean {
+  return (
+    profile === 'single-host-private' &&
+    parsed.protocol === 'redis:' &&
+    parsed.hostname === 'valkey' &&
+    parsed.port === '6379' &&
+    (parsed.pathname === '' || parsed.pathname === '/') &&
+    !parsed.search &&
+    !parsed.hash
+  );
+}
+function isSingleHostObjectStorage(
+  parsed: URL,
+  profile: DeploymentProfile,
+): boolean {
+  return (
+    profile === 'single-host-private' &&
+    parsed.protocol === 'http:' &&
+    parsed.hostname === 'object-storage' &&
+    parsed.port === '8333' &&
+    (parsed.pathname === '' || parsed.pathname === '/') &&
+    !parsed.username &&
+    !parsed.password &&
+    !parsed.search &&
+    !parsed.hash
+  );
+}
+function isLocalHostname(hostname: string): boolean {
+  const unqualified = hostname.replace(/\.+$/u, '');
+  const normalized =
+    unqualified.startsWith('[') && unqualified.endsWith(']')
+      ? unqualified.slice(1, -1)
+      : unqualified;
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.startsWith('127.') ||
+    normalized === '::1' ||
+    (normalized.startsWith('::ffff:') &&
+      normalized.slice('::ffff:'.length).startsWith('7f')) ||
+    normalized === '0.0.0.0' ||
+    normalized === '::'
+  );
 }
 function fail(key: string, reason: string): never {
   throw new ConfigurationError(key, reason);

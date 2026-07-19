@@ -17,13 +17,14 @@ import {
 } from './health.js';
 import { Telemetry } from './telemetry.js';
 import { attachWebsocketHub } from './websocket.js';
+import { loadFileBackedSecrets } from './secrets.js';
 
 class StartupInterrupted extends Error {}
 
 async function start(): Promise<void> {
   let config;
   try {
-    config = parseRuntimeConfig(process.env);
+    config = parseRuntimeConfig(loadFileBackedSecrets(process.env));
   } catch (error) {
     process.stderr.write(
       `${JSON.stringify({ event: 'configuration.invalid', ...safeConfigurationDiagnostic(error) })}\n`,
@@ -151,11 +152,18 @@ async function start(): Promise<void> {
   process.on('SIGTERM', onSigterm);
 
   try {
-    coordination = await initializeCoordination(config.coordination, telemetry);
+    const failClosedProviders =
+      config.deployment.profile === 'single-host-private';
+    coordination = await initializeCoordination(
+      config.coordination,
+      telemetry,
+      failClosedProviders,
+    );
     interruptIfRequested();
     objectStorage = await initializeObjectStorage(
       config.objectStorage,
       telemetry,
+      failClosedProviders,
     );
     interruptIfRequested();
     database = await initializeDatabase(
@@ -198,6 +206,7 @@ async function start(): Promise<void> {
     app.websocketHub = attachWebsocketHub(app.server, database.service, {
       auth: database.auth,
       trustedOrigin: config.authentication.trustedOrigin,
+      trustedProxyCidrs: config.server.trustedProxyCidrs,
       limits: config.websocket,
       metrics: telemetry.websocketMetrics(),
     });
