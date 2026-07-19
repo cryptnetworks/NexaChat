@@ -88,6 +88,8 @@ for a typical deployment. The principal series are:
 - `nexa_authentication_failures_total` and
   `nexa_authorization_decisions_total` for privacy-safe aggregate security
   outcomes;
+- `nexa_rate_limit_decisions_total` for bounded address/account scope,
+  endpoint class, shared/local backend, and admission/degradation outcome;
 - `nexa_dependency_operations_total`,
   `nexa_dependency_operation_duration_seconds`, and
   `nexa_dependency_health`, plus `nexa_postgres_pool_connections` for
@@ -226,8 +228,9 @@ signals are:
   80% of its allocation;
 - warning: slow-consumer, stale-connection, or WebSocket rejection rates sharply
   exceed their established baseline;
-- warning: authentication rate limiting materially exceeds baseline, without
-  adding identity labels or exposing attempted identifiers; and
+- warning: rate-limit `limited`, `degraded`, or `dependency_failure` outcomes
+  materially exceed baseline, without adding identity labels or exposing
+  attempted identifiers; and
 - warning: either telemetry failure or dropped-series counter increases.
 
 Use a minimum event count with ratios so low-traffic instances do not page on a

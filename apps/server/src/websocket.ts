@@ -15,6 +15,7 @@ import {
 } from '@nexa/realtime-contracts';
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
 import { createClientAddressResolver } from './client-address.js';
+import type { RateLimitDecision, RequestRateLimiter } from './rate-limit.js';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -43,6 +44,7 @@ export interface WebsocketHubOptions {
   trustedProxyCidrs?: readonly string[];
   limits?: Partial<WebsocketLimits>;
   metrics?: WebsocketMetrics;
+  rateLimiter?: RequestRateLimiter;
 }
 
 export interface WebsocketHub {
@@ -84,7 +86,16 @@ interface ConnectionState {
 }
 
 class AdmissionError extends Error {
-  constructor(readonly reason: 'origin' | 'capacity' | 'server_draining') {
+  constructor(
+    readonly reason:
+      | 'capacity'
+      | 'dependency_unavailable'
+      | 'origin'
+      | 'rate_limited'
+      | 'server_draining',
+    readonly status = 403,
+    readonly decision?: RateLimitDecision,
+  ) {
     super('websocket_rejected');
   }
 }
@@ -128,7 +139,12 @@ export function attachWebsocketHub(
           callback(true);
         },
         (error: unknown) => {
-          const status = error instanceof AuthenticationError ? 401 : 403;
+          const status =
+            error instanceof AuthenticationError
+              ? 401
+              : error instanceof AdmissionError
+                ? error.status
+                : 403;
           metrics.increment('realtime_connection_rejected', {
             reason:
               status === 401
@@ -140,7 +156,16 @@ export function attachWebsocketHub(
           callback(
             false,
             status,
-            status === 401 ? 'Unauthorized' : 'Forbidden',
+            status === 401
+              ? 'Unauthorized'
+              : status === 429
+                ? 'Too Many Requests'
+                : status === 503
+                  ? 'Service Unavailable'
+                  : 'Forbidden',
+            error instanceof AdmissionError && error.decision
+              ? rateLimitHeaders(error.decision)
+              : undefined,
           );
         },
       );
@@ -157,6 +182,21 @@ export function attachWebsocketHub(
       request.socket.remoteAddress,
       request.headers['x-forwarded-for'],
     );
+    if (options.rateLimiter) {
+      enforceRateLimit(
+        await options.rateLimiter.consumeRoute({
+          method: 'GET',
+          route: '/v1/realtime',
+        }),
+      );
+      enforceRateLimit(
+        await options.rateLimiter.consumeAddress({
+          method: 'GET',
+          route: '/v1/realtime',
+          address,
+        }),
+      );
+    }
     if (
       connections.size >= limits.maxConnections ||
       countConnections((state) => state.address === address) >=
@@ -169,6 +209,15 @@ export function attachWebsocketHub(
     );
     if (!token) throw new AuthenticationError('unauthenticated');
     const authenticated = await options.auth.service.authenticate(token);
+    if (options.rateLimiter)
+      enforceRateLimit(
+        await options.rateLimiter.consumeAccount({
+          method: 'GET',
+          route: '/v1/realtime',
+          accountId: authenticated.account.id,
+          trust: 'authenticated',
+        }),
+      );
     if (
       countConnections((state) => state.actorId === authenticated.account.id) >=
       limits.maxConnectionsPerAccount
@@ -260,6 +309,32 @@ export function attachWebsocketHub(
     isBinary: boolean,
   ): Promise<void> {
     state.lastSeenAt = Date.now();
+    if (options.rateLimiter) {
+      const decision = await options.rateLimiter.consumeAccount({
+        method: 'MESSAGE',
+        route: '/v1/realtime/messages',
+        accountId: state.actorId,
+        trust: 'authenticated',
+      });
+      if (!decision.allowed) {
+        metrics.increment('realtime_message_rejected', {
+          reason: decision.reason ?? 'rate_limited',
+        });
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          error:
+            decision.reason === 'dependency_unavailable'
+              ? 'unavailable'
+              : 'rate_limited',
+        });
+        socket.close(
+          decision.reason === 'dependency_unavailable' ? 1013 : 1008,
+          decision.reason ?? 'rate_limited',
+        );
+        return;
+      }
+    }
     if (!consume(state)) {
       safeSend(socket, state, {
         version: 1,
@@ -507,6 +582,24 @@ export function attachWebsocketHub(
         ),
       };
     },
+  };
+}
+
+function enforceRateLimit(decision: RateLimitDecision): void {
+  if (!decision.allowed)
+    throw new AdmissionError(
+      decision.reason ?? 'rate_limited',
+      decision.reason === 'dependency_unavailable' ? 503 : 429,
+      decision,
+    );
+}
+
+function rateLimitHeaders(decision: RateLimitDecision) {
+  return {
+    'RateLimit-Limit': String(decision.limit),
+    'RateLimit-Remaining': String(decision.remaining),
+    'RateLimit-Reset': String(decision.retryAfterSeconds),
+    'Retry-After': String(decision.retryAfterSeconds),
   };
 }
 

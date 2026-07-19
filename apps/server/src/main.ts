@@ -195,6 +195,7 @@ async function start(): Promise<void> {
       database.authorization,
       config.server,
       telemetry,
+      coordination.coordination,
     );
     if (!database.auth) throw new Error('authentication_unavailable');
     await app.listen({
@@ -209,6 +210,7 @@ async function start(): Promise<void> {
       trustedProxyCidrs: config.server.trustedProxyCidrs,
       limits: config.websocket,
       metrics: telemetry.websocketMetrics(),
+      rateLimiter: app.requestRateLimiter,
     });
     readiness.markStarted();
     app.log.info({ event: 'startup.ready' }, 'service ready');

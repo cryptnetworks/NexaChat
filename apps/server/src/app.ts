@@ -43,6 +43,7 @@ import {
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
+import type { EphemeralCoordination } from '@nexa/coordination';
 import {
   AuthorizationError,
   type AuthorizationService,
@@ -57,13 +58,28 @@ import {
 import type { RuntimeConfig } from './config.js';
 import { Telemetry, type TraceContext } from './telemetry.js';
 import { createClientAddressResolver } from './client-address.js';
+import {
+  communityIdentityFor,
+  DistributedRequestRateLimiter,
+  RequestRateLimitError,
+  type RateLimitDecision,
+  type RateLimitTrust,
+  type RequestRateLimiter,
+} from './rate-limit.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
     drainHttp?: () => Promise<void>;
+    requestRateLimiter: RequestRateLimiter;
   }
   interface FastifyRequest {
     clientAddress: string;
+    enforceAccountRateLimit:
+      | ((
+          accountId: string,
+          trust: Exclude<RateLimitTrust, 'public'>,
+        ) => Promise<void>)
+      | null;
   }
 }
 
@@ -74,6 +90,7 @@ export function buildApp(
   authorization?: AuthorizationService,
   serverConfig?: RuntimeConfig['server'],
   telemetry: Telemetry = new Telemetry({ traceSampleRate: 0 }),
+  coordination?: EphemeralCoordination,
 ): FastifyInstance {
   const clientAddresses = createClientAddressResolver(
     serverConfig?.trustedProxyCidrs,
@@ -116,6 +133,7 @@ export function buildApp(
     genReqId: () => randomUUID(),
   });
   app.decorateRequest('clientAddress', 'unknown');
+  app.decorateRequest('enforceAccountRateLimit', null);
   telemetry.setLogSink((record) => {
     if (
       (record.event === 'dependency.state_changed' &&
@@ -127,10 +145,20 @@ export function buildApp(
   });
   const requestLimit = serverConfig?.rateLimit ?? 1_000;
   const requestWindowMs = serverConfig?.rateWindowMs ?? 60_000;
-  const requestBuckets = new Map<
-    string,
-    { count: number; startedAt: number }
-  >();
+  const requestLimiter = new DistributedRequestRateLimiter(
+    {
+      addressLimit: requestLimit,
+      accountLimit: requestLimit,
+      windowMs: requestWindowMs,
+    },
+    coordination,
+    {
+      decision: (scope, endpoint, outcome, backend) => {
+        telemetry.rateLimit(scope, endpoint, outcome, backend);
+      },
+    },
+  );
+  app.decorate('requestRateLimiter', requestLimiter);
   const requestStartedAt = new WeakMap<object, number>();
   const requestContexts = new WeakMap<object, TraceContext>();
   const applicationRequests = new WeakSet<object>();
@@ -175,7 +203,7 @@ export function buildApp(
       : new Promise<void>((resolve) => {
           httpDrainWaiters.add(resolve);
         });
-  app.addHook('onRequest', (request, reply, done) => {
+  app.addHook('onRequest', async (request, reply) => {
     request.clientAddress = clientAddresses.resolve(
       request.raw.socket.remoteAddress,
       request.headers['x-forwarded-for'],
@@ -214,44 +242,87 @@ export function buildApp(
         'request rejected',
       );
       sendApiError(reply, 503, 'dependency_unavailable', request.id);
-      done();
       return;
     }
     if (operationalRequest) {
-      done();
       return;
     }
-    const now = Date.now();
-    const current = requestBuckets.get(request.clientAddress);
-    const bucket =
-      !current || now - current.startedAt >= requestWindowMs
-        ? { count: 0, startedAt: now }
-        : current;
-    if (bucket.count >= requestLimit) {
+    const route = request.routeOptions.url ?? request.url;
+    const routeDecision = await requestLimiter.consumeRoute({
+      method: request.method,
+      route,
+    });
+    if (!routeDecision.allowed) {
+      applyRateLimitHeaders(reply, routeDecision);
       sendApiError(
         reply,
-        429,
-        'rate_limited',
+        routeDecision.reason === 'dependency_unavailable' ? 503 : 429,
+        routeDecision.reason ?? 'rate_limited',
         request.id,
-        Math.max(
-          1,
-          Math.ceil((bucket.startedAt + requestWindowMs - now) / 1000),
-        ),
+        routeDecision.retryAfterSeconds,
       );
-      done();
       return;
     }
-    requestBuckets.set(request.clientAddress, {
-      ...bucket,
-      count: bucket.count + 1,
+    const addressDecision = await requestLimiter.consumeAddress({
+      method: request.method,
+      route,
+      address: request.clientAddress,
     });
-    if (requestBuckets.size > 10_000) {
-      const oldest = requestBuckets.keys().next().value;
-      if (oldest) requestBuckets.delete(oldest);
+    applyRateLimitHeaders(reply, addressDecision);
+    if (!addressDecision.allowed) {
+      request.log.warn(
+        {
+          event: 'http.request.rejected',
+          correlationId: request.id,
+          traceId: context.traceId,
+          errorType: 'rate_limit',
+          errorCode: addressDecision.reason,
+        },
+        'request rejected',
+      );
+      sendApiError(
+        reply,
+        addressDecision.reason === 'dependency_unavailable' ? 503 : 429,
+        addressDecision.reason ?? 'rate_limited',
+        request.id,
+        addressDecision.retryAfterSeconds,
+      );
+      return;
     }
+    const communityId = communityIdentityFor(request.url);
+    if (communityId) {
+      const communityDecision = await requestLimiter.consumeCommunity({
+        method: request.method,
+        route,
+        communityId,
+      });
+      if (!communityDecision.allowed) {
+        applyRateLimitHeaders(reply, communityDecision);
+        sendApiError(
+          reply,
+          communityDecision.reason === 'dependency_unavailable' ? 503 : 429,
+          communityDecision.reason ?? 'rate_limited',
+          request.id,
+          communityDecision.retryAfterSeconds,
+        );
+        return;
+      }
+    }
+    let accountLimitConsumed = false;
+    request.enforceAccountRateLimit = async (accountId, trust) => {
+      if (accountLimitConsumed) return;
+      const decision = await requestLimiter.consumeAccount({
+        method: request.method,
+        route,
+        accountId,
+        trust,
+      });
+      applyRateLimitHeaders(reply, decision);
+      if (!decision.allowed) throw new RequestRateLimitError(decision);
+      accountLimitConsumed = true;
+    };
     applicationRequests.add(request);
     activeApplicationRequests += 1;
-    done();
   });
 
   app.addHook('onResponse', (request, reply, done) => {
@@ -329,10 +400,7 @@ export function buildApp(
   if (authorization)
     app.post('/v1/permissions/preview', async (request, reply) => {
       const input = permissionPreviewRequestSchema.parse(request.body);
-      const actorId = auth
-        ? (await authenticateRequest(request, auth)).account.id
-        : input.actorId;
-      if (actorId !== input.actorId) throw new AuthorizationError('deny');
+      const actorId = await verifiedActor(request, auth, input.actorId);
       return reply.send(
         permissionPreviewResponseSchema.parse(
           await authorization.preview(actorId, input.permission, input.scopes),
@@ -342,15 +410,17 @@ export function buildApp(
 
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
-    if (authorization && auth) {
-      const actorId = (await authenticateMutation(request, auth)).account.id;
-      if (actorId !== input.ownerId) throw new AuthorizationError('deny');
-    }
+    const actorId = await verifiedActor(
+      request,
+      authorization ? auth : undefined,
+      input.ownerId,
+      true,
+    );
     return reply
       .code(201)
       .send(
         communitySchema.parse(
-          await service.createCommunity(input.ownerId, input.name),
+          await service.createCommunity(actorId, input.name),
         ),
       );
   });
@@ -518,17 +588,19 @@ export function buildApp(
     '/v1/communities/:communityId/spaces',
     async (request, reply) => {
       const input = createSpaceSchema.parse(request.body);
-      if (authorization && auth) {
-        const actorId = (await authenticateMutation(request, auth)).account.id;
-        if (actorId !== input.actorId) throw new AuthorizationError('deny');
-      }
+      const actorId = await verifiedActor(
+        request,
+        authorization ? auth : undefined,
+        input.actorId,
+        true,
+      );
       return reply
         .code(201)
         .send(
           spaceSchema.parse(
             await service.createTextSpace(
               request.params.communityId,
-              input.actorId,
+              actorId,
               input.name,
               input.categoryId ?? null,
             ),
@@ -554,23 +626,25 @@ export function buildApp(
     '/v1/spaces/:spaceId/messages',
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
-      if (authorization && auth) {
-        const actorId = (await authenticateMutation(request, auth)).account.id;
-        if (actorId !== input.authorId) throw new AuthorizationError('deny');
-      }
+      const actorId = await verifiedActor(
+        request,
+        authorization ? auth : undefined,
+        input.authorId,
+        true,
+      );
       const key = input.idempotencyKey ?? request.id;
       const { existing, message } = await telemetry.withSpan(
         'message.command',
         async () => {
           const existing =
             await service.persistence.messages.findByIdempotencyKey(
-              input.authorId,
+              actorId,
               request.params.spaceId,
               key,
             );
           const message = await service.postMessage(
             request.params.spaceId,
-            input.authorId,
+            actorId,
             input.body,
             key,
             input.replyToId ?? null,
@@ -775,6 +849,18 @@ export function buildApp(
         status === 429 ? 60 : undefined,
       );
     }
+    if (error instanceof RequestRateLimitError) {
+      const status =
+        error.decision.reason === 'dependency_unavailable' ? 503 : 429;
+      applyRateLimitHeaders(reply, error.decision);
+      return sendApiError(
+        reply,
+        status,
+        error.decision.reason ?? 'rate_limited',
+        request.id,
+        error.decision.retryAfterSeconds,
+      );
+    }
     if (
       typeof error === 'object' &&
       error !== null &&
@@ -870,14 +956,27 @@ async function verifiedActor(
   claimedActorId: string,
   mutation = false,
 ): Promise<string> {
-  if (!auth) return claimedActorId;
+  if (!auth) {
+    await request.enforceAccountRateLimit?.(claimedActorId, 'development');
+    return claimedActorId;
+  }
   const actorId = (
     await (mutation
       ? authenticateMutation(request, auth)
       : authenticateRequest(request, auth))
   ).account.id;
   if (actorId !== claimedActorId) throw new AuthorizationError('deny');
+  await request.enforceAccountRateLimit?.(actorId, 'authenticated');
   return actorId;
+}
+
+function applyRateLimitHeaders(
+  reply: FastifyReply,
+  decision: RateLimitDecision,
+): void {
+  reply.header('ratelimit-limit', String(decision.limit));
+  reply.header('ratelimit-remaining', String(decision.remaining));
+  reply.header('ratelimit-reset', String(decision.retryAfterSeconds));
 }
 
 export interface StorageReadinessResult {
@@ -916,6 +1015,12 @@ function safeErrorDiagnostic(error: unknown): {
   code: string;
   unexpected: boolean;
 } {
+  if (error instanceof RequestRateLimitError)
+    return {
+      type: 'rate_limit',
+      code: error.decision.reason ?? 'rate_limited',
+      unexpected: false,
+    };
   if (error instanceof AuthenticationError)
     return { type: 'authentication', code: error.code, unexpected: false };
   if (error instanceof AuthorizationError)

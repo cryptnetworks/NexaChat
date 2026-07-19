@@ -1,9 +1,13 @@
-import { ValkeyCoordination } from '@nexa/coordination';
+import {
+  ValkeyCoordination,
+  type EphemeralCoordination,
+} from '@nexa/coordination';
 import type { RuntimeConfig } from './config.js';
 import type { Telemetry } from './telemetry.js';
 
 export interface CoordinationRuntime {
   enabled: boolean;
+  coordination?: EphemeralCoordination;
   check(): Promise<void>;
   close(): Promise<void>;
 }
@@ -43,6 +47,7 @@ export async function initializeCoordination(
   }
   return {
     enabled: true,
+    coordination,
     check,
     async close() {
       await coordination.close();

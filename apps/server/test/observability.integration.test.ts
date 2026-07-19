@@ -389,6 +389,7 @@ describe('production observability HTTP boundary', () => {
       reason: 'origin',
     });
     telemetry.websocketMetrics().gauge('realtime_connections', 1);
+    telemetry.rateLimit('account', 'write', 'limited', 'shared');
 
     const response = await app.inject('/metrics');
     expect(response.statusCode).toBe(200);
@@ -398,6 +399,7 @@ describe('production observability HTTP boundary', () => {
       'nexa_http_requests_total',
       'nexa_http_request_duration_seconds',
       'nexa_authentication_failures_total',
+      'nexa_rate_limit_decisions_total',
       'nexa_authorization_decisions_total',
       'nexa_process_memory_bytes',
       'nexa_process_cpu_seconds_total',
@@ -413,6 +415,9 @@ describe('production observability HTTP boundary', () => {
       expect(metrics).toContain(metric);
     expect(metrics).toContain(
       'nexa_authentication_failures_total{reason="authentication_failed"} 1',
+    );
+    expect(metrics).toContain(
+      'nexa_rate_limit_decisions_total{scope="account",endpoint="write",outcome="limited",backend="shared"} 1',
     );
     expect(metrics).toContain(
       'nexa_authorization_decisions_total{permission="other",decision="deny"} 1',

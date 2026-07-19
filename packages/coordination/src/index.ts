@@ -16,6 +16,10 @@ export interface EphemeralCoordination {
   get(key: string): Promise<string | undefined>;
   set(key: string, value: string, ttlSeconds: number): Promise<void>;
   setIfAbsent(key: string, value: string, ttlSeconds: number): Promise<boolean>;
+  increment(
+    key: string,
+    ttlSeconds: number,
+  ): Promise<{ count: number; ttlSeconds: number }>;
   delete(key: string): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -49,6 +53,10 @@ interface Client {
     value: string,
     options: { EX: number; NX?: true },
   ): Promise<string | null>;
+  eval(
+    script: string,
+    options: { keys: string[]; arguments: string[] },
+  ): Promise<unknown>;
   del(key: string): Promise<number>;
   quit(): Promise<unknown>;
   destroy(): void;
@@ -139,6 +147,32 @@ export class ValkeyCoordination implements EphemeralCoordination {
     );
   }
 
+  async increment(
+    key: string,
+    ttlSeconds: number,
+  ): Promise<{ count: number; ttlSeconds: number }> {
+    this.value('', ttlSeconds);
+    const namespacedKey = this.key(key);
+    return this.execute(async () => {
+      const result = await this.client.eval(fixedWindowIncrement, {
+        keys: [namespacedKey],
+        arguments: [String(ttlSeconds)],
+      });
+      if (
+        !Array.isArray(result) ||
+        result.length !== 2 ||
+        !result.every(
+          (value) =>
+            typeof value === 'number' &&
+            Number.isSafeInteger(value) &&
+            value > 0,
+        )
+      )
+        throw unavailable();
+      return { count: result[0] as number, ttlSeconds: result[1] as number };
+    });
+  }
+
   async delete(key: string): Promise<boolean> {
     const namespacedKey = this.key(key);
     return (await this.execute(() => this.client.del(namespacedKey))) > 0;
@@ -223,6 +257,19 @@ export class ValkeyCoordination implements EphemeralCoordination {
     }
   }
 }
+
+const fixedWindowIncrement = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {count, ttl}
+`;
 
 function validateConfig(config: CoordinationConfig): void {
   let parsed: URL;

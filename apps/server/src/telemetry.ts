@@ -337,6 +337,34 @@ export class Telemetry {
     });
   }
 
+  rateLimit(
+    scope: 'account' | 'address' | 'community' | 'route',
+    endpoint:
+      | 'account'
+      | 'administration'
+      | 'api_token'
+      | 'authentication'
+      | 'community'
+      | 'invitation'
+      | 'read'
+      | 'session'
+      | 'webhook'
+      | 'websocket'
+      | 'write'
+      | 'other',
+    outcome: 'allowed' | 'degraded' | 'dependency_failure' | 'limited',
+    backend: 'local' | 'shared',
+  ): void {
+    this.safe(() => {
+      this.metrics.increment('nexa_rate_limit_decisions_total', {
+        scope,
+        endpoint,
+        outcome,
+        backend,
+      });
+    });
+  }
+
   authorizationDecision(
     decision: 'allow' | 'deny' | 'error',
     permission: Permission | 'other' = 'other',
@@ -410,6 +438,7 @@ export class Telemetry {
       'realtime_connection_rejected',
       'realtime_connection_opened',
       'realtime_connection_closed',
+      'realtime_message_rejected',
       'realtime_slow_consumer',
       'realtime_stale_connection',
       'realtime_subscription_changed',
@@ -421,6 +450,7 @@ export class Telemetry {
       'origin',
       'capacity',
       'rate_limited',
+      'dependency_unavailable',
       'invalid_message',
       'server_draining',
       'added',
@@ -664,6 +694,35 @@ export class Telemetry {
           'csrf_rejected',
           'other',
         ]),
+      },
+    });
+    this.metrics.define('nexa_rate_limit_decisions_total', {
+      type: 'counter',
+      help: 'Request admission outcomes with bounded privacy-safe dimensions.',
+      labelNames: ['scope', 'endpoint', 'outcome', 'backend'],
+      allowed: {
+        scope: new Set(['account', 'address', 'community', 'route']),
+        endpoint: new Set([
+          'account',
+          'administration',
+          'api_token',
+          'authentication',
+          'community',
+          'invitation',
+          'read',
+          'session',
+          'webhook',
+          'websocket',
+          'write',
+          'other',
+        ]),
+        outcome: new Set([
+          'allowed',
+          'degraded',
+          'dependency_failure',
+          'limited',
+        ]),
+        backend: new Set(['local', 'shared']),
       },
     });
     this.metrics.define('nexa_authorization_decisions_total', {

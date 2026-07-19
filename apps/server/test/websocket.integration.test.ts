@@ -15,6 +15,10 @@ import {
 } from '@nexa/realtime-contracts';
 import { buildApp } from '../src/app.js';
 import type { AuthRuntime } from '../src/auth-routes.js';
+import {
+  DistributedRequestRateLimiter,
+  type RequestRateLimiter,
+} from '../src/rate-limit.js';
 import { Telemetry } from '../src/telemetry.js';
 import { attachWebsocketHub, type WebsocketLimits } from '../src/websocket.js';
 
@@ -64,6 +68,7 @@ describe('secure real WebSocket integration', () => {
   let limits: Partial<WebsocketLimits>;
   let telemetry: Telemetry;
   let trustedProxyCidrs: string[];
+  let rateLimiter: RequestRateLimiter | undefined;
 
   beforeEach(async () => {
     service = new InMemoryCommunityService();
@@ -77,6 +82,7 @@ describe('secure real WebSocket integration', () => {
     };
     telemetry = new Telemetry({ traceSampleRate: 0 });
     trustedProxyCidrs = [];
+    rateLimiter = undefined;
     app = buildApp(service);
     await app.listen({ host: '127.0.0.1', port: 0 });
     attach();
@@ -96,6 +102,7 @@ describe('secure real WebSocket integration', () => {
       trustedProxyCidrs,
       limits,
       metrics: telemetry.websocketMetrics(),
+      rateLimiter: rateLimiter ?? app.requestRateLimiter,
     });
   }
 
@@ -498,6 +505,28 @@ describe('secure real WebSocket integration', () => {
     second.close(1000);
   });
 
+  it('returns stable retry metadata when distributed upgrade admission is exhausted', async () => {
+    await app.websocketHub?.close();
+    rateLimiter = new DistributedRequestRateLimiter({
+      addressLimit: 1,
+      accountLimit: 10,
+      windowMs: 10_000,
+    });
+    attach();
+    const issued = await identity('distributed-admission');
+    const first = connect(issued.session.token);
+    await opened(first);
+    await expectUpgradeRejected(connect(issued.session.token), 429, {
+      'retry-after': '10',
+      'ratelimit-limit': '1',
+      'ratelimit-remaining': '0',
+      'ratelimit-reset': '10',
+    });
+    const firstClosed = closed(first);
+    first.close(1000);
+    await firstClosed;
+  });
+
   it('drains on shutdown and releases state across repeated isolated connections', async () => {
     const issued = await identity('cleanup');
     for (let index = 0; index < 10; index += 1) {
@@ -534,11 +563,17 @@ describe('secure real WebSocket integration', () => {
   });
 });
 
-async function expectUpgradeRejected(socket: WebSocket, status: number) {
+async function expectUpgradeRejected(
+  socket: WebSocket,
+  status: number,
+  headers: Record<string, string> = {},
+) {
   await new Promise<void>((resolve, reject) => {
     socket.once('unexpected-response', (_request, response) => {
       try {
         expect(response.statusCode).toBe(status);
+        for (const [name, value] of Object.entries(headers))
+          expect(response.headers[name]).toBe(value);
         response.resume();
         resolve();
       } catch (error) {
