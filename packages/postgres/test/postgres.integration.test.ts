@@ -30,20 +30,74 @@ const config: PostgresConfig = {
   migrationsDirectory,
 };
 let pool: Pool;
+let poolInitialized = false;
+let databaseCreated = false;
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function withAdminPool(
+  operation: (admin: Pool) => Promise<void>,
+): Promise<void> {
+  const admin = new Pool({ connectionString: adminUrl });
+  let operationError: Error | undefined;
+  try {
+    await operation(admin);
+  } catch (error) {
+    operationError = asError(error);
+  }
+  let cleanupError: Error | undefined;
+  try {
+    await admin.end();
+  } catch (error) {
+    cleanupError = asError(error);
+  }
+  if (operationError && cleanupError) {
+    throw new AggregateError(
+      [operationError, cleanupError],
+      'PostgreSQL admin operation and cleanup both failed',
+    );
+  }
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+}
 
 beforeAll(async () => {
-  const admin = new Pool({ connectionString: adminUrl });
-  await admin.query(`CREATE DATABASE "${databaseName}"`);
-  await admin.end();
+  await withAdminPool(async (admin) => {
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    databaseCreated = true;
+  });
   pool = createPostgresPool(config);
+  poolInitialized = true;
   await migratePostgres(pool, migrationsDirectory);
 });
 
 afterAll(async () => {
-  await pool.end();
-  const admin = new Pool({ connectionString: adminUrl });
-  await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-  await admin.end();
+  const cleanupErrors: Error[] = [];
+  if (poolInitialized) {
+    try {
+      await pool.end();
+    } catch (error) {
+      cleanupErrors.push(asError(error));
+    }
+  }
+  if (databaseCreated) {
+    try {
+      await withAdminPool(async (admin) => {
+        await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+      });
+    } catch (error) {
+      cleanupErrors.push(asError(error));
+    }
+  }
+  const [firstCleanupError] = cleanupErrors;
+  if (cleanupErrors.length === 1 && firstCleanupError) {
+    throw firstCleanupError;
+  }
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, 'PostgreSQL cleanup failed');
+  }
 });
 
 describe('PostgreSQL persistence', () => {
