@@ -480,6 +480,11 @@ export function attachWebsocketHub(
       try {
         await options.auth.service.authenticate(state.token);
       } catch {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          error: 'unauthenticated',
+        });
         socket.close(1008, 'unauthenticated');
         continue;
       }

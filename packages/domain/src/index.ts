@@ -83,7 +83,9 @@ export interface AuditEvent {
     | 'audit.legal_hold.apply'
     | 'audit.legal_hold.release'
     | 'account.credentials.change'
-    | 'account.sessions.revoke_all';
+    | 'account.session.revoke'
+    | 'account.sessions.revoke_all'
+    | 'account.sessions.revoke_others';
   outcome: 'succeeded' | 'rejected';
   reasonCode: string | null;
   correlationId: string;
@@ -124,6 +126,7 @@ export interface SessionRecord {
   id: string;
   accountId: string;
   tokenHash: string;
+  publicHandle: string;
   createdAt: string;
   lastSeenAt: string;
   expiresAt: string;

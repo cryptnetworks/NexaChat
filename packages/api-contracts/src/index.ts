@@ -64,13 +64,16 @@ export const updateProfileSchema = z
     { message: 'at least one profile field is required' },
   );
 export const authSessionSchema = z.object({
-  id,
+  handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/),
   createdAt: z.string().datetime(),
   lastSeenAt: z.string().datetime(),
   recentAuthAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   current: z.boolean(),
 });
+export const sessionHandleSchema = z
+  .object({ handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/) })
+  .strict();
 export const createCommunitySchema = z
   .object({
     ownerId: z.string().uuid(),
@@ -326,7 +329,9 @@ export const auditEventSchema = z
       'audit.legal_hold.apply',
       'audit.legal_hold.release',
       'account.credentials.change',
+      'account.session.revoke',
       'account.sessions.revoke_all',
+      'account.sessions.revoke_others',
     ]),
     outcome: z.enum(['succeeded', 'rejected']),
     reasonCode: z

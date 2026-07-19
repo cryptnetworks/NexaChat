@@ -6,6 +6,7 @@ import {
   changePasswordSchema,
   loginSchema,
   registrationSchema,
+  sessionHandleSchema,
   updateProfileSchema,
 } from '@nexa/api-contracts';
 import {
@@ -94,7 +95,7 @@ export function registerAuthRoutes(
     return reply.send(
       sessions.map((session) =>
         authSessionSchema.parse({
-          id: session.id,
+          handle: session.publicHandle,
           createdAt: session.createdAt,
           lastSeenAt: session.lastSeenAt,
           recentAuthAt: session.recentAuthAt,
@@ -103,6 +104,37 @@ export function registerAuthRoutes(
         }),
       ),
     );
+  });
+
+  app.delete('/v1/sessions/:handle', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const { handle } = sessionHandleSchema.parse(request.params);
+    const revoked = await runtime.service.revokeOwnedSession(
+      authenticated.account.id,
+      handle,
+      request.id,
+    );
+    if (revoked && handle === authenticated.session.publicHandle)
+      clearSessionCookie(reply, runtime.config);
+    return reply.code(204).send();
+  });
+
+  app.post('/v1/sessions/revoke-others', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    await runtime.service.logoutOthers(
+      authenticated.account.id,
+      authenticated.session.id,
+      request.id,
+    );
+    return reply.code(204).send();
   });
 
   app.post('/v1/auth/logout', async (request, reply) => {

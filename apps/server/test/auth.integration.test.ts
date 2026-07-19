@@ -136,6 +136,9 @@ describe('local authentication HTTP lifecycle', () => {
       headers: { cookie: loginCookie },
     });
     expect(sessions.json<unknown[]>()).toHaveLength(2);
+    expect(JSON.stringify(sessions.json())).not.toMatch(
+      /"id"|token|address|location|user.?agent/iu,
+    );
     expect(
       sessions
         .json<Array<{ current: boolean }>>()
@@ -156,6 +159,118 @@ describe('local authentication HTTP lifecycle', () => {
         })
       ).statusCode,
     ).toBe(401);
+    await app.close();
+  });
+
+  it('revokes owned sessions by public handle and preserves the current session', async () => {
+    const app = buildApp(undefined, undefined, runtime(pool, true));
+    const first = await register(app, 'inventory-owner');
+    const accountId = first.response.json<{ id: string }>().id;
+    const secondResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { origin },
+      payload: { username: 'inventory-owner', password },
+    });
+    const secondCookie = cookie(secondResponse);
+    const thirdResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { origin },
+      payload: { username: 'inventory-owner', password },
+    });
+    const thirdCookie = cookie(thirdResponse);
+    const secondHandle = await currentHandle(app, secondCookie);
+    const thirdHandle = await currentHandle(app, thirdCookie);
+    expect(secondHandle).toMatch(/^sess_/u);
+    expect(thirdHandle).not.toBe(secondHandle);
+
+    const outsider = await register(app, 'inventory-outsider');
+    const privateAttempt = await app.inject({
+      method: 'DELETE',
+      url: `/v1/sessions/${encodeURIComponent(secondHandle)}`,
+      headers: {
+        cookie: outsider.cookie,
+        origin,
+        'x-nexa-csrf': '1',
+      },
+    });
+    expect(privateAttempt.statusCode).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/v1/account',
+          headers: { cookie: secondCookie },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    const revoked = await app.inject({
+      method: 'DELETE',
+      url: `/v1/sessions/${encodeURIComponent(secondHandle)}`,
+      headers: { cookie: thirdCookie, origin, 'x-nexa-csrf': '1' },
+    });
+    expect(revoked.statusCode).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/v1/account',
+          headers: { cookie: secondCookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+
+    const revokeOthers = await app.inject({
+      method: 'POST',
+      url: '/v1/sessions/revoke-others',
+      headers: { cookie: thirdCookie, origin, 'x-nexa-csrf': '1' },
+    });
+    expect(revokeOthers.statusCode).toBe(204);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/v1/account',
+          headers: { cookie: first.cookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/v1/account',
+          headers: { cookie: thirdCookie },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const remaining = await app.inject({
+      method: 'GET',
+      url: '/v1/sessions',
+      headers: { cookie: thirdCookie },
+    });
+    const remainingSessions =
+      remaining.json<Array<{ handle: string; current: boolean }>>();
+    expect(remainingSessions).toHaveLength(1);
+    expect(remainingSessions[0]).toMatchObject({
+      handle: thirdHandle,
+      current: true,
+    });
+    const evidence = await pool.query<{ action: string }>(
+      `SELECT action FROM audit_events
+       WHERE target_type = 'account' AND target_id = $1
+       ORDER BY chain_index`,
+      [accountId],
+    );
+    expect(evidence.rows.map((row) => row.action)).toEqual([
+      'account.session.revoke',
+      'account.sessions.revoke_others',
+    ]);
+    expect(JSON.stringify(evidence.rows)).not.toMatch(
+      /sess_|token|cookie|address|location/iu,
+    );
     await app.close();
   });
 
@@ -722,4 +837,21 @@ async function register(app: ReturnType<typeof buildApp>, username: string) {
 function cookie(response: { headers: Record<string, unknown> }): string {
   const value = response.headers['set-cookie'];
   return typeof value === 'string' ? (value.split(';')[0] ?? '') : '';
+}
+
+async function currentHandle(
+  app: ReturnType<typeof buildApp>,
+  sessionCookie: string,
+): Promise<string> {
+  const response = await app.inject({
+    method: 'GET',
+    url: '/v1/sessions',
+    headers: { cookie: sessionCookie },
+  });
+  expect(response.statusCode).toBe(200);
+  const current = response
+    .json<Array<{ handle: string; current: boolean }>>()
+    .find((session) => session.current);
+  if (!current) throw new Error('current public session handle missing');
+  return current.handle;
 }

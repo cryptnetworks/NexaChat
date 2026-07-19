@@ -29,6 +29,7 @@ export interface AvatarMetadata {
 
 export interface AuthSession {
   id: string;
+  publicHandle: string;
   accountId: string;
   tokenHash: string;
   credentialVersion: number;
@@ -69,7 +70,17 @@ export interface AuthStore {
     idleExpiresAt: string,
   ): Promise<boolean>;
   revokeSession(id: string, revokedAt: string): Promise<boolean>;
+  revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ): Promise<AuthSession | undefined>;
   revokeAllSessions(accountId: string, revokedAt: string): Promise<number>;
+  revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ): Promise<number>;
   listSessions(accountId: string): Promise<AuthSession[]>;
   recordSecurityEvent(event: CredentialSecurityEvent): Promise<void>;
   transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T>;
@@ -78,7 +89,11 @@ export interface AuthStore {
 export interface CredentialSecurityEvent {
   id: string;
   accountId: string;
-  action: 'account.credentials.change' | 'account.sessions.revoke_all';
+  action:
+    | 'account.credentials.change'
+    | 'account.session.revoke'
+    | 'account.sessions.revoke_all'
+    | 'account.sessions.revoke_others';
   notificationType: 'credentials_changed' | 'sessions_revoked';
   correlationId: string;
   occurredAt: string;
@@ -204,10 +219,43 @@ export class InMemoryAuthStore implements AuthStore {
     });
     return Promise.resolve(true);
   }
+  revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ): Promise<AuthSession | undefined> {
+    const value = [...this.sessions.values()].find(
+      (session) =>
+        session.accountId === accountId &&
+        session.publicHandle === publicHandle &&
+        !session.revokedAt,
+    );
+    if (!value) return Promise.resolve(undefined);
+    const revoked = { ...value, revokedAt };
+    this.sessions.set(value.id, revoked);
+    return Promise.resolve(revoked);
+  }
   revokeAllSessions(accountId: string, revokedAt: string): Promise<number> {
     let count = 0;
     for (const [id, value] of this.sessions)
       if (value.accountId === accountId && !value.revokedAt) {
+        this.sessions.set(id, { ...value, revokedAt });
+        count += 1;
+      }
+    return Promise.resolve(count);
+  }
+  revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ): Promise<number> {
+    let count = 0;
+    for (const [id, value] of this.sessions)
+      if (
+        value.accountId === accountId &&
+        value.id !== currentSessionId &&
+        !value.revokedAt
+      ) {
         this.sessions.set(id, { ...value, revokedAt });
         count += 1;
       }
@@ -439,6 +487,56 @@ export class AuthenticationService {
     });
   }
 
+  async logoutOthers(
+    accountId: string,
+    currentSessionId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const now = this.clock.now();
+    await this.store.transaction(async (store) => {
+      await store.revokeOtherSessions(
+        accountId,
+        currentSessionId,
+        now.toISOString(),
+      );
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.sessions.revoke_others',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+    });
+  }
+
+  async revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    correlationId: string,
+  ): Promise<boolean> {
+    const now = this.clock.now();
+    return this.store.transaction(async (store) => {
+      const revoked = await store.revokeOwnedSession(
+        accountId,
+        publicHandle,
+        now.toISOString(),
+      );
+      if (!revoked) return false;
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.session.revoke',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+      return true;
+    });
+  }
+
   async changePassword(input: {
     accountId: string;
     currentPassword: string;
@@ -486,8 +584,24 @@ export class AuthenticationService {
     });
   }
 
-  listSessions(accountId: string): Promise<AuthSession[]> {
-    return this.store.listSessions(accountId);
+  async listSessions(accountId: string): Promise<AuthSession[]> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    const now = this.clock.now();
+    return (await this.store.listSessions(accountId))
+      .filter(
+        (session) =>
+          session.credentialVersion === account.credentialVersion &&
+          session.revokedAt === null &&
+          now < new Date(session.expiresAt) &&
+          now < new Date(session.idleExpiresAt),
+      )
+      .sort(
+        (left, right) =>
+          right.lastSeenAt.localeCompare(left.lastSeenAt) ||
+          right.createdAt.localeCompare(left.createdAt),
+      );
   }
 
   async getProfile(accountId: string): Promise<PublicProfile> {
@@ -561,6 +675,7 @@ export class AuthenticationService {
     const token = this.tokenBytes(32).toString('base64url');
     const session: AuthSession = {
       id: randomUUID(),
+      publicHandle: `sess_${randomBytes(12).toString('base64url')}`,
       accountId: account.id,
       tokenHash: protectSessionToken(token),
       credentialVersion: account.credentialVersion,

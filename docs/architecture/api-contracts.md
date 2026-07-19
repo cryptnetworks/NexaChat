@@ -52,6 +52,13 @@ accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
 `invalid_request`.
 
+Authenticated session inventory returns only a distinct revocation handle,
+coarse lifecycle timestamps, and the current-session flag. Internal session
+IDs, token material, source addresses, user-agent strings, and inferred
+locations are not contract fields. Owned revocation and all-other revocation
+use exact Origin and CSRF checks, revalidate account ownership, and return
+non-disclosing results.
+
 Administrative audit query, integrity, checkpoint, retention, legal-hold, and
 NDJSON export endpoints require the community-scoped `moderation.audit`
 permission. Query and export use the same ascending community sequence, maximum
@@ -70,5 +77,5 @@ conditional updates are authoritative under concurrency.
 Operational recovery is forward-only: restore the required dependency, confirm
 `/health/ready`, and retry only according to the metadata above. Audit migration
 0007 and later audit extensions are forward-only; older applications must
-explicitly support schema version 9 before rollback. Clients that depend on version-1 audit records are part of
+explicitly support schema version 10 before rollback. Clients that depend on version-1 audit records are part of
 compatibility review.
