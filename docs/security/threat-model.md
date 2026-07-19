@@ -18,7 +18,7 @@ Protected assets include credentials, sessions, private messages, attachments, m
 - Audit tampering: append-only events with chained hashes and externally checkpointed digests; this is planned, not implemented.
 - Extension compromise: administrator approval, explicit permission scopes, isolated execution, network/secret denial by default, and revocation.
 
-Local accounts use memory-hard password hashing, protected revocable session tokens, strict browser-cookie settings, origin/CSRF checks, bounded authentication attempts, and credential-version invalidation. WebSocket identity remains development-only and must not be exposed to untrusted networks. End-to-end encryption, federation, and peer-to-peer operation are not current properties.
+Local accounts use memory-hard password hashing, protected revocable session tokens, strict browser-cookie settings, origin/CSRF checks, bounded authentication attempts, and credential-version invalidation. HTTP abuse controls use atomic expiring Valkey counters by bounded endpoint, canonical address, and verified account; keys contain digests rather than raw identities. Sensitive routes fail closed when enabled coordination is unavailable, while ordinary traffic can use a bounded local fallback that never grants authorization. WebSocket identity remains development-only and must not be exposed to untrusted networks. End-to-end encryption, federation, and peer-to-peer operation are not current properties.
 
 ## Federation research prerequisites
 

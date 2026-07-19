@@ -195,6 +195,7 @@ async function start(): Promise<void> {
       database.authorization,
       config.server,
       telemetry,
+      coordination.coordination,
     );
     if (!database.auth) throw new Error('authentication_unavailable');
     await app.listen({

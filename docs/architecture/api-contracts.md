@@ -22,17 +22,27 @@ authorization control. Sensitive missing and unauthorized resources deliberately
 share `not_found` or their feature-specific non-disclosing code.
 
 Clients may automatically retry only when `retryable` is true. HTTP 429 includes
-an integer `Retry-After` header and uses bounded server windows. Readiness 503
-includes `Retry-After: 5`; callers should use bounded exponential backoff. Other
-4xx responses require user or request correction. A generic 500 is not declared
-safe to retry because command completion can be uncertain; idempotency keys must
-be used where the command contract provides them.
+integer `Retry-After`, `RateLimit-Limit`, `RateLimit-Remaining`, and
+`RateLimit-Reset` headers from the server-owned fixed window. A 503 caused by an
+unavailable limiter includes the same bounded metadata and
+`dependency_unavailable`; readiness 503 includes `Retry-After: 5`. Callers
+should use bounded exponential backoff and must not treat a retry as evidence
+that an earlier command failed. Other 4xx responses require user or request
+correction. A generic 500 is not declared safe to retry because command
+completion can be uncertain; idempotency keys must be used where the command
+contract provides them.
 
 JSON request bodies default to 16 KiB and return `payload_too_large` with 413.
-Requests have a 15-second default timeout. The instance-level address limiter
-defaults to 1,000 requests per 60 seconds, caps its in-memory key set at 10,000,
-and is configured independently from stricter authentication, invitation, and
-WebSocket limits. Configuration is range-validated before binding sockets.
+Requests have a 15-second default timeout. HTTP request admission defaults to
+1,000 requests per 60 seconds and applies independent endpoint/address and
+verified-account counters. Enabled Valkey coordination makes these atomic and
+shared across replicas. Authentication, invitation, mutation, and read groups
+have bounded policy caps; WebSocket admission remains independent. A disabled
+coordination adapter uses a 10,000-key local store for single-process operation.
+If an enabled adapter fails, authentication and invitation traffic fails closed;
+ordinary traffic uses the bounded local store and reports degradation.
+Configuration is range-validated before binding sockets. The complete policy is
+in `docs/operations/rate-limiting.md`.
 
 Collections use a maximum page size of 100 and opaque cursors no longer than 256
 characters. Cursors encode server-owned stable ordering tuples and are never

@@ -32,6 +32,34 @@ describe('Valkey coordination bounds', () => {
     });
   });
 
+  it('atomically increments an expiring fixed-window counter', async () => {
+    const client = fake();
+    client.eval.mockResolvedValueOnce([1, 10]).mockResolvedValueOnce([2, 9]);
+    const store = new ValkeyCoordination(config, client);
+
+    await expect(store.increment('limit:hashed-client', 10)).resolves.toEqual({
+      count: 1,
+      ttlSeconds: 10,
+    });
+    await expect(store.increment('limit:hashed-client', 10)).resolves.toEqual({
+      count: 2,
+      ttlSeconds: 9,
+    });
+    expect(client.eval).toHaveBeenCalledWith(expect.any(String), {
+      keys: ['nexa-test:limit:hashed-client'],
+      arguments: ['10'],
+    });
+  });
+
+  it('rejects a malformed counter response as provider unavailability', async () => {
+    const client = fake();
+    client.eval.mockResolvedValue(['private-malformed-value']);
+    const store = new ValkeyCoordination(config, client);
+    await expect(store.increment('limit:safe', 10)).rejects.toMatchObject({
+      code: 'coordination_unavailable',
+    });
+  });
+
   it('opens its circuit after bounded failures and recovers after reset', async () => {
     vi.useFakeTimers();
     const client = fake();
@@ -224,6 +252,15 @@ integration('real Valkey outage and recovery', () => {
     expect(await store.get('integration:value')).toBe('private');
     expect(await store.delete('integration:value')).toBe(true);
     expect(await store.get('integration:value')).toBeUndefined();
+    const counterKey = `integration:counter:${String(Date.now())}`;
+    const increments = await Promise.all(
+      Array.from({ length: 25 }, () => store.increment(counterKey, 2)),
+    );
+    expect(increments.map(({ count }) => count).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 25 }, (_, index) => index + 1),
+    );
+    expect(increments.every(({ ttlSeconds }) => ttlSeconds > 0)).toBe(true);
+    expect(await store.delete(counterKey)).toBe(true);
     await store.close();
   });
 });
@@ -234,6 +271,7 @@ function fake() {
     ping: vi.fn().mockResolvedValue('PONG'),
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
+    eval: vi.fn().mockResolvedValue([1, 10]),
     del: vi.fn().mockResolvedValue(0),
     quit: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn(),

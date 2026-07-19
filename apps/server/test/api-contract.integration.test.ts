@@ -53,7 +53,7 @@ describe('standard API errors and request metadata', () => {
       error: 'payload_too_large',
       retryable: false,
     });
-    for (let index = 0; index < 9; index += 1)
+    for (let index = 0; index < 10; index += 1)
       await app.inject({ method: 'GET', url: '/v1/not-a-route' });
     const limited = await app.inject({
       method: 'GET',
@@ -65,6 +65,9 @@ describe('standard API errors and request metadata', () => {
       retryable: true,
     });
     expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    expect(limited.headers['ratelimit-limit']).toBe('10');
+    expect(limited.headers['ratelimit-remaining']).toBe('0');
+    expect(Number(limited.headers['ratelimit-reset'])).toBeGreaterThan(0);
     await app.close();
   });
 

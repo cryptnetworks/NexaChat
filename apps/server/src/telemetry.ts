@@ -337,6 +337,22 @@ export class Telemetry {
     });
   }
 
+  rateLimit(
+    scope: 'account' | 'address',
+    endpoint: 'authentication' | 'invitation' | 'read' | 'write' | 'other',
+    outcome: 'allowed' | 'degraded' | 'dependency_failure' | 'limited',
+    backend: 'local' | 'shared',
+  ): void {
+    this.safe(() => {
+      this.metrics.increment('nexa_rate_limit_decisions_total', {
+        scope,
+        endpoint,
+        outcome,
+        backend,
+      });
+    });
+  }
+
   authorizationDecision(
     decision: 'allow' | 'deny' | 'error',
     permission: Permission | 'other' = 'other',
@@ -664,6 +680,28 @@ export class Telemetry {
           'csrf_rejected',
           'other',
         ]),
+      },
+    });
+    this.metrics.define('nexa_rate_limit_decisions_total', {
+      type: 'counter',
+      help: 'Request admission outcomes with bounded privacy-safe dimensions.',
+      labelNames: ['scope', 'endpoint', 'outcome', 'backend'],
+      allowed: {
+        scope: new Set(['account', 'address']),
+        endpoint: new Set([
+          'authentication',
+          'invitation',
+          'read',
+          'write',
+          'other',
+        ]),
+        outcome: new Set([
+          'allowed',
+          'degraded',
+          'dependency_failure',
+          'limited',
+        ]),
+        backend: new Set(['local', 'shared']),
       },
     });
     this.metrics.define('nexa_authorization_decisions_total', {

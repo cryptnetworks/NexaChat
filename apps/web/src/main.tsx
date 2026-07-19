@@ -17,6 +17,7 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
+import { publicRequestError } from './http.js';
 import {
   accessibleTimestamp,
   createRateLimitedAnnouncer,
@@ -32,14 +33,20 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!response.ok)
-    throw new Error(`Request failed (${String(response.status)})`);
+    throw publicRequestError(
+      response.status,
+      response.headers.get('retry-after'),
+    );
   return response.json() as Promise<T>;
 }
 
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok)
-    throw new Error(`Request failed (${String(response.status)})`);
+    throw publicRequestError(
+      response.status,
+      response.headers.get('retry-after'),
+    );
   return response.json() as Promise<T>;
 }
 
