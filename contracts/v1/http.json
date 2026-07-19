@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "valid": {
+    "registration": {
+      "username": "ada",
+      "displayName": "Ada",
+      "password": "correct horse battery staple"
+    },
+    "pageQuery": {
+      "actorId": "11111111-1111-4111-8111-111111111111",
+      "limit": 50,
+      "cursor": "b3BhcXVl"
+    },
+    "createMessage": {
+      "authorId": "11111111-1111-4111-8111-111111111111",
+      "body": "A compatible message",
+      "idempotencyKey": "request-v1"
+    },
+    "message": {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "spaceId": "33333333-3333-4333-8333-333333333333",
+      "authorId": "11111111-1111-4111-8111-111111111111",
+      "body": "A compatible message",
+      "replyToId": null,
+      "idempotencyKey": "request-v1",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "deletedAt": null,
+      "version": 1
+    },
+    "createdInvitation": {
+      "invitation": {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "communityId": "55555555-5555-4555-8555-555555555555",
+        "creatorId": "11111111-1111-4111-8111-111111111111",
+        "targetAccountId": null,
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "expiresAt": "2026-01-02T00:00:00.000Z",
+        "maxUses": 1,
+        "useCount": 0,
+        "revokedAt": null,
+        "version": 1
+      },
+      "token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    "error": {
+      "version": 1,
+      "error": "invalid_request",
+      "correlationId": "66666666-6666-4666-8666-666666666666",
+      "retryable": false
+    }
+  },
+  "invalid": {
+    "registration": {
+      "username": "a",
+      "displayName": "",
+      "password": "short"
+    },
+    "pageQuery": {
+      "actorId": "not-a-uuid",
+      "limit": 101
+    },
+    "createMessage": {
+      "authorId": "11111111-1111-4111-8111-111111111111",
+      "body": ""
+    },
+    "message": {
+      "id": "not-a-uuid"
+    },
+    "createdInvitation": {
+      "invitation": {},
+      "token": "plaintext-short"
+    },
+    "error": {
+      "version": 2,
+      "error": "stack_trace",
+      "correlationId": "not-a-uuid",
+      "retryable": true
+    }
+  }
+}
