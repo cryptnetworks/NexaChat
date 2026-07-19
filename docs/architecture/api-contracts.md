@@ -52,12 +52,23 @@ accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
 `invalid_request`.
 
+Administrative audit query, integrity, checkpoint, retention, legal-hold, and
+NDJSON export endpoints require the community-scoped `moderation.audit`
+permission. Query and export use the same ascending community sequence, maximum
+page size of 100, and opaque next cursor. Version-1 responses expose only typed
+actor, scope, target, action, outcome, reason, correlation, retention, and
+integrity fields in `docs/operations/audit-events.md`; credentials, content,
+network addresses, and provider details are not contract fields. Integrity and
+checkpoint failure are returned as data so an authorized operator can preserve
+evidence and escalate without an automatic retry loop.
+
 Optimistic versions return `stale_write` for losing mutations. Scoped unique
 conflicts return `conflict`. Message creation and invitation acceptance document
 their own idempotency behavior. PostgreSQL constraints and transactional
 conditional updates are authoritative under concurrency.
 
 Operational recovery is forward-only: restore the required dependency, confirm
-`/health/ready`, and retry only according to the metadata above. This issue adds
-no migration and can be rolled back at the application layer, but clients that
-depend on version-1 metadata should be treated as part of compatibility review.
+`/health/ready`, and retry only according to the metadata above. Audit migration
+0007 is forward-only; older applications must explicitly support schema version
+7 before rollback. Clients that depend on version-1 audit records are part of
+compatibility review.

@@ -31,7 +31,7 @@ import {
 } from './object-archive.mjs';
 
 const MANIFEST_VERSION = 1;
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 const COMPONENTS = ['postgres.dump.enc', 'objects.archive.enc'];
 const TABLES = [
   'accounts',

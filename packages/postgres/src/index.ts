@@ -9,7 +9,9 @@ import {
 } from 'pg';
 import type {
   Account,
+  AuditCheckpoint,
   AuditEvent,
+  AuditIntegrity,
   Category,
   Community,
   Invitation,
@@ -19,6 +21,7 @@ import type {
   SessionRecord,
   Space,
 } from '@nexa/domain';
+import { auditEventHash, zeroAuditHash } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
   StaleAuthorizationWriteError,
@@ -31,7 +34,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -709,12 +712,35 @@ type InvitationRow = {
 };
 type AuditEventRow = {
   id: string;
-  actor_id: string;
+  event_version: 1;
+  actor_type: AuditEvent['actorType'];
+  actor_id: string | null;
+  service_id: string | null;
   community_id: string | null;
-  invitation_id: string | null;
+  scope_type: AuditEvent['scopeType'];
+  scope_id: string | null;
+  target_type: AuditEvent['targetType'];
+  target_id: string | null;
   action: AuditEvent['action'];
   outcome: AuditEvent['outcome'];
+  reason_code: string | null;
+  correlation_id: string;
   occurred_at: Date;
+  retention_until: Date;
+  chain_index: string | number;
+  previous_hash: string;
+  event_hash: string;
+};
+type AuditCheckpointRow = {
+  id: string;
+  community_id: string;
+  chain_index: string | number;
+  head_hash: string;
+  actor_type: AuditCheckpoint['actorType'];
+  actor_id: string | null;
+  service_id: string | null;
+  correlation_id: string;
+  created_at: Date;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1172,33 +1198,176 @@ function invitationRepository(db: Queryable): Persistence['invitations'] {
 
 function auditEventRepository(db: Queryable): Persistence['auditEvents'] {
   const fields =
-    'id, actor_id, community_id, invitation_id, action, outcome, occurred_at';
+    'id, event_version, actor_type, actor_id, service_id, community_id, scope_type, scope_id, target_type, target_id, action, outcome, reason_code, correlation_id, occurred_at, retention_until, chain_index, previous_hash, event_hash';
+  const checkpointFields =
+    'id, community_id, chain_index, head_hash, actor_type, actor_id, service_id, correlation_id, created_at';
   return {
     async create(event) {
       const result = await db.query<AuditEventRow>(
         `INSERT INTO audit_events
-          (id, actor_id, community_id, invitation_id, action, outcome, occurred_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${fields}`,
+          (id, event_version, actor_type, actor_id, service_id, community_id,
+           scope_type, scope_id, target_type, target_id, invitation_id, action,
+           outcome, reason_code, correlation_id, occurred_at, retention_until)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         RETURNING ${fields}`,
         [
           event.id,
-          event.actorId,
-          event.communityId,
-          event.invitationId,
+          event.version,
+          event.actorType,
+          event.actorType === 'account' ? event.actorId : null,
+          event.actorType === 'service' ? event.actorId : null,
+          event.scopeType === 'community' ? event.scopeId : null,
+          event.scopeType,
+          event.scopeId,
+          event.targetType,
+          event.targetId,
+          event.targetType === 'invitation' ? event.targetId : null,
           event.action,
           event.outcome,
+          event.reasonCode,
+          event.correlationId,
           event.occurredAt,
+          event.retentionUntil,
         ],
       );
       return mapAuditEvent(requiredRow(result.rows));
     },
-    async list(communityId) {
+    async list(communityId, page) {
+      const afterSequence = page.cursor
+        ? Number(Buffer.from(page.cursor, 'base64url').toString())
+        : 0;
+      if (!Number.isSafeInteger(afterSequence) || afterSequence < 0)
+        return { items: [], nextCursor: null };
       const result = await db.query<AuditEventRow>(
         `SELECT ${fields} FROM audit_events
-         WHERE community_id=$1 ORDER BY occurred_at,id`,
-        [communityId],
+         WHERE community_id=$1 AND chain_index>$2
+         ORDER BY chain_index LIMIT $3`,
+        [communityId, afterSequence, page.limit + 1],
       );
-      return result.rows.map(mapAuditEvent);
+      const hasMore = result.rows.length > page.limit;
+      const items = result.rows.slice(0, page.limit).map(mapAuditEvent);
+      return {
+        items,
+        nextCursor: hasMore
+          ? Buffer.from(String(items.at(-1)?.sequence ?? 0)).toString(
+              'base64url',
+            )
+          : null,
+      };
     },
+    async verify(communityId) {
+      let previousHash = zeroAuditHash;
+      let valid = true;
+      let count = 0;
+      let afterSequence = 0;
+      for (;;) {
+        const result = await db.query<AuditEventRow>(
+          `SELECT ${fields} FROM audit_events
+           WHERE community_id=$1 AND chain_index>$2
+           ORDER BY chain_index LIMIT 1000`,
+          [communityId, afterSequence],
+        );
+        const events = result.rows.map(mapAuditEvent);
+        for (const event of events) {
+          valid &&=
+            event.sequence === count + 1 &&
+            event.previousHash === previousHash &&
+            event.eventHash === auditEventHash(previousHash, event);
+          previousHash = event.eventHash;
+          afterSequence = event.sequence;
+          count += 1;
+        }
+        if (events.length < 1000) break;
+      }
+      return {
+        valid,
+        count,
+        headHash: count ? previousHash : null,
+        ...(await latestCheckpoint(db, communityId, checkpointFields)),
+      };
+    },
+    async checkpoint(checkpoint) {
+      const result = await db.query<AuditCheckpointRow>(
+        `INSERT INTO audit_checkpoints
+          (id, community_id, chain_index, head_hash, actor_type, actor_id,
+           service_id, correlation_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${checkpointFields}`,
+        [
+          checkpoint.id,
+          checkpoint.communityId,
+          checkpoint.sequence,
+          checkpoint.headHash,
+          checkpoint.actorType,
+          checkpoint.actorType === 'account' ? checkpoint.actorId : null,
+          checkpoint.actorType === 'service' ? checkpoint.actorId : null,
+          checkpoint.correlationId,
+          checkpoint.createdAt,
+        ],
+      );
+      return mapAuditCheckpoint(requiredRow(result.rows));
+    },
+    async retention(communityId, now) {
+      const result = await db.query<{
+        legal_hold: boolean;
+        eligible_through_sequence: string | number;
+      }>(
+        `WITH latest_hold AS (
+           SELECT action FROM audit_events
+           WHERE community_id=$1 AND action IN
+             ('audit.legal_hold.apply','audit.legal_hold.release')
+           ORDER BY chain_index DESC LIMIT 1
+         )
+         SELECT
+           COALESCE((SELECT action='audit.legal_hold.apply' FROM latest_hold), false) AS legal_hold,
+           CASE WHEN COALESCE((SELECT action='audit.legal_hold.apply' FROM latest_hold), false)
+             THEN 0 ELSE COALESCE(MAX(chain_index) FILTER (WHERE retention_until <= $2), 0)
+           END AS eligible_through_sequence
+         FROM audit_events WHERE community_id=$1`,
+        [communityId, now],
+      );
+      const row = requiredRow(result.rows);
+      return {
+        policy: 'security_7y',
+        legalHold: row.legal_hold,
+        eligibleThroughSequence: Number(row.eligible_through_sequence),
+      };
+    },
+  };
+}
+
+async function latestCheckpoint(
+  db: Queryable,
+  communityId: string,
+  fields: string,
+): Promise<
+  Pick<
+    AuditIntegrity,
+    'checkpointHash' | 'checkpointSequence' | 'checkpointValid'
+  >
+> {
+  const result = await db.query<AuditCheckpointRow>(
+    `SELECT ${fields} FROM audit_checkpoints
+     WHERE community_id=$1 ORDER BY chain_index DESC LIMIT 1`,
+    [communityId],
+  );
+  const checkpoint = result.rows[0];
+  if (!checkpoint)
+    return {
+      checkpointSequence: null,
+      checkpointHash: null,
+      checkpointValid: true,
+    };
+  const match = await db.query<{ valid: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM audit_events
+       WHERE community_id=$1 AND chain_index=$2 AND event_hash=$3
+     ) AS valid`,
+    [communityId, checkpoint.chain_index, checkpoint.head_hash.trim()],
+  );
+  return {
+    checkpointSequence: Number(checkpoint.chain_index),
+    checkpointHash: checkpoint.head_hash.trim(),
+    checkpointValid: requiredRow(match.rows).valid,
   };
 }
 
@@ -1312,13 +1481,40 @@ const mapInvitation = (row: InvitationRow): Invitation => ({
   version: row.version,
 });
 const mapAuditEvent = (row: AuditEventRow): AuditEvent => ({
+  version: row.event_version,
   id: row.id,
-  actorId: row.actor_id,
-  communityId: row.community_id,
-  invitationId: row.invitation_id,
+  actorType: row.actor_type,
+  actorId:
+    row.actor_type === 'account'
+      ? (row.actor_id ?? '')
+      : (row.service_id ?? ''),
+  scopeType: row.scope_type,
+  scopeId: row.scope_id,
+  targetType: row.target_type,
+  targetId: row.target_id,
   action: row.action,
   outcome: row.outcome,
+  reasonCode: row.reason_code,
+  correlationId: row.correlation_id,
   occurredAt: row.occurred_at.toISOString(),
+  retentionUntil: row.retention_until.toISOString(),
+  sequence: Number(row.chain_index),
+  previousHash: row.previous_hash.trim(),
+  eventHash: row.event_hash.trim(),
+});
+
+const mapAuditCheckpoint = (row: AuditCheckpointRow): AuditCheckpoint => ({
+  id: row.id,
+  communityId: row.community_id,
+  sequence: Number(row.chain_index),
+  headHash: row.head_hash.trim(),
+  actorType: row.actor_type,
+  actorId:
+    row.actor_type === 'account'
+      ? (row.actor_id ?? '')
+      : (row.service_id ?? ''),
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
 });
 
 interface Migration {

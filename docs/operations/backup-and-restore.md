@@ -9,7 +9,9 @@ database and object access.
 
 PostgreSQL is authoritative for accounts, credentials, sessions, communities,
 memberships, categories, spaces, messages, authorization state, invitations,
-audit events, and migration history. The private object-storage bucket is
+versioned audit events, audit checkpoints, and migration history. Independently
+exported audit heads remain on separately controlled append-only storage and
+are compared after restore. The private object-storage bucket is
 captured in full, including object bytes, content metadata, custom metadata,
 and tags. Although attachment application flows are not connected in the
 current release, including the bucket now prevents the operational procedure
@@ -120,9 +122,12 @@ objective before production use.
    after the matching backup schema exists.
 6. Validate migration history and counts, perform authenticated functional
    reads for representative accounts, communities, memberships, spaces,
-   messages, and objects, then run readiness checks.
+   messages, audit events, checkpoints, and objects. Recompute every restored
+   audit hash and compare the latest independently retained head, then run
+   readiness checks.
 7. Rotate operational credentials as required, start the server and edge, and
-   monitor error, dependency, object-integrity, and authentication signals.
+   monitor error, dependency, object-integrity, audit-integrity, and
+   authentication signals.
 
 Example against an empty isolated deployment:
 

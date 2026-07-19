@@ -127,6 +127,30 @@ INSERT INTO spaces (id, community_id, category_id, name, kind, position)
 VALUES ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'Backup Space', 'text', 0);
 INSERT INTO messages (id, space_id, author_id, body, created_at, idempotency_key)
 VALUES ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'restore verification message', CURRENT_TIMESTAMP, 'backup-restore-verification');
+INSERT INTO invitations
+  (id, community_id, creator_id, token_hash, created_at, expires_at, max_uses)
+VALUES
+  ('60000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000001', repeat('a', 64), CURRENT_TIMESTAMP,
+   CURRENT_TIMESTAMP + interval '1 day', 1);
+INSERT INTO audit_events
+  (id, event_version, actor_type, actor_id, community_id, scope_type, scope_id,
+   target_type, target_id, invitation_id, action, outcome, reason_code,
+   correlation_id, occurred_at, retention_until)
+VALUES
+  ('70000000-0000-4000-8000-000000000001', 1, 'account',
+   '00000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001',
+   'community', '10000000-0000-4000-8000-000000000001', 'invitation',
+   '60000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000001',
+   'invitation.create', 'succeeded', NULL, '80000000-0000-4000-8000-000000000001',
+   '2026-01-01T00:00:00.000Z', '2033-01-01T00:00:00.000Z');
+INSERT INTO audit_checkpoints
+  (id, community_id, chain_index, head_hash, actor_type, actor_id,
+   correlation_id, created_at)
+SELECT '90000000-0000-4000-8000-000000000001', community_id, chain_index,
+       event_hash, 'account', '00000000-0000-4000-8000-000000000001',
+       '80000000-0000-4000-8000-000000000001', CURRENT_TIMESTAMP
+FROM audit_events WHERE id = '70000000-0000-4000-8000-000000000001';
 SQL
 
 "${compose[@]}" run --rm --no-deps --entrypoint node backup -e '
@@ -190,6 +214,23 @@ expect_rejection restore_requires_recovery_mode "${compose[@]}" run --rm backup 
 database_match="$("${compose[@]}" exec -T postgres psql --username nexa --dbname nexa --tuples-only --no-align --command "SELECT (SELECT count(*) FROM accounts) = 2 AND (SELECT count(*) FROM communities) = 1 AND (SELECT count(*) FROM memberships) = 2 AND (SELECT count(*) FROM spaces) = 1 AND (SELECT count(*) FROM messages WHERE body = 'restore verification message') = 1;")"
 [[ "$database_match" == t ]] || fail 'representative PostgreSQL data did not match'
 
+audit_query="SELECT (SELECT count(*) FROM audit_events) = 1
+  AND (SELECT count(*) FROM audit_checkpoints) = 1
+  AND (SELECT bool_and(previous_hash = repeat('0', 64)
+    AND event_hash = encode(digest(concat_ws('|', previous_hash,
+      event_version::text, id::text, actor_type,
+      COALESCE(actor_id::text, service_id, ''), scope_type,
+      COALESCE(scope_id::text, ''), target_type, COALESCE(target_id::text, ''),
+      action, outcome, COALESCE(reason_code, ''), correlation_id::text,
+      to_char(retention_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),
+      to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')
+    ), 'sha256'), 'hex')) FROM audit_events)
+  AND (SELECT bool_and(c.chain_index=e.chain_index AND c.head_hash=e.event_hash)
+    FROM audit_checkpoints c JOIN audit_events e
+      ON e.community_id=c.community_id AND e.chain_index=c.chain_index);"
+audit_match="$("${compose[@]}" exec -T postgres psql --username nexa --dbname nexa --tuples-only --no-align --command "$audit_query")"
+[[ "$audit_match" == t ]] || fail 'restored audit chain or checkpoint did not verify'
+
 "${compose[@]}" run --rm --no-deps --entrypoint node backup -e '
 const fs=require("node:fs");
 const {S3Client,GetObjectCommand,GetObjectTaggingCommand}=require("@aws-sdk/client-s3");
@@ -200,9 +241,9 @@ const client=new S3Client({endpoint:process.env.S3_ENDPOINT,region:process.env.S
 
 elapsed="$(( $(date +%s) - started_at ))"
 if [[ -n "${NEXA_BACKUP_EVIDENCE_FILE:-}" ]]; then
-  printf '{"status":"passed","schemaVersion":6,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
+  printf '{"status":"passed","schemaVersion":7,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
 fi
 for value in "$postgres_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
   if grep -Fq "$value" "$logs_file"; then fail 'sensitive value appeared in verification logs'; fi
 done
-echo "Encrypted backup, rejection controls, isolated restore, migration compatibility, PostgreSQL data, object bytes, metadata, and tags verified in ${elapsed}s."
+echo "Encrypted backup, rejection controls, isolated restore, migration compatibility, audit integrity/checkpoint, PostgreSQL data, object bytes, metadata, and tags verified in ${elapsed}s."

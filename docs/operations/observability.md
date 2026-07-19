@@ -88,8 +88,10 @@ for a typical deployment. The principal series are:
 - `nexa_authentication_failures_total` and
   `nexa_authorization_decisions_total` for privacy-safe aggregate security
   outcomes;
-- `nexa_rate_limit_decisions_total` for bounded address/account scope,
-  endpoint class, shared/local backend, and admission/degradation outcome;
+- `nexa_rate_limit_decisions_total` for bounded route/address/account/community
+  scope, endpoint class, shared/local backend, and admission/degradation outcome;
+- `nexa_audit_integrity_checks_total` for the fixed valid, invalid, and
+  checkpoint-mismatch outcomes; either failure outcome pages immediately;
 - `nexa_dependency_operations_total`,
   `nexa_dependency_operation_duration_seconds`, and
   `nexa_dependency_health`, plus `nexa_postgres_pool_connections` for
@@ -245,9 +247,12 @@ metrics, and up to 7 days for sampled traces. Shorten retention when it is not
 needed for an operational objective. Restrict access to operators, encrypt data
 in transit and at rest, audit access where supported, and delete expired data.
 
-Correlation and trace IDs are operational metadata, not durable audit records.
-Do not join telemetry to account profiles or use it for behavior tracking. The
-PostgreSQL audit model remains authoritative for reviewed security events.
+Operational correlation and trace IDs are short-lived telemetry metadata. The
+audit contract deliberately persists only the server-generated correlation ID
+needed to connect a reviewed administrative action to separately retained
+incident evidence; trace IDs are never audit fields. Do not join telemetry to
+account profiles or use it for behavior tracking. PostgreSQL audit events and
+external checkpoints remain authoritative for reviewed security events.
 
 ## Safe troubleshooting
 

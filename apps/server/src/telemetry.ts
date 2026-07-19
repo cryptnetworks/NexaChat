@@ -365,6 +365,12 @@ export class Telemetry {
     });
   }
 
+  auditIntegrity(outcome: 'checkpoint_mismatch' | 'invalid' | 'valid'): void {
+    this.safe(() => {
+      this.metrics.increment('nexa_audit_integrity_checks_total', { outcome });
+    });
+  }
+
   authorizationDecision(
     decision: 'allow' | 'deny' | 'error',
     permission: Permission | 'other' = 'other',
@@ -723,6 +729,14 @@ export class Telemetry {
           'limited',
         ]),
         backend: new Set(['local', 'shared']),
+      },
+    });
+    this.metrics.define('nexa_audit_integrity_checks_total', {
+      type: 'counter',
+      help: 'Tamper-evident administrative audit verification outcomes.',
+      labelNames: ['outcome'],
+      allowed: {
+        outcome: new Set(['checkpoint_mismatch', 'invalid', 'valid']),
       },
     });
     this.metrics.define('nexa_authorization_decisions_total', {

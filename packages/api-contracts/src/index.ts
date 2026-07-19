@@ -52,6 +52,25 @@ export const pageQuerySchema = z
       .optional(),
   })
   .strict();
+const auditCursor = z
+  .string()
+  .max(256)
+  .regex(/^[A-Za-z0-9_-]+$/)
+  .refine((value) => {
+    try {
+      const normalized = value.replace(/-/gu, '+').replace(/_/gu, '/');
+      const padded = normalized.padEnd(
+        normalized.length + ((4 - (normalized.length % 4)) % 4),
+        '=',
+      );
+      return /^[0-9]+$/u.test(atob(padded));
+    } catch {
+      return false;
+    }
+  });
+export const auditPageQuerySchema = pageQuerySchema.extend({
+  cursor: auditCursor.optional(),
+});
 export const versionedNameSchema = z
   .object({ actorId: id, name, expectedVersion: z.number().int().positive() })
   .strict();
@@ -245,6 +264,79 @@ export const invitationPreviewSchema = z.object({
   expiresAt: z.string().datetime(),
 });
 
+const auditHash = z.string().regex(/^[0-9a-f]{64}$/);
+export const auditEventSchema = z
+  .object({
+    version: z.literal(1),
+    id,
+    actorType: z.enum(['account', 'service']),
+    actorId: z.string().min(3).max(128),
+    scopeType: z.enum(['community', 'instance']),
+    scopeId: id.nullable(),
+    targetType: z.enum(['audit_chain', 'community', 'invitation', 'none']),
+    targetId: id.nullable(),
+    action: z.enum([
+      'invitation.create',
+      'invitation.revoke',
+      'invitation.accept',
+      'audit.checkpoint',
+      'audit.legal_hold.apply',
+      'audit.legal_hold.release',
+    ]),
+    outcome: z.enum(['succeeded', 'rejected']),
+    reasonCode: z
+      .string()
+      .regex(/^[a-z][a-z0-9_]{1,63}$/)
+      .nullable(),
+    correlationId: id,
+    occurredAt: z.string().datetime(),
+    retentionUntil: z.string().datetime(),
+    sequence: z.number().int().positive(),
+    previousHash: auditHash,
+    eventHash: auditHash,
+  })
+  .strict();
+export const auditEventPageSchema = z.object({
+  items: z.array(auditEventSchema).max(100),
+  nextCursor: z.string().nullable(),
+});
+export const auditIntegritySchema = z
+  .object({
+    valid: z.boolean(),
+    count: z.number().int().nonnegative(),
+    headHash: auditHash.nullable(),
+    checkpointSequence: z.number().int().positive().nullable(),
+    checkpointHash: auditHash.nullable(),
+    checkpointValid: z.boolean(),
+  })
+  .strict();
+export const auditCheckpointSchema = z
+  .object({
+    id,
+    communityId: id,
+    sequence: z.number().int().positive(),
+    headHash: auditHash,
+    actorType: z.enum(['account', 'service']),
+    actorId: z.string().min(3).max(128),
+    correlationId: id,
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export const auditLegalHoldRequestSchema = z
+  .object({
+    actorId: id,
+    held: z.boolean(),
+    reasonCode: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/),
+  })
+  .strict();
+export const auditRetentionSchema = z
+  .object({
+    policy: z.literal('security_7y'),
+    legalHold: z.boolean(),
+    eligibleThroughSequence: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const errorResponseSchema = z.object({
   version: z.literal(1),
   error: z.enum([
@@ -344,6 +436,9 @@ export type MessageResponse = z.infer<typeof messageSchema>;
 export type InvitationResponse = z.infer<typeof invitationSchema>;
 export type CreatedInvitationResponse = z.infer<typeof createdInvitationSchema>;
 export type InvitationPreviewResponse = z.infer<typeof invitationPreviewSchema>;
+export type AuditEventResponse = z.infer<typeof auditEventSchema>;
+export type AuditEventPageResponse = z.infer<typeof auditEventPageSchema>;
+export type AuditIntegrityResponse = z.infer<typeof auditIntegritySchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type WebsocketClientMessage = z.infer<
   typeof websocketClientMessageSchema

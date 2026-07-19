@@ -12,6 +12,10 @@ const compose = await readFile('compose.production.yml', 'utf8');
 const dockerfile = await readFile('Dockerfile', 'utf8');
 const workflow = await readFile('.github/workflows/backup-restore.yml', 'utf8');
 const runbook = await readFile('docs/operations/backup-and-restore.md', 'utf8');
+const restoreVerification = await readFile(
+  'scripts/verify-backup-restore.sh',
+  'utf8',
+);
 const migrations = (await readdir('apps/server/migrations'))
   .filter((file) => file.endsWith('.sql'))
   .sort();
@@ -70,6 +74,14 @@ if (!dockerfile.includes('AS backup-runtime'))
   fail('backup runtime target is missing');
 if (!workflow.includes('schedule:'))
   fail('scheduled restore verification is missing');
+for (const requirement of [
+  'INSERT INTO audit_events',
+  'INSERT INTO audit_checkpoints',
+  'restored audit chain or checkpoint did not verify',
+]) {
+  if (!restoreVerification.includes(requirement))
+    fail(`restore verification lacks ${requirement}`);
+}
 for (const section of [
   'Authoritative data and consistency',
   'Recovery objectives',

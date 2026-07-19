@@ -34,6 +34,13 @@ import {
   invitationSchema,
   createdInvitationSchema,
   invitationPreviewSchema,
+  auditEventPageSchema,
+  auditEventSchema,
+  auditCheckpointSchema,
+  auditIntegritySchema,
+  auditLegalHoldRequestSchema,
+  auditPageQuerySchema,
+  auditRetentionSchema,
   type ErrorResponse,
 } from '@nexa/api-contracts';
 import {
@@ -569,6 +576,128 @@ export function buildApp(
   );
 
   app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events',
+    async (request, reply) => {
+      const input = auditPageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        auditEventPageSchema.parse(
+          await service.listAuditEvents(actorId, request.params.communityId, {
+            limit: input.limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/integrity',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const integrity = auditIntegritySchema.parse(
+        await service.verifyAuditEvents(actorId, request.params.communityId),
+      );
+      const outcome = !integrity.valid
+        ? 'invalid'
+        : !integrity.checkpointValid
+          ? 'checkpoint_mismatch'
+          : 'valid';
+      telemetry.auditIntegrity(outcome);
+      if (outcome !== 'valid')
+        request.log.error(
+          {
+            event: 'audit.integrity.failed',
+            correlationId: request.id,
+            traceId: telemetry.currentContext()?.traceId,
+            errorType: 'integrity',
+            errorCode: outcome,
+          },
+          'audit integrity failed',
+        );
+      return reply.send(integrity);
+    },
+  );
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/checkpoints',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply
+        .code(201)
+        .send(
+          auditCheckpointSchema.parse(
+            await service.checkpointAuditEvents(
+              actorId,
+              request.params.communityId,
+              request.id,
+            ),
+          ),
+        );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/retention',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        auditRetentionSchema.parse(
+          await service.auditRetention(actorId, request.params.communityId),
+        ),
+      );
+    },
+  );
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/legal-hold',
+    async (request, reply) => {
+      const input = auditLegalHoldRequestSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply
+        .code(201)
+        .send(
+          auditEventSchema.parse(
+            await service.setAuditLegalHold(
+              actorId,
+              request.params.communityId,
+              input.held,
+              input.reasonCode,
+              request.id,
+            ),
+          ),
+        );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/audit-events/export',
+    async (request, reply) => {
+      const input = auditPageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const page = auditEventPageSchema.parse(
+        await service.listAuditEvents(actorId, request.params.communityId, {
+          limit: input.limit,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+        }),
+      );
+      reply.type('application/x-ndjson; charset=utf-8');
+      reply.header(
+        'content-disposition',
+        'attachment; filename="audit.ndjson"',
+      );
+      if (page.nextCursor) reply.header('x-next-cursor', page.nextCursor);
+      return reply.send(
+        page.items.map((event) => JSON.stringify(event)).join('\n') +
+          (page.items.length ? '\n' : ''),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
     '/v1/communities/:communityId/spaces',
     async (request, reply) => {
       const input = pageQuerySchema.parse(request.query);
@@ -752,6 +881,7 @@ export function buildApp(
           maxUses: input.maxUses,
           targetAccountId: input.targetAccountId ?? null,
         },
+        request.id,
       );
       return reply.code(201).send(
         createdInvitationSchema.parse({
@@ -788,6 +918,7 @@ export function buildApp(
         actorId,
         request.params.invitationId,
         input.expectedVersion,
+        request.id,
       );
       return reply.send(invitationSchema.parse(publicInvitation(invitation)));
     },
@@ -812,6 +943,7 @@ export function buildApp(
           actorId,
           input.token,
           request.clientAddress,
+          request.id,
         ),
       ),
     );
