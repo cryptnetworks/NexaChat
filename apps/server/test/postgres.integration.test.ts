@@ -21,17 +21,51 @@ const config: PostgresConfig = {
   migrationsDirectory: resolve('apps/server/migrations'),
 };
 process.env.NEXA_WEB_ORIGIN = 'http://localhost:5173';
+let databaseCreated = false;
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function withAdminPool(
+  operation: (admin: Pool) => Promise<void>,
+): Promise<void> {
+  const admin = new Pool({ connectionString: adminUrl });
+  let operationError: Error | undefined;
+  try {
+    await operation(admin);
+  } catch (error) {
+    operationError = asError(error);
+  }
+  let cleanupError: Error | undefined;
+  try {
+    await admin.end();
+  } catch (error) {
+    cleanupError = asError(error);
+  }
+  if (operationError && cleanupError) {
+    throw new AggregateError(
+      [operationError, cleanupError],
+      'PostgreSQL admin operation and cleanup both failed',
+    );
+  }
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+}
 
 beforeAll(async () => {
-  const admin = new Pool({ connectionString: adminUrl });
-  await admin.query(`CREATE DATABASE "${databaseName}"`);
-  await admin.end();
+  await withAdminPool(async (admin) => {
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    databaseCreated = true;
+  });
 });
 
 afterAll(async () => {
-  const admin = new Pool({ connectionString: adminUrl });
-  await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-  await admin.end();
+  if (databaseCreated) {
+    await withAdminPool(async (admin) => {
+      await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
+    });
+  }
 });
 
 describe('PostgreSQL-backed API', () => {
