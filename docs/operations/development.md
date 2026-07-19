@@ -6,6 +6,14 @@ Copy `.env.example` to `.env`, change local secrets if the machine is shared, an
 
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness. `/health/ready` returns `200` only when PostgreSQL is reachable and its schema matches this build; otherwise it returns `503` without exposing connection details.
 
+## Runtime configuration
+
+The server reads the environment once at process startup and passes typed configuration into database, authentication, HTTP, and WebSocket composition. Unknown `NEXA_*` keys are rejected so misspellings and removed settings cannot silently weaken behavior. Required values are `DATABASE_URL` and `NEXA_WEB_ORIGIN`. Production additionally requires an exact HTTPS origin, secure cookies, and development identity disabled. Startup reports `invalid_configuration` with the affected key and a safe reason before opening a database connection or listening; configured values are never echoed.
+
+`.env.example` is the development inventory. It includes bounded server body size, request and shutdown timeouts; PostgreSQL pool and connection/query timeouts; session lifetimes and rate limits; and Argon2id cost parameters. Values at documented bounds are accepted and values outside them fail startup. There are no implicit retry queues: startup fails after the bounded PostgreSQL connection timeout, while an already-running process exposes dependency loss through `/health/ready` and automatically reports ready again after PostgreSQL recovers.
+
+For production, supply secrets through the deployment secret manager rather than committing an environment file. Rotate database credentials by creating a replacement credential, updating instances, confirming readiness, then revoking the old credential. If rotation fails, restore the prior secret while it remains valid. Recovery after an outage requires no configuration mutation; readiness is rechecked on every probe. Configuration rollback means restoring the previously reviewed key set and restarting. Retain a database backup before migrations as described below.
+
 ## Local authentication
 
 Usernames are normalized with Unicode NFKC and locale-independent lowercase behavior, then uniquely constrained in PostgreSQL. Passwords are 12–128 characters and are hashed with Argon2id. `NEXA_ARGON2_MEMORY_KIB`, `NEXA_ARGON2_PASSES`, `NEXA_ARGON2_PARALLELISM`, `NEXA_ARGON2_TAG_LENGTH`, and `NEXA_ARGON2_SALT_LENGTH` are bounded and validated at startup. Encoded hashes retain their parameters so a successful login can safely rehash when settings increase.
@@ -25,6 +33,8 @@ Create the next migration with a zero-padded sequential prefix and descriptive l
 Releases must back up before migration. Rollback means deploying the prior schema-compatible application; an applied migration is never automatically reversed. Destructive schema cleanup belongs in a later reviewed migration after the compatibility window.
 
 The pool defaults to 10 connections with explicit connection, idle, and query timeouts. Adjust the bounded `NEXA_DATABASE_*` values in the environment when deployment capacity requires it. Timestamps are stored as `timestamptz` and sessions store only SHA-256 token hashes, never raw session tokens.
+
+Authorization schema changes are forward-only. Roles use optimistic versions, scoped decisions and assignments use idempotent unique keys, and sensitive mutations run in serializable transactions. A serialization or version conflict is a deterministic stale write and callers must reload current state before retrying. Ownership transfer is atomic and requires the successor to be an active community member.
 
 ## Backup and restore
 

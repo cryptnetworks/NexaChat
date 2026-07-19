@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
+import { parseRuntimeConfig } from '../src/config.js';
 import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
 
 const adminUrl =
@@ -20,7 +21,11 @@ const config: PostgresConfig = {
   queryTimeoutMs: 2_000,
   migrationsDirectory: resolve('apps/server/migrations'),
 };
-process.env.NEXA_WEB_ORIGIN = 'http://localhost:5173';
+const runtimeConfig = parseRuntimeConfig({
+  NODE_ENV: 'development',
+  DATABASE_URL: config.connectionString,
+  NEXA_WEB_ORIGIN: 'http://localhost:5173',
+});
 let databaseCreated = false;
 
 function asError(error: unknown): Error {
@@ -70,8 +75,17 @@ afterAll(async () => {
 
 describe('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
-    const first = await initializeDatabase(config);
-    const firstApp = buildApp(first.service, first.readiness, first.auth);
+    const first = await initializeDatabase(
+      config,
+      runtimeConfig.authentication,
+    );
+    const firstApp = buildApp(
+      first.service,
+      first.readiness,
+      first.auth,
+      first.authorization,
+      runtimeConfig.server,
+    );
     const accountResponse = await firstApp.inject({
       method: 'POST',
       url: '/v1/auth/register',
@@ -83,26 +97,40 @@ describe('PostgreSQL-backed API', () => {
       },
     });
     const account = accountResponse.json<{ id: string }>();
+    const cookie = accountResponse.headers['set-cookie'];
+    expect(cookie).toBeTypeOf('string');
     const communityResponse = await firstApp.inject({
       method: 'POST',
       url: '/v1/communities',
+      headers: { cookie },
       payload: { ownerId: account.id, name: 'Persistent' },
     });
     const community = communityResponse.json<{ id: string }>();
     const spaceResponse = await firstApp.inject({
       method: 'POST',
       url: `/v1/communities/${community.id}/spaces`,
+      headers: { cookie },
       payload: { actorId: account.id, name: 'general' },
     });
     const space = spaceResponse.json<{ id: string }>();
     await firstApp.close();
     await first.pool.end();
 
-    const second = await initializeDatabase(config);
-    const secondApp = buildApp(second.service, second.readiness, second.auth);
+    const second = await initializeDatabase(
+      config,
+      runtimeConfig.authentication,
+    );
+    const secondApp = buildApp(
+      second.service,
+      second.readiness,
+      second.auth,
+      second.authorization,
+      runtimeConfig.server,
+    );
     const message = await secondApp.inject({
       method: 'POST',
       url: `/v1/spaces/${space.id}/messages`,
+      headers: { cookie },
       payload: { authorId: account.id, body: 'survived restart' },
     });
     expect(message.statusCode).toBe(201);
@@ -112,7 +140,7 @@ describe('PostgreSQL-backed API', () => {
     expect(ready.json()).toEqual({
       status: 'ready',
       storage: 'postgresql',
-      schemaVersion: 2,
+      schemaVersion: 3,
     });
     await secondApp.close();
     await second.pool.end();

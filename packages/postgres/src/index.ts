@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   Pool,
   type PoolClient,
@@ -19,12 +18,19 @@ import type {
   Space,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
+import {
+  StaleAuthorizationWriteError,
+  type AuthorizationSnapshot,
+  type AuthorizationStore,
+  type Permission,
+  type Role,
+  type RoleAssignment,
+  type ScopeType,
+  type ScopedDecision,
+} from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 const MIGRATION_LOCK_ID = 1_318_611_193;
-const DEFAULT_MIGRATIONS_DIRECTORY = fileURLToPath(
-  new URL('../../../apps/server/migrations', import.meta.url),
-);
 
 export interface PostgresConfig {
   connectionString: string;
@@ -33,62 +39,6 @@ export interface PostgresConfig {
   idleTimeoutMs: number;
   queryTimeoutMs: number;
   migrationsDirectory: string;
-}
-
-export function postgresConfigFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): PostgresConfig {
-  const connectionString = environment.DATABASE_URL;
-  if (!connectionString)
-    throw new Error('DATABASE_URL is required for PostgreSQL storage');
-  return {
-    connectionString,
-    maxConnections: parseBoundedInteger(
-      environment.NEXA_DATABASE_POOL_MAX,
-      10,
-      1,
-      50,
-      'NEXA_DATABASE_POOL_MAX',
-    ),
-    connectionTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_CONNECT_TIMEOUT_MS,
-      5_000,
-      100,
-      60_000,
-      'NEXA_DATABASE_CONNECT_TIMEOUT_MS',
-    ),
-    idleTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_IDLE_TIMEOUT_MS,
-      30_000,
-      1_000,
-      300_000,
-      'NEXA_DATABASE_IDLE_TIMEOUT_MS',
-    ),
-    queryTimeoutMs: parseBoundedInteger(
-      environment.NEXA_DATABASE_QUERY_TIMEOUT_MS,
-      5_000,
-      100,
-      60_000,
-      'NEXA_DATABASE_QUERY_TIMEOUT_MS',
-    ),
-    migrationsDirectory:
-      environment.NEXA_MIGRATIONS_DIR ?? resolve(DEFAULT_MIGRATIONS_DIRECTORY),
-  };
-}
-
-function parseBoundedInteger(
-  value: string | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number,
-  name: string,
-): number {
-  const parsed = value === undefined ? fallback : Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum)
-    throw new Error(
-      `${name} must be an integer from ${String(minimum)} to ${String(maximum)}`,
-    );
-  return parsed;
 }
 
 export function createPostgresPool(config: PostgresConfig): Pool {
@@ -295,6 +245,198 @@ export class PostgresAuthStore implements AuthStore {
       client.release();
     }
   }
+}
+
+export class PostgresAuthorizationStore implements AuthorizationStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async snapshot(
+    actorId: string,
+    scopes: readonly { type: ScopeType; id: string }[],
+  ): Promise<AuthorizationSnapshot> {
+    const communityId = scopes.find((scope) => scope.type === 'community')?.id;
+    const [account, ownership, roles, assignments, decisions] =
+      await Promise.all([
+        this.db.query<{ status: 'active' | 'suspended' }>(
+          'SELECT status FROM accounts WHERE id = $1',
+          [actorId],
+        ),
+        communityId
+          ? this.db.query<{ id: string }>(
+              'SELECT id FROM communities WHERE id = $1 AND owner_id = $2',
+              [communityId, actorId],
+            )
+          : Promise.resolve({ rows: [] }),
+        this.db.query<RoleRow>(
+          'SELECT id, community_id, name, position, protected, version FROM authorization_roles WHERE community_id IS NULL OR community_id = $1 ORDER BY position, id',
+          [communityId ?? null],
+        ),
+        this.db.query<RoleAssignmentRow>(
+          'SELECT role_id, actor_id, community_id, version FROM authorization_role_assignments WHERE actor_id = $1 AND ($2::uuid IS NULL OR community_id = $2)',
+          [actorId, communityId ?? null],
+        ),
+        this.db.query<DecisionRow>(
+          'SELECT role_id, permission, scope_type, scope_id, effect FROM authorization_decisions WHERE scope_type = ANY($1::text[]) AND scope_id = ANY($2::uuid[])',
+          [scopes.map((scope) => scope.type), scopes.map((scope) => scope.id)],
+        ),
+      ]);
+    return {
+      actor: {
+        actorId,
+        sessionValid: account.rows.length === 1,
+        suspended: account.rows[0]?.status === 'suspended',
+        ownerOf: ownership.rows.map((row) => row.id),
+      },
+      roles: roles.rows.map(mapRole),
+      assignments: assignments.rows.map(mapAssignment),
+      decisions: decisions.rows.map(mapDecision),
+    };
+  }
+
+  async transaction<T>(
+    work: (store: AuthorizationStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresAuthorizationStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (isSerializationFailure(error))
+        throw new StaleAuthorizationWriteError();
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async putRole(role: Role, expectedVersion?: number): Promise<Role> {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<RoleRow>(
+            `INSERT INTO authorization_roles (id, community_id, name, position, protected) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, position = EXCLUDED.position, protected = EXCLUDED.protected RETURNING id, community_id, name, position, protected, version`,
+            [
+              role.id,
+              role.communityId,
+              role.name,
+              role.position,
+              role.protected,
+            ],
+          )
+        : await this.db.query<RoleRow>(
+            `UPDATE authorization_roles SET name=$3, position=$4, protected=$5, version=version+1 WHERE id=$1 AND version=$2 RETURNING id, community_id, name, position, protected, version`,
+            [
+              role.id,
+              expectedVersion,
+              role.name,
+              role.position,
+              role.protected,
+            ],
+          );
+    if (!result.rows[0]) throw new StaleAuthorizationWriteError();
+    return mapRole(result.rows[0]);
+  }
+
+  async assignRole(assignment: RoleAssignment): Promise<RoleAssignment> {
+    const result = await this.db.query<RoleAssignmentRow>(
+      `INSERT INTO authorization_role_assignments (role_id, actor_id, community_id, version) VALUES ($1,$2,$3,1) ON CONFLICT (role_id, actor_id) DO UPDATE SET community_id=EXCLUDED.community_id RETURNING role_id, actor_id, community_id, version`,
+      [assignment.roleId, assignment.actorId, assignment.communityId],
+    );
+    return mapAssignment(requiredRow(result.rows));
+  }
+
+  async putDecision(decision: ScopedDecision): Promise<ScopedDecision> {
+    const result = await this.db.query<DecisionRow>(
+      `INSERT INTO authorization_decisions (role_id, permission, scope_type, scope_id, effect) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (role_id, permission, scope_type, scope_id) DO UPDATE SET effect=EXCLUDED.effect RETURNING role_id, permission, scope_type, scope_id, effect`,
+      [
+        decision.roleId,
+        decision.permission,
+        decision.scope.type,
+        decision.scope.id,
+        decision.effect,
+      ],
+    );
+    return mapDecision(requiredRow(result.rows));
+  }
+
+  async transferOwnership(
+    communityId: string,
+    currentOwnerId: string,
+    nextOwnerId: string,
+  ): Promise<void> {
+    const target = await this.db.query(
+      "SELECT 1 FROM memberships WHERE community_id=$1 AND account_id=$2 AND status='active' FOR UPDATE",
+      [communityId, nextOwnerId],
+    );
+    if (target.rowCount !== 1) throw new StaleAuthorizationWriteError();
+    const changed = await this.db.query(
+      'UPDATE communities SET owner_id=$3, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND owner_id=$2',
+      [communityId, currentOwnerId, nextOwnerId],
+    );
+    if (changed.rowCount !== 1) throw new StaleAuthorizationWriteError();
+    await this.db.query(
+      'UPDATE community_ownership_versions SET version=version+1 WHERE community_id=$1',
+      [communityId],
+    );
+  }
+}
+
+type RoleRow = {
+  id: string;
+  community_id: string | null;
+  name: string;
+  position: number;
+  protected: boolean;
+  version: number;
+};
+type RoleAssignmentRow = {
+  role_id: string;
+  actor_id: string;
+  community_id: string;
+  version: number;
+};
+type DecisionRow = {
+  role_id: string;
+  permission: Permission;
+  scope_type: ScopeType;
+  scope_id: string;
+  effect: 'grant' | 'deny';
+};
+const mapRole = (row: RoleRow): Role => ({
+  id: row.id,
+  communityId: row.community_id,
+  name: row.name,
+  position: row.position,
+  protected: row.protected,
+  version: row.version,
+});
+const mapAssignment = (row: RoleAssignmentRow): RoleAssignment => ({
+  roleId: row.role_id,
+  actorId: row.actor_id,
+  communityId: row.community_id,
+  version: row.version,
+});
+const mapDecision = (row: DecisionRow): ScopedDecision => ({
+  roleId: row.role_id,
+  permission: row.permission,
+  scope: { type: row.scope_type, id: row.scope_id },
+  effect: row.effect,
+});
+function isSerializationFailure(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === '40001'
+  );
 }
 
 const AUTH_ACCOUNT_FIELDS =

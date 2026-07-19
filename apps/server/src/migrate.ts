@@ -1,15 +1,20 @@
-import {
-  createPostgresPool,
-  migratePostgres,
-  postgresConfigFromEnvironment,
-} from '@nexa/postgres';
+import { createPostgresPool, migratePostgres } from '@nexa/postgres';
+import { parseRuntimeConfig, safeConfigurationDiagnostic } from './config.js';
 
-const config = postgresConfigFromEnvironment();
-const pool = createPostgresPool(config);
+let config;
+try {
+  config = parseRuntimeConfig(process.env);
+} catch (error) {
+  process.stderr.write(
+    `${JSON.stringify({ event: 'configuration.invalid', ...safeConfigurationDiagnostic(error) })}\n`,
+  );
+  throw error;
+}
+const pool = createPostgresPool(config.database);
 try {
   const version = await migratePostgres(
     pool,
-    config.migrationsDirectory,
+    config.database.migrationsDirectory,
     (migration) => {
       process.stdout.write(
         `${JSON.stringify({ event: 'migration.applied', ...migration })}\n`,

@@ -1,12 +1,36 @@
 import { buildApp } from './app.js';
+import { parseRuntimeConfig, safeConfigurationDiagnostic } from './config.js';
 import { initializeDatabase } from './database.js';
 import { attachWebsocketHub } from './websocket.js';
 
-const database = await initializeDatabase();
-const app = buildApp(database.service, database.readiness, database.auth);
-const port = Number(process.env.NEXA_SERVER_PORT ?? 3000);
-await app.listen({ host: '0.0.0.0', port });
-app.websocketHub = attachWebsocketHub(app.server, database.service);
+let config;
+try {
+  config = parseRuntimeConfig(process.env);
+} catch (error) {
+  process.stderr.write(
+    `${JSON.stringify({ event: 'configuration.invalid', ...safeConfigurationDiagnostic(error) })}\n`,
+  );
+  process.exitCode = 1;
+  throw error;
+}
+
+const database = await initializeDatabase(
+  config.database,
+  config.authentication,
+);
+const app = buildApp(
+  database.service,
+  database.readiness,
+  database.auth,
+  database.authorization,
+  config.server,
+);
+await app.listen({ host: config.server.host, port: config.server.port });
+app.websocketHub = attachWebsocketHub(
+  app.server,
+  database.service,
+  config.websocket.developmentIdentityEnabled,
+);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(
