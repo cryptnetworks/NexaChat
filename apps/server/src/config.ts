@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import type { PostgresConfig } from '@nexa/postgres';
 import type { PasswordHashParameters } from '@nexa/auth';
 import type { ObjectStorageConfig } from '@nexa/object-storage';
+import type { CoordinationConfig } from '@nexa/coordination';
 
 export type RuntimeMode = 'development' | 'test' | 'production';
 export interface RuntimeConfig {
@@ -17,6 +18,7 @@ export interface RuntimeConfig {
   };
   database: PostgresConfig;
   objectStorage: { enabled: boolean; config?: ObjectStorageConfig };
+  coordination: { enabled: boolean; config?: CoordinationConfig };
   authentication: {
     trustedOrigin: string;
     secureCookies: boolean;
@@ -85,6 +87,14 @@ const keys = new Set([
   'NEXA_OBJECT_STORAGE_MAX_BYTES',
   'NEXA_OBJECT_STORAGE_TIMEOUT_MS',
   'NEXA_OBJECT_STORAGE_CLEANUP_PAGE_SIZE',
+  'NEXA_COORDINATION_ENABLED',
+  'NEXA_COORDINATION_NAMESPACE',
+  'NEXA_COORDINATION_OPERATION_TIMEOUT_MS',
+  'NEXA_COORDINATION_CONNECT_TIMEOUT_MS',
+  'NEXA_COORDINATION_CIRCUIT_FAILURES',
+  'NEXA_COORDINATION_CIRCUIT_RESET_MS',
+  'NEXA_COORDINATION_MAX_VALUE_BYTES',
+  'NEXA_COORDINATION_MAX_TTL_SECONDS',
   'NEXA_WS_MAX_CONNECTIONS',
   'NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT',
   'NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS',
@@ -181,6 +191,21 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       'NEXA_OBJECT_STORAGE_CREATE_BUCKET',
       'cannot be enabled in production',
     );
+  const coordinationEnabled = bool(
+    env.NEXA_COORDINATION_ENABLED,
+    false,
+    'NEXA_COORDINATION_ENABLED',
+  );
+  const coordinationUrl = coordinationEnabled
+    ? required(env, 'REDIS_URL')
+    : undefined;
+  if (
+    coordinationEnabled &&
+    mode === 'production' &&
+    url(coordinationUrl ?? fail('REDIS_URL', 'is required'), 'REDIS_URL')
+      .protocol !== 'rediss:'
+  )
+    fail('REDIS_URL', 'must use TLS in production');
   return {
     mode,
     server: {
@@ -289,6 +314,59 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
                 1,
                 1_000,
                 'NEXA_OBJECT_STORAGE_CLEANUP_PAGE_SIZE',
+              ),
+            },
+          }
+        : {}),
+    },
+    coordination: {
+      enabled: coordinationEnabled,
+      ...(coordinationEnabled
+        ? {
+            config: {
+              url: coordinationUrl ?? fail('REDIS_URL', 'is required'),
+              namespace: env.NEXA_COORDINATION_NAMESPACE ?? 'nexa',
+              operationTimeoutMs: int(
+                env.NEXA_COORDINATION_OPERATION_TIMEOUT_MS,
+                250,
+                10,
+                10_000,
+                'NEXA_COORDINATION_OPERATION_TIMEOUT_MS',
+              ),
+              connectTimeoutMs: int(
+                env.NEXA_COORDINATION_CONNECT_TIMEOUT_MS,
+                2_000,
+                100,
+                60_000,
+                'NEXA_COORDINATION_CONNECT_TIMEOUT_MS',
+              ),
+              circuitFailures: int(
+                env.NEXA_COORDINATION_CIRCUIT_FAILURES,
+                3,
+                1,
+                100,
+                'NEXA_COORDINATION_CIRCUIT_FAILURES',
+              ),
+              circuitResetMs: int(
+                env.NEXA_COORDINATION_CIRCUIT_RESET_MS,
+                5_000,
+                100,
+                300_000,
+                'NEXA_COORDINATION_CIRCUIT_RESET_MS',
+              ),
+              maxValueBytes: int(
+                env.NEXA_COORDINATION_MAX_VALUE_BYTES,
+                65_536,
+                1,
+                1_048_576,
+                'NEXA_COORDINATION_MAX_VALUE_BYTES',
+              ),
+              maxTtlSeconds: int(
+                env.NEXA_COORDINATION_MAX_TTL_SECONDS,
+                86_400,
+                1,
+                2_592_000,
+                'NEXA_COORDINATION_MAX_TTL_SECONDS',
               ),
             },
           }
