@@ -9,7 +9,10 @@ Protected assets include credentials, sessions, private messages, attachments, m
 - Account takeover: memory-hard password hashing, revocable rotated sessions, MFA, recovery controls, and recent-authentication gates.
 - Authorization bypass and privilege escalation: service-boundary checks, deny-by-default evaluation, transactional role changes, and decision-table tests.
 - Spam and resource exhaustion: layered account/IP/resource limits, quotas, bounded payloads, and backpressure.
-- Content and attachment abuse: size/type validation, isolated object storage, malware-scanning hook, safe download headers, and report workflows.
+- Content and attachment abuse: the required quarantine, scanning, authorization,
+  isolated-delivery, metadata, retention, recovery, and residual-risk controls are
+  specified in [Attachment threat model](attachment-threat-model.md). Attachment
+  upload/download is not yet implemented and must not ship partially.
 - Cross-site attacks: secure same-site cookies, CSRF protection, strict origin checks, output encoding, and content security policy.
 - Data exposure: log redaction, least-privilege credentials, scoped object URLs, encryption in transit, backups with equivalent protections, and deletion workflows.
 - Audit tampering: append-only events with chained hashes and externally checkpointed digests; this is planned, not implemented.
