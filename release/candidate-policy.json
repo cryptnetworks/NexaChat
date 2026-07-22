@@ -17,6 +17,7 @@
     "authorization",
     "backup-restore",
     "clean-install",
+    "compatibility-review",
     "dependency-audit",
     "failure-recovery",
     "format",
@@ -28,6 +29,7 @@
     "provenance",
     "realtime-capacity",
     "rollback-rehearsal",
+    "rolling-upgrade",
     "secret-scan",
     "unit-integration",
     "upgrade-rehearsal"

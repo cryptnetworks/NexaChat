@@ -207,6 +207,19 @@ describe('release candidate validation', () => {
     expect(result.failures).toEqual(['production_signature_missing:linux/x64']);
   });
 
+  it('rejects bundle-only package formats outside the supported desktop policy', async () => {
+    const policy = await loadCandidatePolicy(ROOT);
+    const evidence = await passingEvidence();
+    const linux = evidence.targets.find(
+      (target) => target.platform === 'linux',
+    );
+    if (!linux?.artifact) throw new Error('missing Linux artifact');
+    linux.artifact.name = 'NexaChat-0.1.0-beta-linux-x64.rpm';
+    const result = await evaluateCandidate(policy, evidence, COMMIT, ROOT);
+    expect(result.status).toBe('no-go');
+    expect(result.failures).toContain('artifact_name_mismatch:linux/x64');
+  });
+
   it('requires evidence for failed as well as passed checks', async () => {
     const policy = await loadCandidatePolicy(ROOT);
     const evidence = await fixture();

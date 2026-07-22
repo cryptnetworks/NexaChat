@@ -119,6 +119,7 @@ jobs:
         run: |
           npm run release:check
           npm run release:candidate -- policy
+          npm run release:support -- policy
           npm run release:update-recovery -- policy
           npm run release:upgrade -- policy
 

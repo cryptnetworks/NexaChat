@@ -53,7 +53,7 @@ const REQUIRED_TARGETS = [
   { platform: 'windows', arch: 'x64' },
 ] as const;
 const ARTIFACT_FORMATS = {
-  linux: ['AppImage', 'deb', 'rpm', 'tar.gz'],
+  linux: ['AppImage', 'deb'],
   macos: ['dmg', 'app.tar.gz'],
   windows: ['msi', 'nsis.zip'],
 } as const;

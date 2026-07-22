@@ -24,12 +24,12 @@ the upgrade policy.
 
 The required target matrix is:
 
-| Platform | Architecture | Candidate package forms       |
-| -------- | ------------ | ----------------------------- |
-| Linux    | x64          | AppImage, deb, rpm, or tar.gz |
-| macOS    | arm64        | dmg or app.tar.gz             |
-| macOS    | x64          | dmg or app.tar.gz             |
-| Windows  | x64          | msi or nsis.zip               |
+| Platform | Architecture | Candidate package forms |
+| -------- | ------------ | ----------------------- |
+| Linux    | x64          | AppImage or deb         |
+| macOS    | arm64        | dmg or app.tar.gz       |
+| macOS    | x64          | dmg or app.tar.gz       |
+| Windows  | x64          | msi or nsis.zip         |
 
 Stable targets accept only stable sources. Beta targets accept stable or beta
 sources. Nightly is isolated from both and accepts only nightly. An ordinary

@@ -25,6 +25,7 @@ const GLOBAL_CHECKS = [
   'authorization',
   'backup-restore',
   'clean-install',
+  'compatibility-review',
   'dependency-audit',
   'failure-recovery',
   'format',
@@ -36,6 +37,7 @@ const GLOBAL_CHECKS = [
   'provenance',
   'realtime-capacity',
   'rollback-rehearsal',
+  'rolling-upgrade',
   'secret-scan',
   'unit-integration',
   'upgrade-rehearsal',
@@ -58,7 +60,7 @@ const REQUIRED_TARGETS = [
   { platform: 'windows', arch: 'x64' },
 ] as const;
 const ARTIFACT_FORMATS = {
-  linux: ['AppImage', 'deb', 'rpm', 'tar.gz'],
+  linux: ['AppImage', 'deb'],
   macos: ['dmg', 'app.tar.gz'],
   windows: ['msi', 'nsis.zip'],
 } as const;

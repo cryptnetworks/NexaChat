@@ -113,6 +113,10 @@ async function fixture(
     '{\n  "targetVersion": "0.1.0"\n}\n',
   );
   await writeFile(
+    resolve(root, 'release/support-policy.json'),
+    '{\n  "targetVersion": "0.1.0"\n}\n',
+  );
+  await writeFile(
     resolve(root, 'CHANGELOG.md'),
     '# Changelog\n\n## [Unreleased]\n\n<!-- release-notes -->\n',
   );
@@ -223,6 +227,11 @@ describe('release preparation', () => {
     expect(
       JSON.parse(
         await readFile(resolve(root, 'release/update-policy.json'), 'utf8'),
+      ),
+    ).toMatchObject({ targetVersion: '0.2.0' });
+    expect(
+      JSON.parse(
+        await readFile(resolve(root, 'release/support-policy.json'), 'utf8'),
       ),
     ).toMatchObject({ targetVersion: '0.2.0' });
   });

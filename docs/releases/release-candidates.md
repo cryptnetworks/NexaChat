@@ -5,6 +5,8 @@ commit, dependency-lock pair, version, channel, and build epoch. A green test
 job is not by itself a release decision. `release/candidate-policy.json` is the
 versioned gate, and `npm run release:candidate -- validate` independently
 computes `go` or `no-go` from a strict, bounded evidence document.
+The canonical [support and compatibility policy](support-compatibility.md)
+defines which environments and version combinations that decision may cover.
 
 The current matrix is Linux x64, macOS arm64, macOS x64, and Windows x64. The
 manual workflow uses GitHub's documented hosted-runner labels
@@ -49,6 +51,7 @@ identities, paths, provider errors, and test output.
 | Authorization           | HTTP and WebSocket privilege, private-resource non-disclosure, protected role, blocking, and reconnect results                      |
 | Backup and restore      | Correlated PostgreSQL and private object-storage backup identifiers plus an isolated restoration and integrity result               |
 | Clean install           | Empty durable services, migrations, readiness, dependency outage, recovery, and smoke results                                       |
+| Compatibility review    | Browser, desktop, server, dependency, protocol, client/server, channel, support-window, and end-of-support review                   |
 | Dependency audit        | Locked dependency inventories and a passing high-severity policy result                                                             |
 | Failure recovery        | Storage, network, job, retry, duplicate, timeout, partial-write, and restart injection results                                      |
 | Format, lint, and types | Exact commands and successful exit records for the candidate commit                                                                 |
@@ -59,6 +62,7 @@ identities, paths, provider errors, and test output.
 | Provenance              | Verified subject digests, builder identity, source commit, locks, invocation, and build epoch                                       |
 | Real-time capacity      | Connections, subscriptions, event rate, fan-out, queues, memory, CPU, reconnect storm, slow consumer, Valkey, and recovery results  |
 | Rollback and upgrade    | Clean install, every supported direct upgrade, interruption boundary, backup restoration, postflight, rollback, and recovery timing |
+| Rolling upgrade         | Every declared rolling pair with two replicas, PostgreSQL, Valkey, HTTP continuity, reconnect, authorization, queues, and failure   |
 | Secret scan             | Scanner/version/policy result with findings redacted and handled outside public artifacts                                           |
 | Unit and integration    | Complete suite result, including privacy, authorization, concurrency, accessibility, multi-device, and failure cases                |
 
@@ -112,7 +116,10 @@ follow the
    browser/accessibility, and platform smoke rehearsals. Evidence uses synthetic
    accounts and contains no messages, tokens, addresses, credentials, report
    evidence, filenames, or private infrastructure details.
-7. Assemble the strict JSON record and validate it from a clean checkout:
+7. Review `release/support-policy.json`, test every declared environment floor,
+   client/server pair and rolling path, calculate channel support dates, and
+   retain the `compatibility-review` and `rolling-upgrade` evidence digests.
+8. Assemble the strict JSON record and validate it from a clean checkout:
 
    ```sh
    npm ci
@@ -123,7 +130,7 @@ follow the
      --expected-commit=<full-object-id>
    ```
 
-8. Store the candidate JSON, validator output, and their SHA-256 values for at
+9. Store the candidate JSON, validator output, and their SHA-256 values for at
    least 180 days. Access is least privilege, downloads are audited, records are
    immutable, and the encryption key lifecycle follows the backup policy. A
    rerun creates a new attempt; it never overwrites or edits earlier evidence.

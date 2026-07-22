@@ -50,6 +50,11 @@ target is supported or has passed release validation.
 | Windows  | `msi`, `nsis.zip`                  |
 | Linux    | `AppImage`, `deb`, `rpm`, `tar.gz` |
 
+The bundler can verify rpm and tar.gz payloads for development or downstream
+testing, but the current support policy and release-candidate gate accept only
+AppImage or deb for the supported Ubuntu desktop target. Producing a valid
+bundle does not expand platform support.
+
 A bundle has 1–16 regular files before controls, no links or directories, at
 least one artifact, exactly one npm SBOM and one Cargo SBOM, artifacts no larger
 than 4 GiB each, and metadata no larger than 16 MiB each. Unexpected or hidden

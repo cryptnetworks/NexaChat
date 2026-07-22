@@ -21,6 +21,11 @@
     { "id": "authorization", "status": "not-run", "evidenceSha256": null },
     { "id": "backup-restore", "status": "not-run", "evidenceSha256": null },
     { "id": "clean-install", "status": "not-run", "evidenceSha256": null },
+    {
+      "id": "compatibility-review",
+      "status": "not-run",
+      "evidenceSha256": null
+    },
     { "id": "dependency-audit", "status": "not-run", "evidenceSha256": null },
     { "id": "failure-recovery", "status": "not-run", "evidenceSha256": null },
     { "id": "format", "status": "not-run", "evidenceSha256": null },
@@ -32,6 +37,7 @@
     { "id": "provenance", "status": "not-run", "evidenceSha256": null },
     { "id": "realtime-capacity", "status": "not-run", "evidenceSha256": null },
     { "id": "rollback-rehearsal", "status": "not-run", "evidenceSha256": null },
+    { "id": "rolling-upgrade", "status": "not-run", "evidenceSha256": null },
     { "id": "secret-scan", "status": "not-run", "evidenceSha256": null },
     { "id": "unit-integration", "status": "not-run", "evidenceSha256": null },
     { "id": "upgrade-rehearsal", "status": "not-run", "evidenceSha256": null }

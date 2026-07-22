@@ -37,12 +37,17 @@ function envelope(
     sourceChannel?: 'stable' | 'beta' | 'nightly';
     targetVersion?: string;
     targetChannel?: 'stable' | 'beta' | 'nightly';
+    targetPlatform?: 'linux' | 'macos' | 'windows';
+    targetArch?: 'arm64' | 'x64';
+    artifactName?: string;
   } = {},
 ) {
   const sourceVersion = overrides.sourceVersion ?? policy.targetVersion;
   const sourceChannel = overrides.sourceChannel ?? 'beta';
   const targetVersion = overrides.targetVersion ?? policy.targetVersion;
   const targetChannel = overrides.targetChannel ?? 'beta';
+  const targetPlatform = overrides.targetPlatform ?? 'macos';
+  const targetArch = overrides.targetArch ?? 'arm64';
   const metadata = {
     schemaVersion: 1,
     updateId: 'unit-macos-arm64-update',
@@ -51,13 +56,15 @@ function envelope(
     target: {
       version: targetVersion,
       channel: targetChannel,
-      platform: 'macos',
-      arch: 'arm64',
+      platform: targetPlatform,
+      arch: targetArch,
       dataSchema: 1,
       commit: COMMIT,
     },
     artifact: {
-      name: `NexaChat-${targetVersion}-${targetChannel}-macos-arm64.dmg`,
+      name:
+        overrides.artifactName ??
+        `NexaChat-${targetVersion}-${targetChannel}-${targetPlatform}-${targetArch}.dmg`,
       bytes: artifact.byteLength,
       sha256: sha256(artifact),
     },
@@ -96,8 +103,8 @@ function verifyFixture(
       targetVersion: signed.metadata.target.version,
       targetChannel: signed.metadata.target.channel,
       targetCommit: COMMIT,
-      platform: 'macos',
-      arch: 'arm64',
+      platform: signed.metadata.target.platform,
+      arch: signed.metadata.target.arch,
       keyEnvironment,
     },
   );
@@ -225,6 +232,20 @@ describe('signed update envelope', () => {
     expect(() =>
       verifyFixture(policy, artifact, malformed, keys.publicKey),
     ).toThrow(new UpdateRecoveryError('invalid_update_metadata'));
+  });
+
+  it('rejects bundle-only package formats outside the supported update policy', async () => {
+    const policy = await loadUpdatePolicy(ROOT);
+    const artifact = Buffer.from('signed update');
+    const keys = generateKeyPairSync('ed25519');
+    const signed = envelope(policy, artifact, keys.privateKey, keys.publicKey, {
+      targetPlatform: 'linux',
+      targetArch: 'x64',
+      artifactName: 'NexaChat-0.1.0-beta-linux-x64.rpm',
+    });
+    expect(() =>
+      verifyFixture(policy, artifact, signed, keys.publicKey),
+    ).toThrow(new UpdateRecoveryError('invalid_artifact_name'));
   });
 });
 

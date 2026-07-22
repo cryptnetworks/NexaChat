@@ -5,6 +5,9 @@ Nexa Chat upgrades. It is versioned with the application and validated against
 the root semantic version, every contiguous SQL migration, the compiled
 PostgreSQL schema constant, and the runtime configuration schema. A release
 candidate fails if any of those surfaces drift.
+The [support and compatibility policy](support-compatibility.md) is authoritative
+for client/server pairs, rolling-deployment support windows, and environment
+floors; an upgrade path does not by itself broaden that matrix.
 
 The current repository version is the first declared `0.1.0` line; there is no
 earlier production release. Consequently, current executable paths are a clean

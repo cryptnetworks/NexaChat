@@ -36,6 +36,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run release:check
       - run: npm run release:candidate -- policy
+      - run: npm run release:support -- policy
       - run: npm run release:update-recovery -- policy
       - run: npm run release:upgrade -- policy
       - run: npm run test:architecture

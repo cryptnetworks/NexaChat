@@ -12,7 +12,9 @@ Local account registration and login use Argon2id password hashes and revocable 
 - Docker Engine with Docker Compose, for PostgreSQL and local adapter services
 
 Desktop packaging also requires the target platform prerequisites described in
-the [desktop architecture guide](docs/architecture/desktop.md).
+the [desktop architecture guide](docs/architecture/desktop.md). Supported and
+unsupported browser, desktop, server, dependency, and protocol combinations are
+defined by the [support and compatibility policy](docs/releases/support-compatibility.md).
 
 ## Local setup
 
@@ -104,9 +106,11 @@ platform scope and trust boundary.
 - PostgreSQL persistence, a private S3-compatible object-storage adapter, and a resilient Valkey coordination adapter are implemented. Attachment and coordination application flows are not connected.
 - Real-time sequences are intentionally process-local and are gap signals, not durable replay cursors; HTTP history remains authoritative after reconnects and server restarts.
 - The web client provides keyboard-accessible community/category/space navigation and loading, empty, and error states; lifecycle administration forms are not yet exposed.
-- Desktop navigation, credentials, native notifications, packaging, signing,
-  and updates remain separate hardening and release increments; the initial
-  shell does not claim those capabilities.
+- Desktop navigation, protected credentials, and privacy-preserving native
+  notification adapters are implemented and locally tested. Production
+  signing/notarization, a protected update service, and retained validation on
+  every supported platform are not complete, so no production desktop release
+  is claimed.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
 Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).

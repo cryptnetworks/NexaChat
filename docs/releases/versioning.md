@@ -6,6 +6,9 @@ internal dependency pin, npm lockfile workspace entry, desktop Cargo manifest
 and lock entry, Tauri configuration, and upgrade-policy target must carry that
 exact version. API and event schema versions remain independent compatibility
 contracts.
+Support duration and compatible environment, dependency, client/server, and
+protocol combinations are governed separately by the
+[support and compatibility policy](support-compatibility.md).
 
 ## Change metadata and review
 
@@ -39,6 +42,11 @@ npm run release:prepare -- --version=0.2.0-rc.1 --date=2026-07-22
 npm run release:prepare -- --version=0.2.0-rc.1 --date=2026-07-22 --write
 npm run release:check
 ```
+
+Preparation updates the support policy's target version but deliberately does
+not invent client/server pairs, rolling paths, environment floors, or support
+dates. Review those fields explicitly and run `npm run release:support --
+policy`; unresolved compatibility drift blocks the candidate.
 
 The target must be a strictly newer semantic version and the date must be an
 explicit valid UTC calendar date, so output does not depend on clock or locale.
