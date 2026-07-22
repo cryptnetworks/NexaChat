@@ -15,6 +15,7 @@ class MemoryRetentionStore implements RetentionStore {
   purged: { id: string; tombstoneOnly: boolean }[] = [];
   checkpoints = new Map<string, string | null>();
   fail = new Set<string>();
+  lastBefore: string | null = null;
   /* eslint-disable @typescript-eslint/require-await -- storage-port parity */
   findPolicy = async (scope: RetentionPolicy['scope'], id: string) =>
     this.policies.get(`${scope}:${id}`);
@@ -30,6 +31,7 @@ class MemoryRetentionStore implements RetentionStore {
     return value;
   };
   listCandidates = async ({
+    before,
     cursor,
     limit,
   }: {
@@ -37,6 +39,7 @@ class MemoryRetentionStore implements RetentionStore {
     cursor?: string;
     limit: number;
   }) => {
+    this.lastBefore = before;
     const start = cursor ? Number(cursor) : 0;
     const items = this.candidates.slice(start, start + limit);
     return {
@@ -136,6 +139,7 @@ describe('message retention', () => {
       deleted: 0,
       dryRun: true,
     });
+    expect(store.lastBefore).toBe('2025-12-31T00:00:00.000Z');
     expect(store.checkpoints.has('w')).toBe(false);
     store.fail.add('live');
     const failed = await runRetentionBatch(store, {

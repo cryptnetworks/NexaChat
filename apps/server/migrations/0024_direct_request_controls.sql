@@ -23,7 +23,7 @@ CREATE TABLE direct_conversation_requests (
 
 CREATE UNIQUE INDEX direct_requests_one_active_pair_idx
   ON direct_conversation_requests(requester_id,recipient_id)
-  WHERE status IN ('pending','accepted');
+  WHERE status IN ('pending','accepted','ignored');
 CREATE INDEX direct_requests_recipient_page_idx
   ON direct_conversation_requests(recipient_id,status,created_at,id);
 CREATE INDEX direct_requests_expiry_idx

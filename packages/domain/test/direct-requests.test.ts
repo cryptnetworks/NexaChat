@@ -32,9 +32,9 @@ class Store implements DirectRequestStore {
   findActivePair = async (left: string, right: string, now: string) =>
     [...this.requests.values()].find(
       (value) =>
-        ((value.requesterId === left && value.recipientId === right) ||
-          (value.requesterId === right && value.recipientId === left)) &&
-        ['pending', 'accepted'].includes(value.status) &&
+        value.requesterId === left &&
+        value.recipientId === right &&
+        ['pending', 'accepted', 'ignored'].includes(value.status) &&
         value.expiresAt > now,
     );
   countSince = async (actor: string, since: string) =>
@@ -149,6 +149,16 @@ describe('direct request controls', () => {
     expect(
       (await service.getForRequester('alice', request.id, now)).status,
     ).toBe('pending');
+    expect(
+      (
+        await service.request({
+          requesterId: 'alice',
+          recipientId: 'bob',
+          idempotencyKey: 'request-key-ignored-retry',
+          now,
+        })
+      ).id,
+    ).toBe(request.id);
     const second = await service.request({
       requesterId: 'mallory',
       recipientId: 'bob',

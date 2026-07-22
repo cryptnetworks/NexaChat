@@ -161,7 +161,11 @@ export class AccountDeletionService {
     if (!current) throw new Error('deletion_not_found');
     if (current.status === 'completed' || current.status === 'cancelled')
       return current;
-    if (current.status !== 'scheduled' && current.status !== 'blocked_hold')
+    if (
+      current.status !== 'scheduled' &&
+      current.status !== 'blocked_hold' &&
+      current.status !== 'failed'
+    )
       throw new Error('deletion_in_progress');
     if (now < new Date(current.executeAfter))
       throw new Error('cooling_off_active');

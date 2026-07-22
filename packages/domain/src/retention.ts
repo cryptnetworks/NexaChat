@@ -113,8 +113,10 @@ export async function runRetentionBatch(
   if (!Number.isInteger(limit) || limit < 1 || limit > 500)
     throw new Error('invalid_retention_batch');
   const cursor = (await store.getCheckpoint(input.workerId)) ?? undefined;
+  // One day is the shortest valid policy. This avoids a full-history scan
+  // without missing records governed by policies shorter than the default.
   const oldestPossible = new Date(
-    input.now.getTime() - DEFAULT_RETAIN_DAYS * 86_400_000,
+    input.now.getTime() - 86_400_000,
   ).toISOString();
   const page = await store.listCandidates({
     before: oldestPossible,

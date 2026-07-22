@@ -10,6 +10,7 @@ class Store implements AccountDeletionStore {
   held = false;
   sessionsRevoked = false;
   steps: string[] = [];
+  failContentOnce = false;
   /* eslint-disable @typescript-eslint/require-await -- storage-port parity */
   findById = async (id: string) => this.jobs.get(id);
   findByAccount = async (id: string) =>
@@ -36,7 +37,13 @@ class Store implements AccountDeletionStore {
   };
   hasActiveLegalHold = async () => this.held;
   removeMemberships = async () => void this.steps.push('memberships');
-  tombstoneAuthoredContent = async () => void this.steps.push('content');
+  tombstoneAuthoredContent = async () => {
+    if (this.failContentOnce) {
+      this.failContentOnce = false;
+      throw new Error('temporary');
+    }
+    this.steps.push('content');
+  };
   tombstoneIdentity = async (_id: string, value: { displayName: string }) =>
     void this.steps.push(value.displayName);
   recordBackupExclusion = async () => void this.steps.push('backup-exclusion');
@@ -155,5 +162,26 @@ describe('account deletion', () => {
         now: due,
       }),
     ).rejects.toThrow('deletion_cannot_cancel');
+  });
+
+  it('retries an interrupted background deletion from idempotent steps', async () => {
+    const { store, service } = setup();
+    const requested = new Date('2026-01-01');
+    const job = await service.request({
+      actorId: 'u',
+      authenticatedAt: requested.toISOString(),
+      confirmation: 'DELETE MY ACCOUNT',
+      idempotencyKey: 'deletion-retry-01',
+      correlationId: 'c',
+      now: requested,
+    });
+    store.failContentOnce = true;
+    await expect(
+      service.process(job.id, new Date('2026-01-09')),
+    ).rejects.toThrow('temporary');
+    expect((await store.findById(job.id))?.status).toBe('failed');
+    expect((await service.process(job.id, new Date('2026-01-09'))).status).toBe(
+      'completed',
+    );
   });
 });

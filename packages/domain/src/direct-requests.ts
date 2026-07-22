@@ -281,11 +281,9 @@ export class DirectRequestService {
     await this.active(otherId);
     if (await this.store.isBlocked(actorId, otherId))
       throw new Error('direct_unavailable');
-    const accepted = await this.store.findActivePair(
-      actorId,
-      otherId,
-      now.toISOString(),
-    );
+    const accepted =
+      (await this.store.findActivePair(actorId, otherId, now.toISOString())) ??
+      (await this.store.findActivePair(otherId, actorId, now.toISOString()));
     const setting =
       (await this.store.setting(otherId)) ?? defaultSetting(otherId);
     if (accepted?.status !== 'accepted' && setting.preference !== 'allow')
