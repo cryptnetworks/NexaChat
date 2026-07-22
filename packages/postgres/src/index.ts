@@ -484,22 +484,34 @@ export class PostgresJobRecoveryStore implements JobRecoveryStore {
     update: string,
     timestampValue: string,
     expectedStatus: RecoverableJob['status'],
-    errorCode?: RecoverableJob['lastErrorCode'],
+    errorCode?: Exclude<RecoverableJob['lastErrorCode'], null>,
   ): Promise<RecoverableJob | undefined> {
+    const expectedStatusParameter = errorCode === undefined ? '$5' : '$6';
+    const parameters =
+      errorCode === undefined
+        ? [
+            input.id,
+            input.leaseToken,
+            input.expectedVersion,
+            timestampValue,
+            expectedStatus,
+          ]
+        : [
+            input.id,
+            input.leaseToken,
+            input.expectedVersion,
+            timestampValue,
+            errorCode,
+            expectedStatus,
+          ];
     const result = await this.pool.query<RecoverableJobRow>(
       `UPDATE background_jobs SET ${update},
          lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
          version=version+1
-       WHERE id=$1 AND lease_token=$2 AND version=$3 AND status=$6
+       WHERE id=$1 AND lease_token=$2 AND version=$3
+         AND status=${expectedStatusParameter}
        RETURNING ${RECOVERABLE_JOB_FIELDS}`,
-      [
-        input.id,
-        input.leaseToken,
-        input.expectedVersion,
-        timestampValue,
-        errorCode ?? null,
-        expectedStatus,
-      ],
+      parameters,
     );
     const row = result.rows[0];
     return row ? mapRecoverableJob(row) : undefined;
