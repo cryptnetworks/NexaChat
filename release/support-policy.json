@@ -62,15 +62,15 @@
       "role": "authoritative"
     },
     "valkey": {
-      "minimum": "8.1.3",
+      "minimum": "8.1.8",
       "maximumExclusive": "9.0.0",
-      "validatedImage": "8.1.3-alpine",
+      "validatedImage": "8.1.8-alpine3.23",
       "role": "optional-coordination-fail-closed"
     },
     "objectStorage": {
       "status": "adapter-preview-not-product-connected",
       "protocol": "S3-compatible-HTTPS",
-      "validatedImage": "RELEASE.2025-04-22T22-12-26Z",
+      "validatedImage": "4.40",
       "role": "authoritative-when-enabled"
     }
   },
@@ -78,7 +78,7 @@
     "httpVersions": [1],
     "realtimeVersions": [1],
     "configurationVersions": [1],
-    "databaseSchema": 41,
+    "databaseSchema": 45,
     "breakingVersionNoticeDays": 180
   },
   "compatibility": {
@@ -92,7 +92,7 @@
     "rollingUpgrade": {
       "sourceVersion": "0.1.0",
       "targetVersion": "0.1.0",
-      "databaseSchema": 41,
+      "databaseSchema": 45,
       "configurationSchema": 1,
       "httpVersion": 1,
       "realtimeVersion": 1,

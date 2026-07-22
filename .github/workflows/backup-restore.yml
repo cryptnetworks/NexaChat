@@ -27,8 +27,19 @@ jobs:
         env:
           NEXA_BACKUP_EVIDENCE_FILE: ${{ runner.temp }}/backup-restore-evidence.json
         run: npm run verify:backup-restore
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Detect retained restore evidence
+        id: restore_evidence
         if: always()
+        env:
+          EVIDENCE_FILE: ${{ runner.temp }}/backup-restore-evidence.json
+        run: |
+          if [[ -f "$EVIDENCE_FILE" ]]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.restore_evidence.outputs.available == 'true'
         with:
           name: backup-restore-${{ github.sha }}
           path: ${{ runner.temp }}/backup-restore-evidence.json

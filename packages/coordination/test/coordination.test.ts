@@ -106,6 +106,60 @@ describe('Valkey coordination bounds', () => {
       },
     );
   });
+
+  it('contains subscriber transport errors and configures bounded reconnects', async () => {
+    const client = fake();
+    const subscriber = fake();
+    const subscribe = vi.fn().mockResolvedValue(undefined);
+    const unsubscribeClient = vi.fn().mockResolvedValue(undefined);
+    const duplicate = vi.fn<
+      (options?: {
+        disableOfflineQueue?: boolean;
+        socket?: {
+          connectTimeout?: number;
+          reconnectStrategy?: (retries: number) => number;
+        };
+      }) => typeof subscriber
+    >(() => subscriber);
+    Object.assign(subscriber, {
+      subscribe,
+      unsubscribe: unsubscribeClient,
+    });
+    Object.assign(client, { duplicate });
+    const observer = { event: vi.fn<CoordinationObserver['event']>() };
+    const store = new ValkeyCoordination(config, client, observer);
+
+    const unsubscribe = await store.subscribe('events', vi.fn());
+    expect(duplicate).toHaveBeenCalledOnce();
+    const options = duplicate.mock.calls[0]?.[0];
+    expect(options?.disableOfflineQueue).toBe(true);
+    expect(options?.socket?.connectTimeout).toBe(config.connectTimeoutMs);
+    expect(options?.socket?.reconnectStrategy).toBeTypeOf('function');
+    const initialDelay = options?.socket?.reconnectStrategy?.(0) ?? 0;
+    expect(initialDelay).toBeGreaterThanOrEqual(50);
+    expect(initialDelay).toBeLessThan(100);
+    expect(options?.socket?.reconnectStrategy?.(100)).toBe(
+      config.circuitResetMs,
+    );
+
+    const errorListener = subscriber.on.mock.calls[0]?.[1];
+    expect(errorListener).toBeTypeOf('function');
+    expect(() =>
+      errorListener?.(new Error('private transport detail')),
+    ).not.toThrow();
+    expect(observer.event).toHaveBeenCalledWith(
+      'degradation',
+      'degraded',
+      expect.any(Number),
+    );
+    expect(JSON.stringify(observer.event.mock.calls)).not.toContain(
+      'private transport detail',
+    );
+
+    await unsubscribe();
+    expect(unsubscribeClient).toHaveBeenCalledWith('nexa-test:events');
+    expect(subscriber.quit).toHaveBeenCalledOnce();
+  });
 });
 
 describe('Valkey coordination observer', () => {
@@ -289,7 +343,7 @@ function fake() {
     publish: vi.fn().mockResolvedValue(0),
     quit: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn(),
-    on: vi.fn(),
+    on: vi.fn<(event: 'error', listener: (error: Error) => void) => void>(),
   };
 }
 

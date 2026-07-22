@@ -587,7 +587,12 @@ async function observabilityFixture(): Promise<Fixture> {
   const app = trackedApp(
     buildApp(service, readiness, auth, authorization, undefined, telemetry),
   );
-  app.websocketHub = { broadcast: vi.fn(), close: () => Promise.resolve() };
+  app.websocketHub = {
+    broadcast: vi.fn(),
+    broadcastAccount: vi.fn(),
+    ready: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  };
   providerAvailable = false;
   return {
     app,

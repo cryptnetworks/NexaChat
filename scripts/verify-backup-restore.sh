@@ -125,8 +125,14 @@ INSERT INTO categories (id, community_id, name, position)
 VALUES ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Backup Category', 0);
 INSERT INTO spaces (id, community_id, category_id, name, kind, position)
 VALUES ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'Backup Space', 'text', 0);
-INSERT INTO messages (id, space_id, author_id, body, created_at, idempotency_key)
-VALUES ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'restore verification message', CURRENT_TIMESTAMP, 'backup-restore-verification');
+INSERT INTO messages
+  (id, space_id, author_id, body, created_at, idempotency_key,
+   request_fingerprint, created_event_id)
+VALUES
+  ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000002', 'restore verification message',
+   CURRENT_TIMESTAMP, 'backup-restore-verification', repeat('b', 64),
+   '51000000-0000-4000-8000-000000000001');
 INSERT INTO invitations
   (id, community_id, creator_id, token_hash, created_at, expires_at, max_uses)
 VALUES
@@ -173,7 +179,7 @@ mkdir "$backup_dir/.partial-controlled"
 expect_rejection incomplete_backup "${compose[@]}" run --rm backup verify /backups/.partial-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-corrupt-controlled"
-printf '\001' | dd of="$backup_dir/backup-corrupt-controlled/postgres.dump.enc" bs=1 seek=64 conv=notrunc 2>/dev/null
+printf '\001' >> "$backup_dir/backup-corrupt-controlled/postgres.dump.enc"
 expect_rejection component_integrity_mismatch "${compose[@]}" run --rm backup verify /backups/backup-corrupt-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-missing-controlled"
@@ -241,7 +247,7 @@ const client=new S3Client({endpoint:process.env.S3_ENDPOINT,region:process.env.S
 
 elapsed="$(( $(date +%s) - started_at ))"
 if [[ -n "${NEXA_BACKUP_EVIDENCE_FILE:-}" ]]; then
-  printf '{"status":"passed","schemaVersion":10,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
+  printf '{"status":"passed","schemaVersion":45,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
 fi
 for value in "$postgres_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
   if grep -Fq "$value" "$logs_file"; then fail 'sensitive value appeared in verification logs'; fi

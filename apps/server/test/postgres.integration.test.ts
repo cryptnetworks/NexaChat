@@ -6,11 +6,7 @@ import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
 import { parseRuntimeConfig } from '../src/config.js';
 import { Telemetry } from '../src/telemetry.js';
-import {
-  CURRENT_SCHEMA_VERSION,
-  createPostgresPool,
-  type PostgresConfig,
-} from '@nexa/postgres';
+import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
 
 const traceId = '0af7651916cd43dd8448eb211c80319c';
 const parentSpanId = 'b7ad6b7169203331';
@@ -169,11 +165,7 @@ integration('PostgreSQL-backed API', () => {
     expect(message.json()).toMatchObject({ body: 'survived restart' });
     const ready = await secondApp.inject('/health/ready');
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({
-      status: 'ready',
-      storage: 'postgresql',
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-    });
+    expect(ready.json()).toEqual({ status: 'ready' });
     await secondApp.close();
     await second.pool.end();
   });
@@ -247,6 +239,8 @@ integration('PostgreSQL-backed API', () => {
     const broadcast = vi.fn();
     app.websocketHub = {
       broadcast,
+      broadcastAccount: vi.fn(),
+      ready: () => Promise.resolve(),
       close: () => Promise.resolve(),
     };
 
