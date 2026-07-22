@@ -112,7 +112,7 @@ export function registerAuthRoutes(
 
   app.delete('/v1/sessions/:handle', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await request.enforceAccountRateLimit(
       authenticated.account.id,
       'authenticated',
     );
@@ -129,7 +129,7 @@ export function registerAuthRoutes(
 
   app.post('/v1/sessions/revoke-others', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await request.enforceAccountRateLimit(
       authenticated.account.id,
       'authenticated',
     );
@@ -161,7 +161,10 @@ export function registerAuthRoutes(
 
   app.post('/v1/account/password', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    if (!request.enforceAccountRateLimit) {
+      throw new Error('Account rate limiter is not configured');
+    }
+    await request.enforceAccountRateLimit(
       authenticated.account.id,
       'authenticated',
     );
