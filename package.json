@@ -30,10 +30,13 @@
     "test:coordination": "vitest run packages/coordination/test",
     "test:http": "vitest run apps/server/test/http.integration.test.ts apps/server/test/community-lifecycle.integration.test.ts",
     "test:object-storage": "vitest run packages/object-storage/test",
+    "test:performance": "tsx tools/performance/api-benchmark.ts --profile=ci",
+    "test:performance:postgres": "tsx tools/performance/api-benchmark.ts --profile=postgres",
+    "test:performance:unit": "vitest run tools/performance/api-benchmark.test.ts",
     "test:postgres": "vitest run packages/postgres/test apps/server/test/postgres.integration.test.ts",
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tools/performance/tsconfig.json",
     "verify:clean-env": "bash scripts/verify-clean-environment.sh"
   },
   "devDependencies": {

@@ -104,24 +104,28 @@ export function buildApp(
   authorization?: AuthorizationService,
   serverConfig?: RuntimeConfig['server'],
   experience: ExperienceRuntime = {},
+  options: { logging?: boolean } = {},
 ): FastifyInstance {
   const app = Fastify({
     bodyLimit: serverConfig?.bodyLimitBytes ?? 16_384,
     requestTimeout: serverConfig?.requestTimeoutMs ?? 15_000,
-    logger: {
-      redact: [
-        'req.headers.authorization',
-        'req.headers.cookie',
-        'req.body.password',
-        'req.body.token',
-        'req.body.inviteToken',
-        'password',
-        'token',
-        'cookie',
-        'authorization',
-      ],
-      ...(auth?.logStream ? { stream: auth.logStream } : {}),
-    },
+    logger:
+      options.logging === false
+        ? false
+        : {
+            redact: [
+              'req.headers.authorization',
+              'req.headers.cookie',
+              'req.body.password',
+              'req.body.token',
+              'req.body.inviteToken',
+              'password',
+              'token',
+              'cookie',
+              'authorization',
+            ],
+            ...(auth?.logStream ? { stream: auth.logStream } : {}),
+          },
     genReqId: () => randomUUID(),
   });
   const requestLimit = serverConfig?.rateLimit ?? 1_000;
