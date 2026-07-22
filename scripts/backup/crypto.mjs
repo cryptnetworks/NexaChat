@@ -48,8 +48,9 @@ export async function encryptStream(source, destination, operatorKey) {
     }
     await writeChunk(destination, cipher.final());
     await writeChunk(destination, cipher.getAuthTag());
+    const destinationFinished = once(destination, 'finish');
     destination.end();
-    await once(destination, 'finish');
+    await destinationFinished;
   } catch (error) {
     destination.destroy();
     throw error;
@@ -92,8 +93,9 @@ export async function decryptStream(source, destination, operatorKey) {
     }
     decipher.setAuthTag(buffered);
     await writeChunk(destination, decipher.final());
+    const destinationFinished = once(destination, 'finish');
     destination.end();
-    await once(destination, 'finish');
+    await destinationFinished;
   } catch (error) {
     destination.destroy();
     throw error;
