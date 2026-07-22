@@ -4,6 +4,7 @@
     "@nexa/auth": [],
     "@nexa/authorization": [],
     "@nexa/coordination": [],
+    "@nexa/desktop": [],
     "@nexa/domain": [],
     "@nexa/object-storage": [],
     "@nexa/postgres": ["@nexa/auth", "@nexa/authorization", "@nexa/domain"],

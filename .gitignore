@@ -16,6 +16,7 @@ target/
 .yarn-error.log*
 .pnpm-debug.log*
 .cache/
+/apps/desktop/src-tauri/gen/schemas/
 .eslintcache
 .parcel-cache/
 .turbo/

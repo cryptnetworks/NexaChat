@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nexa Chat",
+  "version": "0.1.0",
+  "identifier": "chat.nexa.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev --workspace @nexa/web",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build --workspace @nexa/web",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Nexa Chat",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 360,
+        "minHeight": 520,
+        "resizable": true,
+        "fullscreen": false,
+        "devtools": false,
+        "dragDropEnabled": false,
+        "visible": true
+      }
+    ],
+    "security": {
+      "capabilities": ["main"],
+      "csp": {
+        "default-src": "'self'",
+        "base-uri": "'none'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "font-src": "'self' data:",
+        "form-action": "'self'",
+        "frame-ancestors": "'none'",
+        "frame-src": "'none'",
+        "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "media-src": "'self' blob:",
+        "object-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "worker-src": "'self' blob:"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "base-uri": "'none'",
+        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
+        "font-src": "'self' data:",
+        "form-action": "'self'",
+        "frame-ancestors": "'none'",
+        "frame-src": "'none'",
+        "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "media-src": "'self' blob:",
+        "object-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "worker-src": "'self' blob:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "Private self-hosted community messaging",
+    "longDescription": "Nexa Chat desktop client for private self-hosted community messaging."
+  }
+}

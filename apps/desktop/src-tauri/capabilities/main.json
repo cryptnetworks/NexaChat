@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The bundled main webview may manage bounded session credentials and privacy-safe notifications",
+  "windows": ["main"],
+  "permissions": [
+    "allow-credential-store-status",
+    "allow-list-stored-accounts",
+    "allow-store-session-credential",
+    "allow-select-stored-account",
+    "allow-remove-stored-account",
+    "allow-clear-stored-accounts",
+    "allow-desktop-notification-status",
+    "allow-request-desktop-notification-permission",
+    "allow-deliver-desktop-notification"
+  ]
+}

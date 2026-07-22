@@ -24,6 +24,7 @@ describe('runtime configuration', () => {
   it('parses valid development and production settings', () => {
     expect(parseRuntimeConfig(development).mode).toBe('development');
     const config = parseRuntimeConfig(production);
+    expect(config.configurationSchemaVersion).toBe(1);
     expect(config.authentication.secureCookies).toBe(true);
     expect(config.database.maxConnections).toBe(10);
     expect(config.websocket.maxSubscriptions).toBe(32);
@@ -35,6 +36,23 @@ describe('runtime configuration', () => {
     });
     expect(config.objectStorage.enabled).toBe(false);
     expect(config.coordination.enabled).toBe(false);
+    expect(config.webPush.enabled).toBe(false);
+  });
+
+  it('requires explicit bounded web push secrets when enabled', () => {
+    const config = parseRuntimeConfig({
+      ...development,
+      NEXA_WEB_PUSH_ENABLED: 'true',
+      NEXA_WEB_PUSH_SUBJECT: 'mailto:operator@example.test',
+      NEXA_WEB_PUSH_PUBLIC_KEY: 'public',
+      NEXA_WEB_PUSH_PRIVATE_KEY: 'private',
+      NEXA_WEB_PUSH_ENCRYPTION_KEY: Buffer.alloc(32).toString('base64url'),
+      NEXA_WEB_PUSH_ALLOWED_HOSTS: '.example.test',
+    });
+    expect(config.webPush).toMatchObject({
+      enabled: true,
+      config: { subject: 'mailto:operator@example.test' },
+    });
   });
 
   it('uses mode-aware observability defaults', () => {
@@ -470,8 +488,13 @@ describe('runtime configuration', () => {
       'NEXA_WS_MAX_PAYLOAD_BYTES',
     ],
     [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
+    [{ ...development, NEXA_CONFIG_SCHEMA: '2' }, 'NEXA_CONFIG_SCHEMA'],
     [{ ...development, NEXA_OBJECT_STORAGE_ENABLED: 'true' }, 'S3_ENDPOINT'],
     [{ ...development, NEXA_COORDINATION_ENABLED: 'true' }, 'REDIS_URL'],
+    [
+      { ...development, NEXA_WEB_PUSH_ENABLED: 'true' },
+      'NEXA_WEB_PUSH_SUBJECT',
+    ],
     [
       {
         ...production,

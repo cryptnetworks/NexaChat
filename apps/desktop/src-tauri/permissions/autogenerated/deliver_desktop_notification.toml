@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deliver-desktop-notification"
+description = "Enables the deliver_desktop_notification command without any pre-configured scope."
+commands.allow = ["deliver_desktop_notification"]
+
+[[permission]]
+identifier = "deny-deliver-desktop-notification"
+description = "Denies the deliver_desktop_notification command without any pre-configured scope."
+commands.deny = ["deliver_desktop_notification"]

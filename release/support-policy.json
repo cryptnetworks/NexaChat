@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "product": "nexa-chat",
+  "targetVersion": "0.1.0",
+  "effectiveDate": "2026-07-22",
+  "productStatus": "pre-release-no-supported-production-version",
+  "activationGate": "release-candidate-go",
+  "environments": {
+    "web": {
+      "secureContextRequired": true,
+      "javascriptRequired": true,
+      "mobile": "not-supported",
+      "browsers": [
+        { "family": "chrome", "minimum": "136", "scope": "desktop" },
+        { "family": "edge", "minimum": "136", "scope": "desktop" },
+        { "family": "firefox", "minimum": "128", "scope": "desktop" },
+        { "family": "safari", "minimum": "18.5", "scope": "desktop" }
+      ]
+    },
+    "desktop": [
+      {
+        "platform": "linux",
+        "operatingSystem": "Ubuntu",
+        "minimum": "24.04 LTS",
+        "architectures": ["x64"],
+        "packages": ["AppImage", "deb"]
+      },
+      {
+        "platform": "macos",
+        "operatingSystem": "macOS",
+        "minimum": "14.0",
+        "architectures": ["arm64", "x64"],
+        "packages": ["app.tar.gz", "dmg"]
+      },
+      {
+        "platform": "windows",
+        "operatingSystem": "Windows",
+        "minimum": "11 24H2",
+        "architectures": ["x64"],
+        "packages": ["msi", "nsis.zip"]
+      }
+    ],
+    "server": {
+      "operatingSystems": [
+        {
+          "name": "Ubuntu Server",
+          "minimum": "24.04 LTS",
+          "architectures": ["x64"]
+        }
+      ],
+      "nodeRange": "24.x",
+      "validatedNode": "24.18.0",
+      "npmRange": "11.x",
+      "validatedNpm": "11.16.0"
+    }
+  },
+  "dependencies": {
+    "postgresql": {
+      "minimum": "17.9.0",
+      "maximumExclusive": "18.0.0",
+      "validatedImage": "17.9-alpine",
+      "role": "authoritative"
+    },
+    "valkey": {
+      "minimum": "8.1.3",
+      "maximumExclusive": "9.0.0",
+      "validatedImage": "8.1.3-alpine",
+      "role": "optional-coordination-fail-closed"
+    },
+    "objectStorage": {
+      "status": "adapter-preview-not-product-connected",
+      "protocol": "S3-compatible-HTTPS",
+      "validatedImage": "RELEASE.2025-04-22T22-12-26Z",
+      "role": "authoritative-when-enabled"
+    }
+  },
+  "contracts": {
+    "httpVersions": [1],
+    "realtimeVersions": [1],
+    "configurationVersions": [1],
+    "databaseSchema": 41,
+    "breakingVersionNoticeDays": 180
+  },
+  "compatibility": {
+    "clientServer": [
+      {
+        "clientVersion": "0.1.0",
+        "serverVersion": "0.1.0",
+        "status": "candidate-only-until-activation"
+      }
+    ],
+    "rollingUpgrade": {
+      "sourceVersion": "0.1.0",
+      "targetVersion": "0.1.0",
+      "databaseSchema": 41,
+      "configurationSchema": 1,
+      "httpVersion": 1,
+      "realtimeVersion": 1,
+      "mode": "same-version-no-schema-change",
+      "coordination": "valkey",
+      "minimumInstances": 2
+    },
+    "versionChangingRollingUpgrades": "unsupported-until-listed-and-evidenced",
+    "schemaChangingRollingUpgrades": "maintenance-and-old-instance-drain-required"
+  },
+  "channels": {
+    "stable": {
+      "productionEligible": true,
+      "minimumDaysFromPublication": 365,
+      "daysAfterSuperseded": 180,
+      "plannedEndOfSupportNoticeDays": 90,
+      "fixPolicy": "latest-patch-of-supported-line",
+      "stability": "release-candidate-go-required"
+    },
+    "beta": {
+      "productionEligible": false,
+      "minimumDaysFromPublication": 90,
+      "daysAfterSuperseded": 30,
+      "plannedEndOfSupportNoticeDays": 14,
+      "fixPolicy": "latest-beta-only",
+      "stability": "may-change-with-release-notes"
+    },
+    "nightly": {
+      "productionEligible": false,
+      "minimumDaysFromPublication": 7,
+      "daysAfterSuperseded": 0,
+      "plannedEndOfSupportNoticeDays": 0,
+      "fixPolicy": "no-backports",
+      "stability": "ephemeral"
+    }
+  },
+  "maintenance": {
+    "objectivesAreServiceLevelAgreements": false,
+    "securityResponseObjectives": [
+      {
+        "severity": "critical",
+        "initialResponseHours": 24,
+        "mitigationTargetDays": 7
+      },
+      {
+        "severity": "high",
+        "initialResponseHours": 72,
+        "mitigationTargetDays": 30
+      },
+      {
+        "severity": "medium",
+        "initialResponseHours": 240,
+        "mitigationTargetDays": 90
+      },
+      {
+        "severity": "low",
+        "initialResponseHours": 720,
+        "mitigationTargetDays": 365
+      }
+    ],
+    "publicationLocations": [
+      "CHANGELOG.md",
+      "GitHub Releases",
+      "GitHub Security Advisories",
+      "SECURITY.md"
+    ],
+    "emergencyException": "active-exploitation-or-platform-end-of-support"
+  },
+  "review": {
+    "cadenceDays": 90,
+    "canonicalDocument": "docs/releases/support-compatibility.md",
+    "requiredCandidateChecks": ["compatibility-review", "rolling-upgrade"],
+    "maximumRollingEvidenceBytes": 32768
+  }
+}

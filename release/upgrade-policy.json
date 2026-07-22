@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "product": "nexa-chat",
+  "targetVersion": "0.1.0",
+  "supportedSourceVersions": ["0.1.0"],
+  "cleanInstall": true,
+  "sameVersionRecovery": true,
+  "database": {
+    "minimumSourceSchema": 0,
+    "targetSchema": 41,
+    "migrationMode": "transactional-forward-only",
+    "rollbackMode": "verified-backup-restore-only"
+  },
+  "configuration": {
+    "targetSchema": 1,
+    "supportedSourceSchemas": [1],
+    "unknownKeys": "reject"
+  },
+  "channels": {
+    "stable": ["stable"],
+    "beta": ["stable", "beta"],
+    "nightly": ["nightly"]
+  },
+  "preflight": {
+    "maxEvidenceBytes": 32768,
+    "maxBackupAgeSeconds": 86400,
+    "minimumFreeSpaceMultiplier": 2,
+    "requireVerifiedArtifact": true,
+    "requireMaintenanceForSchemaChange": true,
+    "requireDrainedOldInstances": true,
+    "requireQuiescentJobs": true
+  },
+  "postflight": {
+    "maximumErrorRateBasisPoints": 100,
+    "requiredProbes": [
+      "audit",
+      "authorization-http",
+      "authorization-websocket",
+      "background-jobs",
+      "coordination",
+      "object-storage"
+    ]
+  }
+}

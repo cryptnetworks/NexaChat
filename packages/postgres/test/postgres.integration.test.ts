@@ -2,14 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CommunityService, type AuditEventInput } from '@nexa/domain';
+import {
+  CommunityService,
+  RecoverableJobWorker,
+  type AuditEventInput,
+  type JobExecutionContext,
+} from '@nexa/domain';
 import {
   CURRENT_SCHEMA_VERSION,
   MigrationError,
   PostgresAuthorizationStore,
+  PostgresJobRecoveryStore,
   PostgresPersistence,
   createPostgresPool,
   migratePostgres,
+  planPostgresUpgrade,
   readMigrations,
   verifyPostgresSchema,
   type PostgresConfig,
@@ -18,6 +25,8 @@ import {
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
   'postgresql://nexa:local-development-password@127.0.0.1:5432/nexa';
+const databaseConfigured = Boolean(process.env.DATABASE_TEST_URL);
+const integration = databaseConfigured ? describe : describe.skip;
 const databaseName = `nexa_test_${randomUUID().replaceAll('-', '')}`;
 const databaseUrl = new URL(adminUrl);
 databaseUrl.pathname = `/${databaseName}`;
@@ -65,6 +74,7 @@ async function withAdminPool(
 }
 
 beforeAll(async () => {
+  if (!databaseConfigured) return;
   await withAdminPool(async (admin) => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
@@ -75,6 +85,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!databaseConfigured) return;
   const cleanupErrors: Error[] = [];
   if (poolInitialized) {
     try {
@@ -101,7 +112,7 @@ afterAll(async () => {
   }
 });
 
-describe('PostgreSQL persistence', () => {
+integration('PostgreSQL persistence', () => {
   it('stores, retrieves, updates, and deletes every aggregate', async () => {
     const store = new PostgresPersistence(pool);
     const now = new Date('2026-01-02T03:04:05.000Z').toISOString();
@@ -139,6 +150,7 @@ describe('PostgreSQL persistence', () => {
       kind: 'text' as const,
       position: 0,
       archivedAt: null,
+      slowModeSeconds: 0,
       version: 1,
     };
     const message = {
@@ -148,6 +160,9 @@ describe('PostgreSQL persistence', () => {
       body: 'persist me',
       replyToId: null,
       idempotencyKey: 'request-0001',
+      requestFingerprint:
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      createdEventId: randomUUID(),
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
@@ -253,6 +268,111 @@ describe('PostgreSQL persistence', () => {
       }),
     ).rejects.toThrow('abort');
     expect(await store.accounts.findById(rolledBack.id)).toBeUndefined();
+  });
+
+  it('persists job checkpoints across retry, restart, and concurrent claims', async () => {
+    const jobId = randomUUID();
+    const createdAt = '2026-01-01T00:00:00.000Z';
+    await pool.query(
+      `INSERT INTO background_jobs
+        (id,kind,status,attempts,max_attempts,deduplication_key,
+         payload_ciphertext,created_at,available_at,version)
+       VALUES ($1,'attachment.scan','queued',0,3,$2,$3,$4,$4,1)`,
+      [
+        jobId,
+        `attachment-${jobId}`,
+        Buffer.from('encrypted-fixture'),
+        createdAt,
+      ],
+    );
+    const jobs = new PostgresJobRecoveryStore(pool);
+    const checkpoints: unknown[] = [];
+    const handler = async ({ job, saveCheckpoint }: JobExecutionContext) => {
+      checkpoints.push(job.checkpoint);
+      if (job.attempts === 1) {
+        await saveCheckpoint({ next_part: 2 });
+        throw new Error('simulated network interruption');
+      }
+    };
+    const workerOptions = {
+      workerId: 'postgres-worker-one',
+      leaseMs: 2_000,
+      executionTimeoutMs: 500,
+      baseRetryMs: 100,
+      maxRetryMs: 1_000,
+    };
+    const first = new RecoverableJobWorker(
+      jobs,
+      { 'attachment.scan': handler },
+      workerOptions,
+    );
+    expect(await first.runOnce(new Date(createdAt))).toMatchObject({
+      outcome: 'retry_scheduled',
+    });
+    const scheduled = await pool.query<{
+      available_at: Date;
+      status: string;
+    }>('SELECT available_at,status FROM background_jobs WHERE id=$1', [jobId]);
+    expect(scheduled.rows[0]?.status).toBe('queued');
+    const retryAt = scheduled.rows[0]?.available_at;
+    if (!retryAt) throw new Error('retry was not persisted');
+    const restarted = new RecoverableJobWorker(
+      jobs,
+      { 'attachment.scan': handler },
+      { ...workerOptions, workerId: 'postgres-worker-restarted' },
+    );
+    expect(await restarted.runOnce(retryAt)).toMatchObject({
+      outcome: 'succeeded',
+    });
+    expect(checkpoints).toEqual([{}, { next_part: 2 }]);
+    await expect(
+      pool.query<{
+        status: string;
+        attempts: number;
+        checkpoint: Record<string, number>;
+      }>('SELECT status,attempts,checkpoint FROM background_jobs WHERE id=$1', [
+        jobId,
+      ]),
+    ).resolves.toMatchObject({
+      rows: [
+        { status: 'succeeded', attempts: 2, checkpoint: { next_part: 2 } },
+      ],
+    });
+
+    const concurrentId = randomUUID();
+    await pool.query(
+      `INSERT INTO background_jobs
+        (id,kind,status,attempts,max_attempts,deduplication_key,
+         payload_ciphertext,created_at,available_at,version)
+       VALUES ($1,'attachment.scan','queued',0,3,$2,$3,$4,$4,1)`,
+      [
+        concurrentId,
+        `attachment-${concurrentId}`,
+        Buffer.from('encrypted-fixture'),
+        createdAt,
+      ],
+    );
+    let executions = 0;
+    const concurrentHandler = async () => {
+      executions += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    const contenders = ['a', 'b'].map(
+      (suffix) =>
+        new RecoverableJobWorker(
+          jobs,
+          { 'attachment.scan': concurrentHandler },
+          { ...workerOptions, workerId: `postgres-worker-${suffix}` },
+        ),
+    );
+    const results = await Promise.all(
+      contenders.map((worker) => worker.runOnce(new Date(createdAt))),
+    );
+    expect(results.map((result) => result.outcome).sort()).toEqual([
+      'idle',
+      'succeeded',
+    ]);
+    expect(executions).toBe(1);
   });
 
   it('persists lifecycle pagination, stale writes, archival, and historical references', async () => {
@@ -442,7 +562,7 @@ function auditInput(
   };
 }
 
-describe('PostgreSQL authorization persistence', () => {
+integration('PostgreSQL authorization persistence', () => {
   it('stores roles, assignments and decisions idempotently and protects ownership from stale transfer', async () => {
     const persistence = new PostgresPersistence(pool);
     const authorization = new PostgresAuthorizationStore(pool);
@@ -521,7 +641,7 @@ describe('PostgreSQL authorization persistence', () => {
   });
 });
 
-describe('PostgreSQL migrations', () => {
+integration('PostgreSQL migrations', () => {
   it('migrates an empty database exactly once under concurrent startup', async () => {
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     const applied: number[] = [];
@@ -533,7 +653,9 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(applied).toEqual(
+      Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, index) => index + 1),
+    );
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -561,10 +683,22 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ).resolves.toBe(CURRENT_SCHEMA_VERSION);
-    expect(applied).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(applied).toEqual(
+      Array.from(
+        { length: CURRENT_SCHEMA_VERSION - 2 },
+        (_, index) => index + 3,
+      ),
+    );
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
+    const plan = await planPostgresUpgrade(pool, migrationsDirectory);
+    expect(plan).toMatchObject({
+      fromSchema: CURRENT_SCHEMA_VERSION,
+      toSchema: CURRENT_SCHEMA_VERSION,
+      pendingVersions: [],
+    });
+    expect(plan.migrationSetSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('backfills and verifies existing version 6 audit rows', async () => {

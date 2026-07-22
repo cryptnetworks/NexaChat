@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 118,
+  "category": "changed",
+  "summary": "Define machine-checked support, compatibility, and maintenance boundaries.",
+  "audience": "operators",
+  "packages": ["nexa-chat"],
+  "breaking": false,
+  "migration": null
+}

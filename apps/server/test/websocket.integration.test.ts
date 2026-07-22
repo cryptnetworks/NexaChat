@@ -8,7 +8,7 @@ import {
   InMemoryAuthStore,
   type PasswordHasher,
 } from '@nexa/auth';
-import { InMemoryCommunityService } from '@nexa/domain';
+import { InMemoryCommunityService, PresenceService } from '@nexa/domain';
 import {
   realtimeDeliverySchema,
   type RealtimeEnvelope,
@@ -34,6 +34,25 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
         reject(error instanceof Error ? error : new Error('invalid JSON'));
       }
     });
+    socket.once('error', reject);
+  });
+}
+
+function nextMessages(socket: WebSocket, count: number): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const values: unknown[] = [];
+    const listener = (data: RawData) => {
+      try {
+        values.push(JSON.parse(textFromRawData(data)));
+        if (values.length === count) {
+          socket.off('message', listener);
+          resolve(values);
+        }
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('invalid JSON'));
+      }
+    };
+    socket.on('message', listener);
     socket.once('error', reject);
   });
 }
@@ -95,7 +114,7 @@ describe('secure real WebSocket integration', () => {
     await app.close();
   });
 
-  function attach() {
+  function attach(presence?: PresenceService) {
     app.websocketHub = attachWebsocketHub(app.server, service, {
       auth,
       trustedOrigin: origin,
@@ -103,6 +122,7 @@ describe('secure real WebSocket integration', () => {
       limits,
       metrics: telemetry.websocketMetrics(),
       rateLimiter: rateLimiter ?? app.requestRateLimiter,
+      ...(presence ? { presence } : {}),
     });
   }
 
@@ -175,7 +195,10 @@ describe('secure real WebSocket integration', () => {
       event: { id: event.id },
     });
     const duplicate = nextMessage(socket);
-    app.websocketHub?.broadcast(first.id, event);
+    app.websocketHub?.broadcast(
+      first.id,
+      envelope(first.id, owner.account.id, 'ordered second'),
+    );
     expect(realtimeDeliverySchema.parse(await duplicate).sequence).toBe(2);
 
     const requestId = randomUUID();
@@ -243,6 +266,87 @@ describe('secure real WebSocket integration', () => {
     expect(metrics).toContain('nexa_websocket_delivery_duration_seconds_count');
     expect(metrics).not.toContain(owner.account.id);
     expect(metrics).not.toContain(space.id);
+  });
+
+  it('synchronizes compact account read state across active devices', async () => {
+    const owner = await identity('reader');
+    const first = connect(owner.session.token);
+    const second = connect(owner.session.token);
+    await Promise.all([opened(first), opened(second)]);
+    const firstDelivery = nextMessage(first);
+    const secondDelivery = nextMessage(second);
+    const state = {
+      stream: 'notifications',
+      sequence: 14,
+      eventId: randomUUID(),
+      updatedAt: new Date().toISOString(),
+      version: 3,
+    };
+    app.websocketHub?.broadcastAccount(owner.account.id, {
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    await expect(firstDelivery).resolves.toEqual({
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    await expect(secondDelivery).resolves.toEqual({
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    first.close(1000);
+    second.close(1000);
+  });
+
+  it('returns coarse presence without exposing expiry or activity details', async () => {
+    await app.websocketHub?.close();
+    const targetId = randomUUID();
+    const presence = new PresenceService(
+      {
+        get: () =>
+          Promise.resolve({
+            accountId: targetId,
+            state: 'online',
+            expiresAt: new Date(Date.now() + 90_000).toISOString(),
+            revision: 'private-revision',
+          }),
+        set: () => Promise.resolve(),
+        publish: () => Promise.resolve(),
+        allowUpdate: () => Promise.resolve(true),
+      },
+      { mayView: () => Promise.resolve(true) },
+    );
+    attach(presence);
+    const owner = await identity('presence-reader');
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    const requestId = randomUUID();
+    const deliveries = nextMessages(socket, 2);
+    socket.send(
+      JSON.stringify({
+        version: 1,
+        type: 'presence_subscribe',
+        requestId,
+        accountIds: [targetId],
+      }),
+    );
+    const [subscription, update] = await deliveries;
+    expect(subscription).toEqual({
+      version: 1,
+      type: 'presence_subscribed',
+      requestId,
+      accountIds: [targetId],
+    });
+    expect(update).toEqual({
+      version: 1,
+      type: 'presence',
+      presence: { accountId: targetId, state: 'online' },
+    });
+    expect(JSON.stringify(update)).not.toContain('private-revision');
+    socket.close(1000);
   });
 
   it('rejects anonymous, spoofed-origin, revoked, and suspended sessions during connection establishment', async () => {

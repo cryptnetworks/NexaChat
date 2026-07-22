@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "same-version-two-replica",
+  "commit": "3a6b63bf609add01eae5205c8a3cf8d465a60da5",
+  "startedAt": "2026-07-22T18:00:00.000Z",
+  "completedAt": "2026-07-22T18:10:00.000Z",
+  "channel": "beta",
+  "source": {
+    "version": "0.1.0",
+    "httpVersion": 1,
+    "realtimeVersion": 1,
+    "databaseSchema": 41,
+    "configurationSchema": 1
+  },
+  "target": {
+    "version": "0.1.0",
+    "httpVersion": 1,
+    "realtimeVersion": 1,
+    "databaseSchema": 41,
+    "configurationSchema": 1
+  },
+  "topology": {
+    "oldInstances": 1,
+    "newInstances": 1,
+    "coordination": "valkey"
+  },
+  "schemaChange": false,
+  "checks": [
+    {
+      "id": "authorization-revalidated",
+      "status": "passed",
+      "evidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "event-identity-preserved",
+      "status": "passed",
+      "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "id": "http-continuity",
+      "status": "passed",
+      "evidenceSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "id": "no-private-disclosure",
+      "status": "passed",
+      "evidenceSha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "id": "queue-backlog-recovered",
+      "status": "passed",
+      "evidenceSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "id": "websocket-reconnect",
+      "status": "passed",
+      "evidenceSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  ]
+}

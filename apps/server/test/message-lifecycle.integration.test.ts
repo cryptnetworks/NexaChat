@@ -15,7 +15,12 @@ describe('message lifecycle HTTP boundary', () => {
     );
     const app = buildApp(service);
     const broadcast = vi.fn();
-    app.websocketHub = { broadcast, close: () => Promise.resolve() };
+    app.websocketHub = {
+      broadcast,
+      broadcastAccount: vi.fn(),
+      ready: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+    };
 
     const payload = {
       authorId: owner.id,
@@ -34,6 +39,8 @@ describe('message lifecycle HTTP boundary', () => {
       url: `/v1/spaces/${space.id}/messages`,
       payload,
     });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.headers['idempotent-replayed']).toBe('true');
     expect(retried.json<{ id: string }>().id).toBe(message.id);
 
     const history = await app.inject({

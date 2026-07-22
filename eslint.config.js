@@ -7,6 +7,8 @@ export default tseslint.config(
       '**/dist/**',
       '**/dist-production/**',
       '**/coverage/**',
+      '**/target/**',
+      '.cache/**',
       'eslint.config.js',
       'tools/architecture/fixtures/**',
     ],
@@ -34,6 +36,13 @@ export default tseslint.config(
         setTimeout: 'readonly',
         URL: 'readonly',
       },
+    },
+  },
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ['apps/web/public/service-worker.js'],
+    languageOptions: {
+      globals: { self: 'readonly' },
     },
   },
   {

@@ -6,7 +6,11 @@ import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
 import { parseRuntimeConfig } from '../src/config.js';
 import { Telemetry } from '../src/telemetry.js';
-import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
+import {
+  CURRENT_SCHEMA_VERSION,
+  createPostgresPool,
+  type PostgresConfig,
+} from '@nexa/postgres';
 
 const traceId = '0af7651916cd43dd8448eb211c80319c';
 const parentSpanId = 'b7ad6b7169203331';
@@ -14,6 +18,8 @@ const parentSpanId = 'b7ad6b7169203331';
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
   'postgresql://nexa:local-development-password@127.0.0.1:5432/nexa';
+const databaseConfigured = Boolean(process.env.DATABASE_TEST_URL);
+const integration = databaseConfigured ? describe : describe.skip;
 const databaseName = `nexa_api_test_${randomUUID().replaceAll('-', '')}`;
 const databaseUrl = new URL(adminUrl);
 databaseUrl.pathname = `/${databaseName}`;
@@ -63,6 +69,7 @@ async function withAdminPool(
 }
 
 beforeAll(async () => {
+  if (!databaseConfigured) return;
   await withAdminPool(async (admin) => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
@@ -70,6 +77,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!databaseConfigured) return;
   if (databaseCreated) {
     await withAdminPool(async (admin) => {
       await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
@@ -77,7 +85,7 @@ afterAll(async () => {
   }
 });
 
-describe('PostgreSQL-backed API', () => {
+integration('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
     const first = await initializeDatabase(
       config,
@@ -161,7 +169,11 @@ describe('PostgreSQL-backed API', () => {
     expect(message.json()).toMatchObject({ body: 'survived restart' });
     const ready = await secondApp.inject('/health/ready');
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({ status: 'ready' });
+    expect(ready.json()).toEqual({
+      status: 'ready',
+      storage: 'postgresql',
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
     await secondApp.close();
     await second.pool.end();
   });

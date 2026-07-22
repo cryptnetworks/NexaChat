@@ -12,22 +12,25 @@
     "migrate:production": "node dist-production/migrate.mjs",
     "start": "node dist-production/main.mjs",
     "start:production": "node dist-production/main.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "upgrade:database:plan": "tsx src/upgrade-preflight.ts"
   },
   "dependencies": {
+    "@nexa/api-contracts": "0.1.0",
     "@nexa/auth": "0.1.0",
     "@nexa/authorization": "0.1.0",
-    "@nexa/api-contracts": "0.1.0",
-    "@nexa/domain": "0.1.0",
     "@nexa/coordination": "0.1.0",
+    "@nexa/domain": "0.1.0",
     "@nexa/object-storage": "0.1.0",
     "@nexa/postgres": "0.1.0",
     "@nexa/realtime-contracts": "0.1.0",
     "fastify": "5.10.0",
     "pg": "8.22.0",
+    "web-push": "3.6.7",
     "ws": "8.21.1"
   },
   "devDependencies": {
+    "@types/web-push": "3.6.4",
     "tsx": "4.20.3"
   }
 }

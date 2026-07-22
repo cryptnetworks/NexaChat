@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 101,
+  "category": "changed",
+  "summary": "Add deterministic workspace version and changelog validation.",
+  "audience": "operators",
+  "packages": ["@nexa/desktop", "nexa-chat"],
+  "breaking": false,
+  "migration": null
+}

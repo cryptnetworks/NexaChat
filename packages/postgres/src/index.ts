@@ -12,6 +12,15 @@ import type {
   AuditCheckpoint,
   AuditEvent,
   AuditIntegrity,
+  ModerationRestriction,
+  ModerationAuditEvent,
+  ModerationMessageEvidence,
+  ModerationMessageDeletion,
+  SafetyReport,
+  ModerationCase,
+  ModerationCaseActivity,
+  ModerationAppeal,
+  CommunityContentLimits,
   Category,
   Community,
   Invitation,
@@ -20,6 +29,20 @@ import type {
   Persistence,
   SessionRecord,
   Space,
+  NotificationRecord,
+  NotificationStore,
+  NotificationAuthorization,
+  NotificationPreference,
+  NotificationPreferenceAuthorization,
+  NotificationPreferenceStore,
+  NotificationReadAuthorization,
+  NotificationReadState,
+  NotificationReadStore,
+  PresenceVisibility,
+  MemberStatus,
+  MemberStatusStore,
+  RecoverableJob,
+  JobRecoveryStore,
 } from '@nexa/domain';
 import { auditEventHash, zeroAuditHash } from '@nexa/domain';
 import type {
@@ -39,7 +62,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 45;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -214,9 +237,20 @@ export class PostgresPersistence implements Persistence {
   readonly categories;
   readonly spaces;
   readonly messages;
+  readonly reactions;
+  readonly messagePacing;
   readonly sessions;
   readonly invitations;
   readonly auditEvents;
+  readonly moderationRestrictions;
+  readonly moderationAuditEvents;
+  readonly moderationMessageEvidence;
+  readonly moderationMessageDeletions;
+  readonly safetyReports;
+  readonly moderationCases;
+  readonly moderationCaseActivity;
+  readonly moderationAppeals;
+  readonly contentLimits;
 
   constructor(
     private readonly pool: Pool,
@@ -228,9 +262,22 @@ export class PostgresPersistence implements Persistence {
     this.categories = categoryRepository(queryable);
     this.spaces = spaceRepository(queryable);
     this.messages = messageRepository(queryable);
+    this.reactions = reactionRepository(queryable);
+    this.messagePacing = messagePacingRepository(queryable);
     this.sessions = sessionRepository(queryable);
     this.invitations = invitationRepository(queryable);
     this.auditEvents = auditEventRepository(queryable);
+    this.moderationRestrictions = moderationRestrictionRepository(queryable);
+    this.moderationAuditEvents = moderationAuditRepository(queryable);
+    this.moderationMessageEvidence =
+      moderationMessageEvidenceRepository(queryable);
+    this.moderationMessageDeletions =
+      moderationMessageDeletionRepository(queryable);
+    this.safetyReports = safetyReportRepository(queryable);
+    this.moderationCases = moderationCaseRepository(queryable);
+    this.moderationCaseActivity = moderationCaseActivityRepository(queryable);
+    this.moderationAppeals = moderationAppealRepository(queryable);
+    this.contentLimits = contentLimitsRepository(queryable);
   }
 
   async transaction<T>(
@@ -249,6 +296,812 @@ export class PostgresPersistence implements Persistence {
     } finally {
       client.release();
     }
+  }
+}
+
+interface RecoverableJobRow {
+  id: string;
+  kind: string;
+  status: RecoverableJob['status'];
+  attempts: number;
+  max_attempts: number;
+  checkpoint: Record<string, string | number | boolean | null>;
+  created_at: Date | string;
+  available_at: Date | string;
+  lease_token: string | null;
+  lease_expires_at: Date | string | null;
+  completed_at: Date | string | null;
+  last_error_code: RecoverableJob['lastErrorCode'];
+  version: number;
+}
+
+const RECOVERABLE_JOB_FIELDS = `id, kind, status, attempts, max_attempts,
+  checkpoint, created_at, available_at, lease_token, lease_expires_at,
+  completed_at, last_error_code, version`;
+
+function mapRecoverableJob(row: RecoverableJobRow): RecoverableJob {
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    checkpoint: row.checkpoint,
+    createdAt: timestamp(row.created_at),
+    availableAt: timestamp(row.available_at),
+    leaseToken: row.lease_token,
+    leaseExpiresAt: nullableTimestamp(row.lease_expires_at),
+    completedAt: nullableTimestamp(row.completed_at),
+    lastErrorCode: row.last_error_code,
+    version: row.version,
+  };
+}
+
+export class PostgresJobRecoveryStore implements JobRecoveryStore {
+  constructor(private readonly pool: Pool) {}
+
+  async claim(input: Parameters<JobRecoveryStore['claim']>[0]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE background_jobs
+         SET status='failed', completed_at=$1, last_error_code='handler_failed',
+             lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+             version=version+1
+         WHERE status='running' AND lease_expires_at <= $1
+           AND attempts >= max_attempts`,
+        [input.now],
+      );
+      const result = await client.query<RecoverableJobRow>(
+        `WITH candidate AS (
+           SELECT id FROM background_jobs
+           WHERE kind = ANY($1::varchar[])
+             AND (
+               (status='queued' AND available_at <= $2 AND attempts < max_attempts)
+               OR
+               (status='running' AND lease_expires_at <= $2 AND attempts < max_attempts)
+               OR
+               (status='cancel_requested' AND
+                 (lease_expires_at IS NULL OR lease_expires_at <= $2))
+             )
+           ORDER BY
+             CASE WHEN status='cancel_requested' THEN 0 ELSE 1 END,
+             available_at, created_at, id
+           FOR UPDATE SKIP LOCKED LIMIT 1
+         )
+         UPDATE background_jobs AS job
+         SET status=CASE WHEN job.status='cancel_requested'
+                         THEN 'cancel_requested' ELSE 'running' END,
+             attempts=CASE WHEN job.status='cancel_requested'
+                           THEN job.attempts ELSE job.attempts+1 END,
+             started_at=CASE WHEN job.status='cancel_requested'
+                             THEN job.started_at ELSE COALESCE(job.started_at,$2) END,
+             lease_owner=$3, lease_token=$4, lease_expires_at=$5,
+             version=job.version+1
+         FROM candidate WHERE job.id=candidate.id
+         RETURNING job.id, job.kind, job.status, job.attempts,
+           job.max_attempts, job.checkpoint, job.created_at, job.available_at,
+           job.lease_token, job.lease_expires_at, job.completed_at,
+           job.last_error_code, job.version`,
+        [
+          input.kinds,
+          input.now,
+          input.workerId,
+          input.leaseToken,
+          input.leaseExpiresAt,
+        ],
+      );
+      await client.query('COMMIT');
+      const row = result.rows[0];
+      return row ? mapRecoverableJob(row) : undefined;
+    } catch (error) {
+      await rollback(client);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveCheckpoint(
+    input: Parameters<JobRecoveryStore['saveCheckpoint']>[0],
+  ) {
+    const result = await this.pool.query<RecoverableJobRow>(
+      `UPDATE background_jobs
+       SET checkpoint=$4::jsonb, lease_expires_at=$5, version=version+1
+       WHERE id=$1 AND status='running' AND lease_token=$2
+         AND version=$3 RETURNING ${RECOVERABLE_JOB_FIELDS}`,
+      [
+        input.id,
+        input.leaseToken,
+        input.expectedVersion,
+        JSON.stringify(input.checkpoint),
+        input.leaseExpiresAt,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapRecoverableJob(row) : undefined;
+  }
+
+  async cancellationState(
+    input: Parameters<JobRecoveryStore['cancellationState']>[0],
+  ) {
+    const result = await this.pool.query<{
+      status: RecoverableJob['status'];
+      version: number;
+    }>(
+      `SELECT status,version FROM background_jobs
+       WHERE id=$1 AND lease_token=$2
+         AND status IN ('running','cancel_requested')`,
+      [input.id, input.leaseToken],
+    );
+    const row = result.rows[0];
+    return row
+      ? { requested: row.status === 'cancel_requested', version: row.version }
+      : undefined;
+  }
+
+  complete(input: Parameters<JobRecoveryStore['complete']>[0]) {
+    return this.transition(
+      input,
+      `status='succeeded', completed_at=$4, last_error_code=NULL`,
+      input.completedAt,
+      'running',
+    );
+  }
+
+  reschedule(input: Parameters<JobRecoveryStore['reschedule']>[0]) {
+    return this.transition(
+      input,
+      `status='queued', available_at=$4, last_error_code=$5`,
+      input.availableAt,
+      'running',
+      input.errorCode,
+    );
+  }
+
+  fail(input: Parameters<JobRecoveryStore['fail']>[0]) {
+    return this.transition(
+      input,
+      `status='failed', completed_at=$4, last_error_code=$5`,
+      input.completedAt,
+      'running',
+      input.errorCode,
+    );
+  }
+
+  cancel(input: Parameters<JobRecoveryStore['cancel']>[0]) {
+    return this.transition(
+      input,
+      `status='cancelled', completed_at=$4, last_error_code=NULL`,
+      input.completedAt,
+      'cancel_requested',
+    );
+  }
+
+  private async transition(
+    input: { id: string; leaseToken: string; expectedVersion: number },
+    update: string,
+    timestampValue: string,
+    expectedStatus: RecoverableJob['status'],
+    errorCode?: RecoverableJob['lastErrorCode'],
+  ): Promise<RecoverableJob | undefined> {
+    const result = await this.pool.query<RecoverableJobRow>(
+      `UPDATE background_jobs SET ${update},
+         lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+         version=version+1
+       WHERE id=$1 AND lease_token=$2 AND version=$3 AND status=$6
+       RETURNING ${RECOVERABLE_JOB_FIELDS}`,
+      [
+        input.id,
+        input.leaseToken,
+        input.expectedVersion,
+        timestampValue,
+        errorCode ?? null,
+        expectedStatus,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapRecoverableJob(row) : undefined;
+  }
+}
+
+async function rollback(client: PoolClient): Promise<void> {
+  try {
+    await client.query('ROLLBACK');
+  } catch {
+    // The original storage failure remains authoritative.
+  }
+}
+
+interface NotificationRow {
+  id: string;
+  account_id: string;
+  kind: NotificationRecord['kind'];
+  scope_id: string | null;
+  resource_id: string;
+  actor_ids: string[];
+  aggregate_count: number;
+  deduplication_key: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+  read_at: Date | string | null;
+  archived_at: Date | string | null;
+  expires_at: Date | string;
+  version: number;
+}
+
+const NOTIFICATION_FIELDS = `id, account_id, kind, scope_id, resource_id,
+  actor_ids, aggregate_count, deduplication_key, created_at, updated_at,
+  read_at, archived_at, expires_at, version`;
+
+function timestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function nullableTimestamp(value: Date | string | null): string | null {
+  return value === null ? null : timestamp(value);
+}
+
+function mapNotification(row: NotificationRow): NotificationRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    kind: row.kind,
+    scopeId: row.scope_id,
+    resourceId: row.resource_id,
+    actorIds: row.actor_ids,
+    count: row.aggregate_count,
+    deduplicationKey: row.deduplication_key,
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+    readAt: nullableTimestamp(row.read_at),
+    archivedAt: nullableTimestamp(row.archived_at),
+    expiresAt: timestamp(row.expires_at),
+    version: row.version,
+  };
+}
+
+function notificationCursor(value: NotificationRecord): string {
+  return Buffer.from(
+    JSON.stringify([value.updatedAt, value.id]),
+    'utf8',
+  ).toString('base64url');
+}
+
+function parseNotificationCursor(value: string): [string, string] {
+  try {
+    const parsed: unknown = JSON.parse(
+      Buffer.from(value, 'base64url').toString('utf8'),
+    );
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      !Number.isFinite(Date.parse(parsed[0])) ||
+      typeof parsed[1] !== 'string' ||
+      !/^[0-9a-f-]{36}$/i.test(parsed[1])
+    )
+      throw new Error('invalid');
+    return [parsed[0], parsed[1]];
+  } catch {
+    throw new Error('invalid_notification_cursor');
+  }
+}
+
+/** Durable notification adapter. Transactions use serializable isolation and a
+ * per-deduplication-key advisory lock so concurrent replicas cannot create the
+ * same logical notification twice. */
+export class PostgresNotificationStore implements NotificationStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async claimSourceEvent(accountId: string, eventId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO notification_source_events(account_id,event_id)
+       VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [accountId, eventId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async findDeduplicated(accountId: string, key: string) {
+    await this.db.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`${accountId}:${key}`],
+    );
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications
+       WHERE account_id = $1 AND deduplication_key = $2`,
+      [accountId, key],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async create(value: NotificationRecord): Promise<NotificationRecord> {
+    const result = await this.db.query<NotificationRow>(
+      `INSERT INTO notifications
+       (id, account_id, kind, scope_id, resource_id, actor_ids,
+        aggregate_count, deduplication_key, created_at, updated_at, read_at,
+        archived_at, expires_at, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       RETURNING ${NOTIFICATION_FIELDS}`,
+      [
+        value.id,
+        value.accountId,
+        value.kind,
+        value.scopeId,
+        value.resourceId,
+        value.actorIds,
+        value.count,
+        value.deduplicationKey,
+        value.createdAt,
+        value.updatedAt,
+        value.readAt,
+        value.archivedAt,
+        value.expiresAt,
+        value.version,
+      ],
+    );
+    return mapNotification(requiredRow(result.rows));
+  }
+
+  async update(
+    id: string,
+    expectedVersion: number,
+    patch: Partial<NotificationRecord>,
+  ) {
+    const current = await this.find(id);
+    if (!current) return undefined;
+    const next = { ...current, ...patch, version: current.version + 1 };
+    const result = await this.db.query<NotificationRow>(
+      `UPDATE notifications SET actor_ids=$3, aggregate_count=$4,
+       updated_at=$5, read_at=$6, archived_at=$7, expires_at=$8,
+       version=version+1 WHERE id=$1 AND version=$2
+       RETURNING ${NOTIFICATION_FIELDS}`,
+      [
+        id,
+        expectedVersion,
+        next.actorIds,
+        next.count,
+        next.updatedAt,
+        next.readAt,
+        next.archivedAt,
+        next.expiresAt,
+      ],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async find(id: string) {
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async list(
+    accountId: string,
+    input: { limit: number; cursor?: string },
+  ): Promise<{ items: NotificationRecord[]; nextCursor: string | null }> {
+    const cursor = input.cursor
+      ? parseNotificationCursor(input.cursor)
+      : undefined;
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications
+       WHERE account_id=$1 AND expires_at > CURRENT_TIMESTAMP
+       AND ($2::timestamptz IS NULL OR (updated_at, id) < ($2, $3::uuid))
+       ORDER BY updated_at DESC, id DESC LIMIT $4`,
+      [accountId, cursor?.[0] ?? null, cursor?.[1] ?? null, input.limit + 1],
+    );
+    const mapped = result.rows.map(mapNotification);
+    const hasMore = mapped.length > input.limit;
+    const items = mapped.slice(0, input.limit);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? notificationCursor(last) : null,
+    };
+  }
+
+  async transaction<T>(
+    work: (store: NotificationStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/** Re-checks notification resource visibility against current durable state.
+ * The deliberately generic false result prevents callers from distinguishing a
+ * deleted resource from a blocked or unauthorized one. */
+export class PostgresNotificationAuthorization implements NotificationAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  mayNotify(
+    accountId: string,
+    resourceId: string,
+    kind: NotificationRecord['kind'],
+  ): Promise<boolean> {
+    return this.mayView(accountId, resourceId, kind);
+  }
+
+  async mayView(
+    accountId: string,
+    resourceId: string,
+    kind?: NotificationRecord['kind'],
+  ): Promise<boolean> {
+    if (kind === 'mention' || kind === 'reply') {
+      const result = await this.db.query(
+        `SELECT 1 FROM messages msg
+         JOIN spaces s ON s.id=msg.space_id AND s.archived_at IS NULL
+         JOIN memberships m ON m.community_id=s.community_id
+           AND m.account_id=$1 AND m.status='active'
+         WHERE msg.id=$2 AND msg.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM account_blocks b
+             WHERE (b.blocker_id=$1 AND b.blocked_id=msg.author_id)
+                OR (b.blocker_id=msg.author_id AND b.blocked_id=$1)
+           ) LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length === 1;
+    }
+    if (kind === 'invite') {
+      const result = await this.db.query(
+        `SELECT 1 FROM invitations i JOIN communities c ON c.id=i.community_id
+         WHERE i.id=$2 AND i.target_account_id=$1 AND i.revoked_at IS NULL
+           AND i.expires_at > CURRENT_TIMESTAMP AND c.archived_at IS NULL
+         LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length === 1;
+    }
+    if (kind === 'moderation_outcome') {
+      const result = await this.db.query(
+        `SELECT 1 FROM safety_reports r WHERE r.id=$2 AND r.reporter_id=$1
+         UNION ALL
+         SELECT 1 FROM moderation_restrictions mr
+         WHERE mr.id=$2 AND mr.target_account_id=$1 LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length > 0;
+    }
+    return false;
+  }
+}
+
+interface NotificationPreferenceRow {
+  account_id: string;
+  scope_type: NotificationPreference['scopeType'];
+  scope_id: string;
+  mode: NotificationPreference['mode'];
+  muted_until: Date | string | null;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapNotificationPreference(
+  row: NotificationPreferenceRow,
+): NotificationPreference {
+  return {
+    accountId: row.account_id,
+    scopeType: row.scope_type,
+    scopeId: row.scope_id,
+    mode: row.mode,
+    mutedUntil: nullableTimestamp(row.muted_until),
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresNotificationPreferenceStore implements NotificationPreferenceStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async find(
+    accountId: string,
+    scopeType: NotificationPreference['scopeType'],
+    scopeId: string,
+  ) {
+    const result = await this.db.query<NotificationPreferenceRow>(
+      `SELECT account_id, scope_type, scope_id, mode, muted_until, updated_at,
+       version FROM notification_preferences WHERE account_id=$1
+       AND scope_type=$2 AND scope_id=$3`,
+      [accountId, scopeType, scopeId],
+    );
+    return result.rows[0]
+      ? mapNotificationPreference(result.rows[0])
+      : undefined;
+  }
+
+  async save(value: NotificationPreference, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<NotificationPreferenceRow>(
+            `INSERT INTO notification_preferences
+             (account_id,scope_type,scope_id,mode,muted_until,updated_at,version)
+             VALUES ($1,$2,$3,$4,$5,$6,1)
+             ON CONFLICT DO NOTHING RETURNING account_id, scope_type, scope_id,
+             mode, muted_until, updated_at, version`,
+            [
+              value.accountId,
+              value.scopeType,
+              value.scopeId,
+              value.mode,
+              value.mutedUntil,
+              value.updatedAt,
+            ],
+          )
+        : await this.db.query<NotificationPreferenceRow>(
+            `UPDATE notification_preferences SET mode=$5, muted_until=$6,
+             updated_at=$7, version=version+1 WHERE account_id=$1
+             AND scope_type=$2 AND scope_id=$3 AND version=$4
+             RETURNING account_id, scope_type, scope_id, mode, muted_until,
+             updated_at, version`,
+            [
+              value.accountId,
+              value.scopeType,
+              value.scopeId,
+              expectedVersion,
+              value.mode,
+              value.mutedUntil,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0]
+      ? mapNotificationPreference(result.rows[0])
+      : undefined;
+  }
+
+  async transaction<T>(
+    work: (store: NotificationPreferenceStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationPreferenceStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export class PostgresNotificationPreferenceAuthorization implements NotificationPreferenceAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayConfigure(
+    accountId: string,
+    scopeType: NotificationPreference['scopeType'],
+    scopeId: string,
+  ): Promise<boolean> {
+    if (scopeType === 'account') return accountId === scopeId;
+    const relation =
+      scopeType === 'community'
+        ? `SELECT id AS community_id FROM communities WHERE id=$2 AND archived_at IS NULL`
+        : scopeType === 'category'
+          ? `SELECT community_id FROM categories WHERE id=$2 AND archived_at IS NULL`
+          : `SELECT community_id FROM spaces WHERE id=$2 AND archived_at IS NULL`;
+    const result = await this.db.query(
+      `SELECT 1 FROM (${relation}) scope
+       JOIN memberships m ON m.community_id=scope.community_id
+       WHERE m.account_id=$1 AND m.status='active' LIMIT 1`,
+      [accountId, scopeId],
+    );
+    return result.rows.length === 1;
+  }
+}
+
+interface NotificationReadRow {
+  account_id: string;
+  stream: string;
+  sequence: string | number;
+  event_id: string;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapNotificationRead(row: NotificationReadRow): NotificationReadState {
+  return {
+    accountId: row.account_id,
+    stream: row.stream,
+    sequence: Number(row.sequence),
+    eventId: row.event_id,
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresNotificationReadStore implements NotificationReadStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async find(accountId: string, stream: string) {
+    const result = await this.db.query<NotificationReadRow>(
+      `SELECT account_id,stream,sequence,event_id,updated_at,version
+       FROM notification_read_state WHERE account_id=$1 AND stream=$2`,
+      [accountId, stream],
+    );
+    return result.rows[0] ? mapNotificationRead(result.rows[0]) : undefined;
+  }
+
+  async advance(value: NotificationReadState, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<NotificationReadRow>(
+            `INSERT INTO notification_read_state
+             (account_id,stream,sequence,event_id,updated_at,version)
+             VALUES ($1,$2,$3,$4,$5,1) ON CONFLICT DO NOTHING
+             RETURNING account_id,stream,sequence,event_id,updated_at,version`,
+            [
+              value.accountId,
+              value.stream,
+              value.sequence,
+              value.eventId,
+              value.updatedAt,
+            ],
+          )
+        : await this.db.query<NotificationReadRow>(
+            `UPDATE notification_read_state SET sequence=$4,event_id=$5,
+             updated_at=$6,version=version+1 WHERE account_id=$1 AND stream=$2
+             AND version=$3 AND sequence < $4
+             RETURNING account_id,stream,sequence,event_id,updated_at,version`,
+            [
+              value.accountId,
+              value.stream,
+              expectedVersion,
+              value.sequence,
+              value.eventId,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0] ? mapNotificationRead(result.rows[0]) : undefined;
+  }
+
+  async transaction<T>(
+    work: (store: NotificationReadStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationReadStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export class PostgresNotificationReadAuthorization implements NotificationReadAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayAccess(accountId: string, stream: string): Promise<boolean> {
+    const spaceId = stream.startsWith('space:') ? stream.slice(6) : undefined;
+    const result = await this.db.query(
+      spaceId
+        ? `SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id
+           JOIN spaces s ON s.community_id=m.community_id
+           WHERE a.id=$1 AND a.status='active' AND m.status='active'
+           AND s.id=$2 AND s.archived_at IS NULL LIMIT 1`
+        : `SELECT 1 FROM accounts WHERE id=$1 AND status='active' LIMIT 1`,
+      spaceId ? [accountId, spaceId] : [accountId],
+    );
+    return result.rows.length === 1;
+  }
+}
+
+export class PostgresPresenceVisibility implements PresenceVisibility {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayView(viewerId: string, accountId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM accounts viewer JOIN accounts target ON target.id=$2
+       WHERE viewer.id=$1 AND viewer.status='active' AND target.status='active'
+       AND ($1=$2 OR EXISTS (
+         SELECT 1 FROM memberships vm JOIN memberships tm
+           ON tm.community_id=vm.community_id
+         WHERE vm.account_id=$1 AND tm.account_id=$2
+           AND vm.status='active' AND tm.status='active'
+       ))
+       AND NOT EXISTS (
+         SELECT 1 FROM account_blocks b
+         WHERE (b.blocker_id=$1 AND b.blocked_id=$2)
+            OR (b.blocker_id=$2 AND b.blocked_id=$1)
+       ) LIMIT 1`,
+      [viewerId, accountId],
+    );
+    return result.rows.length === 1;
+  }
+}
+
+interface MemberStatusRow {
+  account_id: string;
+  status_text: string | null;
+  expires_at: Date | string | null;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapMemberStatus(row: MemberStatusRow): MemberStatus {
+  return {
+    accountId: row.account_id,
+    text: row.status_text,
+    expiresAt: nullableTimestamp(row.expires_at),
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresMemberStatusStore implements MemberStatusStore {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async find(accountId: string) {
+    const result = await this.db.query<MemberStatusRow>(
+      `SELECT account_id,status_text,expires_at,updated_at,version
+       FROM member_statuses WHERE account_id=$1`,
+      [accountId],
+    );
+    return result.rows[0] ? mapMemberStatus(result.rows[0]) : undefined;
+  }
+
+  async save(value: MemberStatus, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<MemberStatusRow>(
+            `INSERT INTO member_statuses
+             (account_id,status_text,expires_at,updated_at,version)
+             VALUES ($1,$2,$3,$4,1) ON CONFLICT DO NOTHING
+             RETURNING account_id,status_text,expires_at,updated_at,version`,
+            [value.accountId, value.text, value.expiresAt, value.updatedAt],
+          )
+        : await this.db.query<MemberStatusRow>(
+            `UPDATE member_statuses SET status_text=$3,expires_at=$4,
+             updated_at=$5,version=version+1 WHERE account_id=$1 AND version=$2
+             RETURNING account_id,status_text,expires_at,updated_at,version`,
+            [
+              value.accountId,
+              expectedVersion,
+              value.text,
+              value.expiresAt,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0] ? mapMemberStatus(result.rows[0]) : undefined;
   }
 }
 
@@ -819,6 +1672,7 @@ type SpaceRow = {
   kind: 'text';
   position: number;
   archived_at: Date | null;
+  slow_mode_seconds: number;
   version: number;
 };
 type MessageRow = {
@@ -828,6 +1682,8 @@ type MessageRow = {
   body: string | null;
   reply_to_id: string | null;
   idempotency_key: string;
+  request_fingerprint: string;
+  created_event_id: string;
   created_at: Date;
   updated_at: Date | null;
   deleted_at: Date | null;
@@ -887,6 +1743,123 @@ type AuditCheckpointRow = {
   service_id: string | null;
   correlation_id: string;
   created_at: Date;
+};
+type ModerationRestrictionRow = {
+  id: string;
+  community_id: string;
+  actor_id: string;
+  target_account_id: string;
+  kind: 'timeout' | 'ban';
+  reason: string;
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  expires_at: Date | null;
+  revoked_at: Date | null;
+  version: number;
+};
+type ModerationAuditRow = {
+  id: string;
+  community_id: string;
+  actor_id: string;
+  target_account_id: string | null;
+  target_message_id: string | null;
+  action: string;
+  outcome: 'succeeded' | 'rejected';
+  reason: string | null;
+  correlation_id: string;
+  occurred_at: Date;
+  previous_hash: string | null;
+  event_hash: string;
+  metadata: Record<string, string | number | boolean | null>;
+};
+type ModerationMessageEvidenceRow = {
+  id: string;
+  community_id: string;
+  message_id: string;
+  body_snapshot: string;
+  content_hash: string;
+  captured_at: Date;
+  retained_until: Date;
+  legal_hold: boolean;
+};
+type ModerationMessageDeletionRow = {
+  id: string;
+  community_id: string;
+  message_id: string;
+  actor_id: string;
+  target_account_id: string;
+  evidence_id: string;
+  reason: string;
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  event_id: string;
+  created_at: Date;
+};
+type SafetyReportRow = {
+  id: string;
+  community_id: string;
+  reporter_id: string;
+  target_account_id: string | null;
+  target_message_id: string | null;
+  category: SafetyReport['category'];
+  description: string;
+  evidence_reference_ids: string[];
+  status: SafetyReport['status'];
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  updated_at: Date;
+  version: number;
+};
+type ModerationCaseRow = {
+  id: string;
+  community_id: string;
+  report_id: string;
+  assignee_id: string | null;
+  status: ModerationCase['status'];
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  updated_at: Date;
+  closed_at: Date | null;
+  version: number;
+};
+type ModerationCaseActivityRow = {
+  id: string;
+  case_id: string;
+  actor_id: string;
+  kind: ModerationCaseActivity['kind'];
+  note: string | null;
+  linked_action_id: string | null;
+  occurred_at: Date;
+};
+type ModerationAppealRow = {
+  id: string;
+  community_id: string;
+  appellant_id: string;
+  restriction_id: string;
+  statement: string;
+  status: ModerationAppeal['status'];
+  reviewer_id: string | null;
+  decision_reason: string | null;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  decided_at: Date | null;
+  version: number;
+};
+type ContentLimitsRow = {
+  community_id: string;
+  message_body_max: number;
+  report_description_max: number;
+  moderation_reason_max: number;
+  updated_by: string;
+  updated_at: Date;
+  version: number;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1069,14 +2042,14 @@ function categoryRepository(db: Queryable): Persistence['categories'] {
 
 function spaceRepository(db: Queryable): Persistence['spaces'] {
   const fields =
-    'id, community_id, category_id, name, kind, position, archived_at, version';
+    'id, community_id, category_id, name, kind, position, archived_at, slow_mode_seconds, version';
   const returning = `RETURNING ${fields}`;
   return {
     async create(space) {
       const result = await db.query<SpaceRow>(
         `INSERT INTO spaces
-          (id, community_id, category_id, name, kind, position, archived_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ${returning}`,
+          (id, community_id, category_id, name, kind, position, archived_at, slow_mode_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ${returning}`,
         [
           space.id,
           space.communityId,
@@ -1085,6 +2058,7 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
           space.kind,
           space.position,
           space.archivedAt,
+          space.slowModeSeconds,
         ],
       );
       return mapSpace(requiredRow(result.rows));
@@ -1116,14 +2090,15 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
     },
     async update(id, input, expectedVersion) {
       const result = await db.query<SpaceRow>(
-        `UPDATE spaces SET name=$2, position=$3, category_id=$4, archived_at=$5, version=version+1, updated_at=CURRENT_TIMESTAMP
-         WHERE id=$1 AND version=$6 RETURNING ${fields}`,
+        `UPDATE spaces SET name=$2, position=$3, category_id=$4, archived_at=$5, slow_mode_seconds=$6, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$7 RETURNING ${fields}`,
         [
           id,
           input.name,
           input.position,
           input.categoryId,
           input.archivedAt,
+          input.slowModeSeconds,
           expectedVersion,
         ],
       );
@@ -1146,13 +2121,13 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
 
 function messageRepository(db: Queryable): Persistence['messages'] {
   const fields =
-    'id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, deleted_at, version';
+    'id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, deleted_at, version';
   return {
     async create(message) {
       const result = await db.query<MessageRow>(
         `INSERT INTO messages
-          (id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          (id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (author_id, space_id, idempotency_key) DO UPDATE
            SET idempotency_key = EXCLUDED.idempotency_key
          RETURNING ${fields}`,
@@ -1163,6 +2138,8 @@ function messageRepository(db: Queryable): Persistence['messages'] {
           message.body,
           message.replyToId,
           message.idempotencyKey,
+          message.requestFingerprint,
+          message.createdEventId,
           message.createdAt,
           message.updatedAt,
           message.version,
@@ -1231,6 +2208,75 @@ function messageRepository(db: Queryable): Persistence['messages'] {
     async remove(id) {
       const result = await db.query('DELETE FROM messages WHERE id=$1', [id]);
       return result.rowCount === 1;
+    },
+  };
+}
+
+function reactionRepository(db: Queryable): Persistence['reactions'] {
+  return {
+    async add(reaction) {
+      const result = await db.query(
+        `INSERT INTO message_reactions (message_id, actor_id, reaction_key, created_at)
+         VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+        [
+          reaction.messageId,
+          reaction.actorId,
+          reaction.key,
+          reaction.createdAt,
+        ],
+      );
+      return result.rowCount === 1;
+    },
+    async remove(messageId, actorId, key) {
+      const result = await db.query(
+        'DELETE FROM message_reactions WHERE message_id=$1 AND actor_id=$2 AND reaction_key=$3',
+        [messageId, actorId, key],
+      );
+      return result.rowCount === 1;
+    },
+    async list(messageId, actorId) {
+      const result = await db.query<{
+        reaction_key: string;
+        reaction_count: string;
+        reacted_by_actor: boolean;
+      }>(
+        `SELECT reaction_key, count(*)::text reaction_count,
+           bool_or(actor_id=$2) reacted_by_actor
+         FROM message_reactions WHERE message_id=$1
+         GROUP BY reaction_key ORDER BY reaction_key`,
+        [messageId, actorId],
+      );
+      return result.rows.map((row) => ({
+        key: row.reaction_key,
+        count: Number(row.reaction_count),
+        reactedByActor: row.reacted_by_actor,
+      }));
+    },
+  };
+}
+
+function messagePacingRepository(db: Queryable): Persistence['messagePacing'] {
+  return {
+    async consume(spaceId, actorId, intervalSeconds) {
+      const result = await db.query<{ retry_after: string }>(
+        `WITH existing AS (
+           SELECT next_allowed_at FROM message_pacing
+           WHERE space_id=$1 AND actor_id=$2 FOR UPDATE
+         ), admitted AS (
+           INSERT INTO message_pacing(space_id, actor_id, next_allowed_at)
+           SELECT $1, $2, CURRENT_TIMESTAMP + make_interval(secs => $3)
+           WHERE NOT EXISTS (SELECT 1 FROM existing WHERE next_allowed_at > CURRENT_TIMESTAMP)
+           ON CONFLICT (space_id, actor_id) DO UPDATE
+             SET next_allowed_at=EXCLUDED.next_allowed_at
+           WHERE message_pacing.next_allowed_at <= CURRENT_TIMESTAMP
+           RETURNING 1
+         )
+         SELECT CASE WHEN EXISTS (SELECT 1 FROM admitted) THEN 0 ELSE
+           GREATEST(1, CEIL(EXTRACT(EPOCH FROM ((SELECT next_allowed_at FROM existing) - CURRENT_TIMESTAMP))))
+         END::text retry_after`,
+        [spaceId, actorId, intervalSeconds],
+      );
+      return Number(result.rows[0]?.retry_after ?? 1);
     },
   };
 }
@@ -1518,6 +2564,483 @@ async function latestCheckpoint(
   };
 }
 
+function moderationRestrictionRepository(
+  db: Queryable,
+): Persistence['moderationRestrictions'] {
+  const fields =
+    'id, community_id, actor_id, target_account_id, kind, reason, request_fingerprint, idempotency_key, correlation_id, created_at, expires_at, revoked_at, version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `INSERT INTO moderation_restrictions
+          (id, community_id, actor_id, target_account_id, kind, reason,
+           request_fingerprint, idempotency_key, correlation_id, created_at, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (actor_id, community_id, idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.actorId,
+          value.targetAccountId,
+          value.kind,
+          value.reason,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.expiresAt,
+        ],
+      );
+      return mapModerationRestriction(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+    async findByIdempotencyKey(actorId, communityId, key) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions
+         WHERE actor_id=$1 AND community_id=$2 AND idempotency_key=$3`,
+        [actorId, communityId, key],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+    async findEffective(communityId, accountId) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions
+         WHERE community_id=$1 AND target_account_id=$2 AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+         ORDER BY expires_at DESC NULLS FIRST,id DESC LIMIT 1`,
+        [communityId, accountId],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+    async revoke(id, expectedVersion, revokedAt) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `UPDATE moderation_restrictions
+         SET revoked_at=COALESCE(revoked_at,$3),version=version+1
+         WHERE id=$1 AND version=$2 RETURNING ${fields}`,
+        [id, expectedVersion, revokedAt],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+  };
+}
+
+function moderationAuditRepository(
+  db: Queryable,
+): Persistence['moderationAuditEvents'] {
+  const fields =
+    'id, community_id, actor_id, target_account_id, target_message_id, action, outcome, reason, correlation_id, occurred_at, previous_hash, event_hash, metadata';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationAuditRow>(
+        `INSERT INTO moderation_audit_events
+          (id, community_id, actor_id, target_account_id, target_message_id,
+           action, outcome, reason, correlation_id, occurred_at, previous_hash,
+           event_hash, metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.actorId,
+          value.targetAccountId,
+          value.targetMessageId,
+          value.action,
+          value.outcome,
+          value.reason,
+          value.correlationId,
+          value.occurredAt,
+          value.previousHash,
+          value.eventHash,
+          value.metadata,
+        ],
+      );
+      return mapModerationAudit(requiredRow(result.rows));
+    },
+    async latestHash(communityId) {
+      const result = await db.query<{ event_hash: string }>(
+        `SELECT event_hash FROM moderation_audit_events
+         WHERE community_id=$1 ORDER BY occurred_at DESC,id DESC LIMIT 1`,
+        [communityId],
+      );
+      return result.rows[0]?.event_hash;
+    },
+  };
+}
+
+function moderationMessageEvidenceRepository(
+  db: Queryable,
+): Persistence['moderationMessageEvidence'] {
+  return {
+    async create(value) {
+      const result = await db.query<ModerationMessageEvidenceRow>(
+        `INSERT INTO moderation_message_evidence
+          (id,community_id,message_id,body_snapshot,content_hash,captured_at,retained_until,legal_hold)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (message_id) DO UPDATE SET message_id=EXCLUDED.message_id
+         RETURNING id,community_id,message_id,body_snapshot,content_hash,captured_at,retained_until,legal_hold`,
+        [
+          value.id,
+          value.communityId,
+          value.messageId,
+          value.bodySnapshot,
+          value.contentHash,
+          value.capturedAt,
+          value.retainedUntil,
+          value.legalHold,
+        ],
+      );
+      return mapModerationMessageEvidence(requiredRow(result.rows));
+    },
+  };
+}
+
+function moderationMessageDeletionRepository(
+  db: Queryable,
+): Persistence['moderationMessageDeletions'] {
+  const fields =
+    'id,community_id,message_id,actor_id,target_account_id,evidence_id,reason,request_fingerprint,idempotency_key,correlation_id,event_id,created_at';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationMessageDeletionRow>(
+        `INSERT INTO moderation_message_deletions
+          (id,community_id,message_id,actor_id,target_account_id,evidence_id,reason,
+           request_fingerprint,idempotency_key,correlation_id,event_id,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (actor_id,message_id,idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.messageId,
+          value.actorId,
+          value.targetAccountId,
+          value.evidenceId,
+          value.reason,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.eventId,
+          value.createdAt,
+        ],
+      );
+      return mapModerationMessageDeletion(requiredRow(result.rows));
+    },
+    async findByIdempotencyKey(actorId, messageId, key) {
+      const result = await db.query<ModerationMessageDeletionRow>(
+        `SELECT ${fields} FROM moderation_message_deletions
+         WHERE actor_id=$1 AND message_id=$2 AND idempotency_key=$3`,
+        [actorId, messageId, key],
+      );
+      return result.rows[0]
+        ? mapModerationMessageDeletion(result.rows[0])
+        : undefined;
+    },
+  };
+}
+
+function safetyReportRepository(db: Queryable): Persistence['safetyReports'] {
+  const fields =
+    'id,community_id,reporter_id,target_account_id,target_message_id,category,description,evidence_reference_ids,status,request_fingerprint,idempotency_key,correlation_id,created_at,updated_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<SafetyReportRow>(
+        `INSERT INTO safety_reports
+          (id,community_id,reporter_id,target_account_id,target_message_id,
+           category,description,evidence_reference_ids,status,request_fingerprint,
+           idempotency_key,correlation_id,created_at,updated_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT (reporter_id,community_id,idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.reporterId,
+          value.targetAccountId,
+          value.targetMessageId,
+          value.category,
+          value.description,
+          value.evidenceReferenceIds,
+          value.status,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.updatedAt,
+          value.version,
+        ],
+      );
+      return mapSafetyReport(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<SafetyReportRow>(
+        `SELECT ${fields} FROM safety_reports WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapSafetyReport(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(reporterId, communityId, key) {
+      const result = await db.query<SafetyReportRow>(
+        `SELECT ${fields} FROM safety_reports
+         WHERE reporter_id=$1 AND community_id=$2 AND idempotency_key=$3`,
+        [reporterId, communityId, key],
+      );
+      return result.rows[0] ? mapSafetyReport(result.rows[0]) : undefined;
+    },
+  };
+}
+
+function moderationCaseRepository(
+  db: Queryable,
+): Persistence['moderationCases'] {
+  const fields =
+    'id,community_id,report_id,assignee_id,status,idempotency_key,correlation_id,created_at,updated_at,closed_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationCaseRow>(
+        `INSERT INTO moderation_cases
+          (id,community_id,report_id,assignee_id,status,idempotency_key,
+           correlation_id,created_at,updated_at,closed_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (report_id) DO UPDATE SET report_id=EXCLUDED.report_id
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.reportId,
+          value.assigneeId,
+          value.status,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.updatedAt,
+          value.closedAt,
+          value.version,
+        ],
+      );
+      return mapModerationCase(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(communityId, key) {
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases
+         WHERE community_id=$1 AND idempotency_key=$2`,
+        [communityId, key],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+    async list(communityId, page) {
+      const decoded = page.cursor
+        ? Buffer.from(page.cursor, 'base64url').toString()
+        : '';
+      const separator = decoded.lastIndexOf(':');
+      const beforeTime =
+        separator < 0 ? 'infinity' : decoded.slice(0, separator);
+      const beforeId =
+        separator < 0
+          ? 'ffffffff-ffff-4fff-bfff-ffffffffffff'
+          : decoded.slice(separator + 1);
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases
+         WHERE community_id=$1 AND (updated_at,id)<($2::timestamptz,$3::uuid)
+         ORDER BY updated_at DESC,id DESC LIMIT $4`,
+        [communityId, beforeTime, beforeId, page.limit + 1],
+      );
+      const items = result.rows.slice(0, page.limit).map(mapModerationCase);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          result.rows.length > page.limit && last
+            ? Buffer.from(`${last.updatedAt}:${last.id}`).toString('base64url')
+            : null,
+      };
+    },
+    async update(id, input, expectedVersion) {
+      const result = await db.query<ModerationCaseRow>(
+        `UPDATE moderation_cases SET assignee_id=$2,status=$3,updated_at=$4,
+           closed_at=$5,version=version+1
+         WHERE id=$1 AND version=$6 RETURNING ${fields}`,
+        [
+          id,
+          input.assigneeId,
+          input.status,
+          input.updatedAt,
+          input.closedAt,
+          expectedVersion,
+        ],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+  };
+}
+
+function moderationCaseActivityRepository(
+  db: Queryable,
+): Persistence['moderationCaseActivity'] {
+  return {
+    async create(value) {
+      const result = await db.query<ModerationCaseActivityRow>(
+        `INSERT INTO moderation_case_activity
+          (id,case_id,actor_id,kind,note,linked_action_id,occurred_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING id,case_id,actor_id,kind,note,linked_action_id,occurred_at`,
+        [
+          value.id,
+          value.caseId,
+          value.actorId,
+          value.kind,
+          value.note,
+          value.linkedActionId,
+          value.occurredAt,
+        ],
+      );
+      return mapModerationCaseActivity(requiredRow(result.rows));
+    },
+    async list(caseId) {
+      const result = await db.query<ModerationCaseActivityRow>(
+        `SELECT id,case_id,actor_id,kind,note,linked_action_id,occurred_at
+         FROM moderation_case_activity WHERE case_id=$1 ORDER BY occurred_at,id`,
+        [caseId],
+      );
+      return result.rows.map(mapModerationCaseActivity);
+    },
+  };
+}
+
+function moderationAppealRepository(
+  db: Queryable,
+): Persistence['moderationAppeals'] {
+  const fields =
+    'id,community_id,appellant_id,restriction_id,statement,status,reviewer_id,decision_reason,idempotency_key,correlation_id,created_at,decided_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationAppealRow>(
+        `INSERT INTO moderation_appeals
+          (id,community_id,appellant_id,restriction_id,statement,status,
+           reviewer_id,decision_reason,idempotency_key,correlation_id,created_at,decided_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (restriction_id) DO UPDATE SET restriction_id=EXCLUDED.restriction_id
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.appellantId,
+          value.restrictionId,
+          value.statement,
+          value.status,
+          value.reviewerId,
+          value.decisionReason,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.decidedAt,
+          value.version,
+        ],
+      );
+      return mapModerationAppeal(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async findByRestrictionId(restrictionId) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE restriction_id=$1`,
+        [restrictionId],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(appellantId, key) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE appellant_id=$1 AND idempotency_key=$2`,
+        [appellantId, key],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async decide(id, status, reviewerId, reason, decidedAt, expectedVersion) {
+      const result = await db.query<ModerationAppealRow>(
+        `UPDATE moderation_appeals SET status=$2,reviewer_id=$3,decision_reason=$4,
+           decided_at=$5,version=version+1
+         WHERE id=$1 AND version=$6 AND status='submitted' RETURNING ${fields}`,
+        [id, status, reviewerId, reason, decidedAt, expectedVersion],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+  };
+}
+
+function contentLimitsRepository(db: Queryable): Persistence['contentLimits'] {
+  const fields =
+    'community_id,message_body_max,report_description_max,moderation_reason_max,updated_by,updated_at,version';
+  return {
+    async find(communityId) {
+      const result = await db.query<ContentLimitsRow>(
+        `SELECT ${fields} FROM community_content_limits WHERE community_id=$1`,
+        [communityId],
+      );
+      return result.rows[0] ? mapContentLimits(result.rows[0]) : undefined;
+    },
+    async put(value, expectedVersion) {
+      const result =
+        expectedVersion === undefined
+          ? await db.query<ContentLimitsRow>(
+              `INSERT INTO community_content_limits
+                (community_id,message_body_max,report_description_max,
+                 moderation_reason_max,updated_by,updated_at,version)
+               VALUES ($1,$2,$3,$4,$5,$6,1) RETURNING ${fields}`,
+              [
+                value.communityId,
+                value.messageBodyMax,
+                value.reportDescriptionMax,
+                value.moderationReasonMax,
+                value.updatedBy,
+                value.updatedAt,
+              ],
+            )
+          : await db.query<ContentLimitsRow>(
+              `UPDATE community_content_limits SET message_body_max=$2,
+                 report_description_max=$3,moderation_reason_max=$4,updated_by=$5,
+                 updated_at=$6,version=version+1
+               WHERE community_id=$1 AND version=$7 RETURNING ${fields}`,
+              [
+                value.communityId,
+                value.messageBodyMax,
+                value.reportDescriptionMax,
+                value.moderationReasonMax,
+                value.updatedBy,
+                value.updatedAt,
+                expectedVersion,
+              ],
+            );
+      return result.rows[0] ? mapContentLimits(result.rows[0]) : undefined;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1560,6 +3083,7 @@ const mapSpace = (row: SpaceRow): Space => ({
   kind: row.kind,
   position: row.position,
   archivedAt: row.archived_at?.toISOString() ?? null,
+  slowModeSeconds: row.slow_mode_seconds,
   version: row.version,
 });
 
@@ -1600,6 +3124,8 @@ const mapMessage = (row: MessageRow): Message => ({
   body: row.body,
   replyToId: row.reply_to_id,
   idempotencyKey: row.idempotency_key,
+  requestFingerprint: row.request_fingerprint,
+  createdEventId: row.created_event_id,
   createdAt: row.created_at.toISOString(),
   updatedAt: (row.updated_at ?? row.created_at).toISOString(),
   deletedAt: row.deleted_at?.toISOString() ?? null,
@@ -1664,15 +3190,191 @@ const mapAuditCheckpoint = (row: AuditCheckpointRow): AuditCheckpoint => ({
   correlationId: row.correlation_id,
   createdAt: row.created_at.toISOString(),
 });
+const mapModerationRestriction = (
+  row: ModerationRestrictionRow,
+): ModerationRestriction => ({
+  id: row.id,
+  communityId: row.community_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  kind: row.kind,
+  reason: row.reason,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  expiresAt: row.expires_at?.toISOString() ?? null,
+  revokedAt: row.revoked_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapModerationAudit = (row: ModerationAuditRow): ModerationAuditEvent => ({
+  id: row.id,
+  communityId: row.community_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  targetMessageId: row.target_message_id,
+  action: row.action,
+  outcome: row.outcome,
+  reason: row.reason,
+  correlationId: row.correlation_id,
+  occurredAt: row.occurred_at.toISOString(),
+  previousHash: row.previous_hash,
+  eventHash: row.event_hash,
+  metadata: row.metadata,
+});
+const mapModerationMessageEvidence = (
+  row: ModerationMessageEvidenceRow,
+): ModerationMessageEvidence => ({
+  id: row.id,
+  communityId: row.community_id,
+  messageId: row.message_id,
+  bodySnapshot: row.body_snapshot,
+  contentHash: row.content_hash,
+  capturedAt: row.captured_at.toISOString(),
+  retainedUntil: row.retained_until.toISOString(),
+  legalHold: row.legal_hold,
+});
+const mapModerationMessageDeletion = (
+  row: ModerationMessageDeletionRow,
+): ModerationMessageDeletion => ({
+  id: row.id,
+  communityId: row.community_id,
+  messageId: row.message_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  evidenceId: row.evidence_id,
+  reason: row.reason,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  eventId: row.event_id,
+  createdAt: row.created_at.toISOString(),
+});
+const mapSafetyReport = (row: SafetyReportRow): SafetyReport => ({
+  id: row.id,
+  communityId: row.community_id,
+  reporterId: row.reporter_id,
+  targetAccountId: row.target_account_id,
+  targetMessageId: row.target_message_id,
+  category: row.category,
+  description: row.description,
+  evidenceReferenceIds: row.evidence_reference_ids,
+  status: row.status,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString(),
+  version: row.version,
+});
+const mapModerationCase = (row: ModerationCaseRow): ModerationCase => ({
+  id: row.id,
+  communityId: row.community_id,
+  reportId: row.report_id,
+  assigneeId: row.assignee_id,
+  status: row.status,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString(),
+  closedAt: row.closed_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapModerationCaseActivity = (
+  row: ModerationCaseActivityRow,
+): ModerationCaseActivity => ({
+  id: row.id,
+  caseId: row.case_id,
+  actorId: row.actor_id,
+  kind: row.kind,
+  note: row.note,
+  linkedActionId: row.linked_action_id,
+  occurredAt: row.occurred_at.toISOString(),
+});
+const mapModerationAppeal = (row: ModerationAppealRow): ModerationAppeal => ({
+  id: row.id,
+  communityId: row.community_id,
+  appellantId: row.appellant_id,
+  restrictionId: row.restriction_id,
+  statement: row.statement,
+  status: row.status,
+  reviewerId: row.reviewer_id,
+  decisionReason: row.decision_reason,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  decidedAt: row.decided_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapContentLimits = (row: ContentLimitsRow): CommunityContentLimits => ({
+  communityId: row.community_id,
+  messageBodyMax: row.message_body_max,
+  reportDescriptionMax: row.report_description_max,
+  moderationReasonMax: row.moderation_reason_max,
+  updatedBy: row.updated_by,
+  updatedAt: row.updated_at.toISOString(),
+  version: row.version,
+});
 
-interface Migration {
+export interface Migration {
   version: number;
   name: string;
   checksum: string;
   sql: string;
 }
 
+export interface PostgresUpgradePlan {
+  fromSchema: number;
+  toSchema: number;
+  pendingVersions: number[];
+  migrationSetSha256: string;
+}
+
+export interface AppliedMigrationRecord {
+  version: number;
+  name: string;
+  checksum: string;
+}
+
 export class MigrationError extends Error {}
+
+export function buildPostgresUpgradePlan(
+  migrations: readonly Migration[],
+  applied: readonly AppliedMigrationRecord[],
+): PostgresUpgradePlan {
+  for (const [index, existing] of applied.entries()) {
+    const migration = migrations[index];
+    if (
+      existing.version !== index + 1 ||
+      !migration ||
+      migration.version !== existing.version ||
+      migration.name !== existing.name ||
+      migration.checksum !== existing.checksum
+    ) {
+      throw new MigrationError(
+        'Applied migration history is incompatible with this build',
+      );
+    }
+  }
+  const fromSchema = applied.length;
+  return {
+    fromSchema,
+    toSchema: CURRENT_SCHEMA_VERSION,
+    pendingVersions: migrations
+      .slice(fromSchema)
+      .map((migration) => migration.version),
+    migrationSetSha256: createHash('sha256')
+      .update(
+        migrations
+          .map(
+            (migration) =>
+              `${String(migration.version)}:${migration.name}:${migration.checksum}\n`,
+          )
+          .join(''),
+      )
+      .digest('hex'),
+  };
+}
 
 export async function readMigrations(directory: string): Promise<Migration[]> {
   const names = (await readdir(directory))
@@ -1725,20 +3427,8 @@ export async function migratePostgres(
     }>(
       'SELECT version, name, checksum FROM nexa_schema_migrations ORDER BY version',
     );
-    for (const existing of applied.rows) {
-      const migration = migrations.find(
-        (candidate) => candidate.version === existing.version,
-      );
-      if (
-        !migration ||
-        migration.name !== existing.name ||
-        migration.checksum !== existing.checksum
-      )
-        throw new MigrationError(
-          `Applied migration ${String(existing.version)} is incompatible with this build`,
-        );
-    }
-    for (const migration of migrations.slice(applied.rows.length)) {
+    const plan = buildPostgresUpgradePlan(migrations, applied.rows);
+    for (const migration of migrations.slice(plan.fromSchema)) {
       await client.query(migration.sql);
       await client.query(
         `INSERT INTO nexa_schema_migrations (version, name, checksum)
@@ -1749,6 +3439,40 @@ export async function migratePostgres(
     }
     await client.query('COMMIT');
     return CURRENT_SCHEMA_VERSION;
+  } catch (error) {
+    await safeRollback(client);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function planPostgresUpgrade(
+  pool: Pool,
+  directory: string,
+): Promise<PostgresUpgradePlan> {
+  const migrations = await readMigrations(directory);
+  const client = await pool.connect();
+  try {
+    await client.query(
+      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+    );
+    await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_ID]);
+    const relation = await client.query<{ relation: string | null }>(
+      "SELECT to_regclass('public.nexa_schema_migrations')::text AS relation",
+    );
+    const applied = relation.rows[0]?.relation
+      ? await client.query<{
+          version: number;
+          name: string;
+          checksum: string;
+        }>(
+          'SELECT version, name, checksum FROM nexa_schema_migrations ORDER BY version',
+        )
+      : { rows: [] };
+    const result = buildPostgresUpgradePlan(migrations, applied.rows);
+    await client.query('COMMIT');
+    return result;
   } catch (error) {
     await safeRollback(client);
     throw error;
