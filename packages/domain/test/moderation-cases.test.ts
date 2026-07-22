@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommunityService, InMemoryPersistence } from '../src/index.js';
+
+afterEach(() => vi.useRealTimers());
 
 describe('moderation cases', () => {
   it('protects evidence and enforces assignment, history and stale writes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-22T18:00:00.000Z'));
     const service = new CommunityService(new InMemoryPersistence());
     const owner = await service.createAccount('Owner');
     const reporter = await service.createAccount('Reporter');

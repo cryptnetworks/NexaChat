@@ -36,10 +36,12 @@ jobs:
       - run: npm run typecheck
       - run: npm run release:check
       - run: npm run release:candidate -- policy
+      - run: npm run release:update-recovery -- policy
       - run: npm run release:upgrade -- policy
       - run: npm run test:architecture
       - run: npm run test:contracts
       - run: npm test
+      - run: npm run test:update-recovery
       - run: npm run build
       - run: npm audit --audit-level=high
       - run: docker compose config --quiet

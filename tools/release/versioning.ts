@@ -438,6 +438,14 @@ export async function checkReleaseState(
     version,
     'release/candidate-policy.json',
   );
+  const updatePolicy = await readJson(
+    resolve(root, 'release/update-policy.json'),
+  );
+  assertVersion(
+    updatePolicy.targetVersion,
+    version,
+    'release/update-policy.json',
+  );
 
   const changelog = await readUtf8(resolve(root, 'CHANGELOG.md'));
   if ((changelog.match(new RegExp(RELEASE_MARKER, 'g')) ?? []).length !== 1) {
@@ -606,6 +614,10 @@ export async function prepareRelease(
   const candidatePolicy = await readJson(resolve(root, candidatePolicyPath));
   candidatePolicy.targetVersion = targetVersion;
   writes.set(candidatePolicyPath, stringifyJson(candidatePolicy));
+  const updatePolicyPath = 'release/update-policy.json';
+  const updatePolicy = await readJson(resolve(root, updatePolicyPath));
+  updatePolicy.targetVersion = targetVersion;
+  writes.set(updatePolicyPath, stringifyJson(updatePolicy));
 
   const changelog = await readUtf8(resolve(root, 'CHANGELOG.md'));
   if (changelog.includes(`## [${targetVersion}]`))

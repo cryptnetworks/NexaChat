@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 117,
+  "category": "changed",
+  "summary": "Add signed desktop update, interruption, rollback, and recovery validation.",
+  "audience": "operators",
+  "packages": ["@nexa/desktop", "nexa-chat"],
+  "breaking": false,
+  "migration": null
+}

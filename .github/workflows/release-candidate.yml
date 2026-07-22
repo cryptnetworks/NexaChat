@@ -119,6 +119,7 @@ jobs:
         run: |
           npm run release:check
           npm run release:candidate -- policy
+          npm run release:update-recovery -- policy
           npm run release:upgrade -- policy
 
       - name: Verify formatting, lint, and types
@@ -257,6 +258,13 @@ jobs:
 
       - name: Test desktop process boundaries
         run: npm run test:desktop
+
+      - name: Exercise signed update and rollback recovery
+        shell: bash
+        run: |
+          mkdir -p candidate-evidence/target
+          npm run test:update-recovery
+          npm run release:update-recovery -- evidence --expected-commit="$EXPECTED_COMMIT" > candidate-evidence/target/update-recovery.json
 
       - name: Test and lint native shell
         shell: bash

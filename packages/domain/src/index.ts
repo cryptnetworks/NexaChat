@@ -581,6 +581,10 @@ function caseNote(value: string): string {
   return normalized;
 }
 
+function timestampAfter(previous: string): number {
+  return Math.max(Date.now(), new Date(previous).getTime() + 1);
+}
+
 export interface InvitationRateLimiter {
   consume(key: string, now: Date): Promise<boolean>;
 }
@@ -1310,63 +1314,60 @@ export class CommunityService {
           throw new DomainError('not_found');
       }
       const status = input.status ?? current.status;
-      const now = new Date().toISOString();
-      const updated = await persistence.moderationCases.update(
-        caseId,
-        {
-          assigneeId,
-          status,
-          updatedAt: now,
-          closedAt: status === 'closed' ? now : current.closedAt,
-        },
-        input.expectedVersion,
-      );
-      if (!updated) throw new DomainError('stale_write');
-      const activities: ModerationCaseActivity[] = [];
+      const activities: Omit<ModerationCaseActivity, 'id' | 'occurredAt'>[] =
+        [];
       if (assigneeId !== current.assigneeId)
         activities.push({
-          id: randomUUID(),
           caseId,
           actorId,
           kind: 'assigned',
           note: null,
           linkedActionId: null,
-          occurredAt: now,
         });
       if (status !== current.status)
         activities.push({
-          id: randomUUID(),
           caseId,
           actorId,
           kind: 'status_changed',
           note: null,
           linkedActionId: null,
-          occurredAt: now,
         });
       if (input.note)
         activities.push({
-          id: randomUUID(),
           caseId,
           actorId,
           kind: 'note',
           note: caseNote(input.note),
           linkedActionId: null,
-          occurredAt: now,
         });
       if (input.linkedActionId)
         activities.push({
-          id: randomUUID(),
           caseId,
           actorId,
           kind: 'action_linked',
           note: null,
           linkedActionId: input.linkedActionId,
-          occurredAt: now,
         });
+      const firstActivityAt = timestampAfter(current.updatedAt);
+      const updatedAt = new Date(
+        firstActivityAt + Math.max(activities.length - 1, 0),
+      ).toISOString();
+      const updated = await persistence.moderationCases.update(
+        caseId,
+        {
+          assigneeId,
+          status,
+          updatedAt,
+          closedAt: status === 'closed' ? updatedAt : current.closedAt,
+        },
+        input.expectedVersion,
+      );
+      if (!updated) throw new DomainError('stale_write');
       for (const [index, activity] of activities.entries())
         await persistence.moderationCaseActivity.create({
+          id: randomUUID(),
           ...activity,
-          occurredAt: new Date(new Date(now).getTime() + index).toISOString(),
+          occurredAt: new Date(firstActivityAt + index).toISOString(),
         });
       return updated;
     });
