@@ -33,6 +33,9 @@ File drag-and-drop and webview developer tools are disabled by configuration.
 The [desktop credential persistence model](../security/desktop-credentials.md)
 documents the only application IPC surface, its OS trust boundary, bounded
 lifecycle, and platform evidence.
+The [desktop notification model](desktop-notifications.md) documents the
+server-authorized delivery checkpoint, constant-copy native boundary,
+permission lifecycle, privacy mode, and safe degraded behavior.
 
 ## Pinned prerequisites
 

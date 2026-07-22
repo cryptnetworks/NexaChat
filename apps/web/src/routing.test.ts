@@ -12,6 +12,13 @@ describe('application routing', () => {
       route: { kind: 'login' },
       returnTo: `/communities/${id}`,
     });
+    expect(resolveAppRoute('/notifications')).toEqual({
+      kind: 'notifications',
+      requiresAuth: true,
+    });
+    expect(
+      guardRoute(resolveAppRoute('/notifications'), false, '/notifications'),
+    ).toMatchObject({ route: { kind: 'login' }, returnTo: '/notifications' });
     expect(resolveAppRoute('/private/unknown').kind).toBe('not-found');
   });
   it('restores keyboard focus to the destination heading', () => {

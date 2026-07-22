@@ -20,6 +20,11 @@ import { invitationTokenFromHash } from './invitations.js';
 import { safeLinkSegments } from './links.js';
 import { clearDraft, draftKey, loadDraft, saveDraft } from './drafts.js';
 import { applyTheme, readThemePreference } from './theme.js';
+import { DesktopNotificationControls } from './desktop-notification-controls.js';
+import {
+  createDesktopNotificationClient,
+  startDesktopNotificationPolling,
+} from './desktop-notifications.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -62,6 +67,18 @@ function App() {
     sequence: 0,
     seenEventIds: new Set<string>(),
   });
+  const [desktopNotificationClient] = useState(() =>
+    createDesktopNotificationClient(),
+  );
+
+  useEffect(() => {
+    if (!account || !desktopNotificationClient) return;
+    return startDesktopNotificationPolling({
+      accountId: account.id,
+      client: desktopNotificationClient,
+      storage: localStorage,
+    });
+  }, [account, desktopNotificationClient]);
 
   useEffect(() => {
     if (inviteToken)
@@ -346,6 +363,7 @@ function App() {
             ))}
           </nav>
         )}
+        {account && <DesktopNotificationControls accountId={account.id} />}
       </aside>
       <section className="conversation">
         <header>

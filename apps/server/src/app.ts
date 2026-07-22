@@ -49,6 +49,8 @@ import {
   contentLimitsSchema,
   notificationPageQuerySchema,
   notificationPageSchema,
+  desktopNotificationPollSchema,
+  desktopNotificationDeliveryPageSchema,
   notificationSchema,
   updateNotificationSchema,
   effectiveNotificationPreferenceQuerySchema,
@@ -73,6 +75,7 @@ import {
   CommunityService,
   DomainError,
   InMemoryCommunityService,
+  type NotificationRecord,
   type NotificationService,
   type NotificationPreferenceService,
   type NotificationReadService,
@@ -96,6 +99,63 @@ import type { RuntimeConfig } from './config.js';
 import type { WebPushController } from './web-push.js';
 import type { MentionRuntime } from './mentions.js';
 import { CoordinationError } from '@nexa/coordination';
+
+const desktopNotificationId = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
+const desktopNotificationMaximumId = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+
+function encodeDesktopNotificationCheckpoint(
+  updatedAt: string,
+  id: string,
+): string {
+  return Buffer.from(JSON.stringify([updatedAt, id]), 'utf8').toString(
+    'base64url',
+  );
+}
+
+function decodeDesktopNotificationCheckpoint(value: string): {
+  updatedAt: string;
+  id: string;
+} {
+  try {
+    const decoded: unknown = JSON.parse(
+      Buffer.from(value, 'base64url').toString('utf8'),
+    );
+    if (
+      !Array.isArray(decoded) ||
+      decoded.length !== 2 ||
+      typeof decoded[0] !== 'string' ||
+      typeof decoded[1] !== 'string' ||
+      new Date(decoded[0]).toISOString() !== decoded[0] ||
+      !desktopNotificationId.test(decoded[1]) ||
+      encodeDesktopNotificationCheckpoint(decoded[0], decoded[1]) !== value
+    )
+      throw new Error('invalid checkpoint');
+    return { updatedAt: decoded[0], id: decoded[1].toLowerCase() };
+  } catch {
+    throw new Error('invalid_desktop_notification_checkpoint');
+  }
+}
+
+function compareNotificationPosition(
+  left: NotificationRecord,
+  right: NotificationRecord,
+): number {
+  return (
+    left.updatedAt.localeCompare(right.updatedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function isAfterNotificationPosition(
+  value: NotificationRecord,
+  updatedAt: string,
+  id: string,
+): boolean {
+  return (
+    value.updatedAt > updatedAt ||
+    (value.updatedAt === updatedAt && value.id > id)
+  );
+}
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
@@ -226,6 +286,82 @@ export function buildApp(
               new Date(),
             ),
           ),
+        );
+      },
+    );
+  }
+
+  const desktopNotifications = experience.notifications;
+  const desktopNotificationPreferences = experience.notificationPreferences;
+  if (desktopNotifications && desktopNotificationPreferences) {
+    app.post(
+      '/v1/desktop-notification-deliveries/query',
+      async (request, reply) => {
+        const input = desktopNotificationPollSchema.parse(request.body);
+        const actorId = await verifiedActor(request, auth, input.actorId);
+        const now = new Date();
+        const page = await desktopNotifications.list(actorId, {
+          limit: 100,
+        });
+        const decoded = input.checkpoint
+          ? decodeDesktopNotificationCheckpoint(input.checkpoint)
+          : null;
+        const ordered = [...page.items].sort(compareNotificationPosition);
+        const newer = decoded
+          ? ordered.filter((item) =>
+              isAfterNotificationPosition(item, decoded.updatedAt, decoded.id),
+            )
+          : ordered;
+        const bounded = newer.slice(-20);
+        const items = [];
+        if (!input.initialize) {
+          for (const item of bounded) {
+            if (
+              item.readAt ||
+              item.archivedAt ||
+              new Date(item.expiresAt) <= now
+            )
+              continue;
+            const preference = await desktopNotificationPreferences.effective(
+              actorId,
+              item.scopeId ? { spaceId: item.scopeId } : {},
+              item.kind,
+              now,
+            );
+            if (!preference.deliver) continue;
+            items.push({
+              notificationId: item.id,
+              kind: item.kind,
+              version: item.version,
+              route: '/notifications' as const,
+              checkpoint: encodeDesktopNotificationCheckpoint(
+                item.updatedAt,
+                item.id,
+              ),
+            });
+          }
+        }
+        const latest = ordered.at(-1);
+        const nextCheckpoint = input.initialize
+          ? encodeDesktopNotificationCheckpoint(
+              now.toISOString(),
+              desktopNotificationMaximumId,
+            )
+          : latest &&
+              (!decoded ||
+                isAfterNotificationPosition(
+                  latest,
+                  decoded.updatedAt,
+                  decoded.id,
+                ))
+            ? encodeDesktopNotificationCheckpoint(latest.updatedAt, latest.id)
+            : input.checkpoint;
+        return reply.header('cache-control', 'no-store').send(
+          desktopNotificationDeliveryPageSchema.parse({
+            items,
+            checkpoint: nextCheckpoint,
+            overflow: page.nextCursor !== null || newer.length > 20,
+          }),
         );
       },
     );
@@ -1165,6 +1301,11 @@ export function buildApp(
       return sendApiError(reply, 404, 'not_found', request.id);
     if (error instanceof Error && error.message === 'notification_not_found')
       return sendApiError(reply, 404, 'not_found', request.id);
+    if (
+      error instanceof Error &&
+      error.message === 'invalid_desktop_notification_checkpoint'
+    )
+      return sendApiError(reply, 400, 'invalid_request', request.id);
     if (
       error instanceof Error &&
       ['stale_notification', 'invalid_notification_cursor'].includes(

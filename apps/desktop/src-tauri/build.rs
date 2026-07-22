@@ -7,6 +7,9 @@ fn main() {
             "select_stored_account",
             "remove_stored_account",
             "clear_stored_accounts",
+            "desktop_notification_status",
+            "request_desktop_notification_permission",
+            "deliver_desktop_notification",
         ]),
     ))
     .expect("failed to prepare desktop build metadata");

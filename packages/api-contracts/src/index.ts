@@ -426,6 +426,30 @@ export const notificationPageSchema = z.object({
   items: z.array(notificationSchema).max(100),
   nextCursor: z.string().max(256).nullable(),
 });
+const desktopNotificationCheckpointSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[A-Za-z0-9_-]+$/);
+export const desktopNotificationPollSchema = z
+  .object({
+    actorId: id,
+    checkpoint: desktopNotificationCheckpointSchema.nullable().default(null),
+    initialize: z.boolean().default(false),
+  })
+  .strict();
+export const desktopNotificationDeliverySchema = z.object({
+  notificationId: id,
+  kind: notificationKindSchema,
+  version: z.number().int().positive(),
+  route: z.literal('/notifications'),
+  checkpoint: desktopNotificationCheckpointSchema,
+});
+export const desktopNotificationDeliveryPageSchema = z.object({
+  items: z.array(desktopNotificationDeliverySchema).max(20),
+  checkpoint: desktopNotificationCheckpointSchema.nullable(),
+  overflow: z.boolean(),
+});
 export const updateNotificationSchema = z
   .object({
     actorId: id,
@@ -723,6 +747,12 @@ export type CreatedInvitationResponse = z.infer<typeof createdInvitationSchema>;
 export type InvitationPreviewResponse = z.infer<typeof invitationPreviewSchema>;
 export type NotificationResponse = z.infer<typeof notificationSchema>;
 export type NotificationPageResponse = z.infer<typeof notificationPageSchema>;
+export type DesktopNotificationDelivery = z.infer<
+  typeof desktopNotificationDeliverySchema
+>;
+export type DesktopNotificationDeliveryPage = z.infer<
+  typeof desktopNotificationDeliveryPageSchema
+>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type WebsocketClientMessage = z.infer<
   typeof websocketClientMessageSchema

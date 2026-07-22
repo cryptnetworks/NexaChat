@@ -106,6 +106,155 @@ describe('notification HTTP integration', () => {
     await app.close();
   });
 
+  it('polls privacy-minimized desktop deliveries from an authorized checkpoint', async () => {
+    const notificationsStore = new MemoryNotifications();
+    const preferencesByScope = new Map<string, NotificationPreference>();
+    const preferenceStore: NotificationPreferenceStore = {
+      find: (accountId, scopeType, scopeId) =>
+        Promise.resolve(
+          preferencesByScope.get(`${accountId}:${scopeType}:${scopeId}`),
+        ),
+      save: (value) => {
+        preferencesByScope.set(
+          `${value.accountId}:${value.scopeType}:${value.scopeId}`,
+          value,
+        );
+        return Promise.resolve(value);
+      },
+      transaction: (work) => work(preferenceStore),
+    };
+    const accountId = randomUUID();
+    const spaceId = randomUUID();
+    let visible = true;
+    const notifications = new NotificationService(notificationsStore, {
+      mayNotify: () => Promise.resolve(true),
+      mayView: () => Promise.resolve(visible),
+    });
+    const preferences = new NotificationPreferenceService(preferenceStore, {
+      mayConfigure: (actorId) => Promise.resolve(actorId === accountId),
+    });
+    preferencesByScope.set(`${accountId}:account:${accountId}`, {
+      accountId,
+      scopeType: 'account',
+      scopeId: accountId,
+      mode: 'all',
+      mutedUntil: null,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    await notifications.create({
+      accountId,
+      actorId: randomUUID(),
+      resourceId: randomUUID(),
+      scopeId: spaceId,
+      kind: 'mention',
+      now: new Date(Date.now() - 1_000),
+    });
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { notifications, notificationPreferences: preferences },
+    );
+
+    const initialized = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, initialize: true },
+    });
+    expect(initialized.statusCode).toBe(200);
+    const baseline = initialized.json<{
+      items: unknown[];
+      checkpoint: string;
+    }>();
+    expect(baseline.items).toEqual([]);
+
+    const privateResource = randomUUID();
+    const privateActor = randomUUID();
+    const created = await notifications.create({
+      accountId,
+      actorId: privateActor,
+      resourceId: privateResource,
+      scopeId: spaceId,
+      kind: 'reply',
+      now: new Date(Date.now() + 1_000),
+    });
+    if (!created) throw new Error('notification was not created');
+    const delivered = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, checkpoint: baseline.checkpoint },
+    });
+    expect(delivered.statusCode).toBe(200);
+    const deliveredBody = delivered.json<{
+      items: unknown[];
+      checkpoint: string;
+      overflow: boolean;
+    }>();
+    expect(deliveredBody).toMatchObject({
+      items: [
+        {
+          notificationId: created.id,
+          kind: 'reply',
+          version: 1,
+          route: '/notifications',
+        },
+      ],
+      overflow: false,
+    });
+    const serialized = JSON.stringify(deliveredBody);
+    expect(serialized).not.toContain(privateResource);
+    expect(serialized).not.toContain(privateActor);
+    expect(serialized).not.toContain(spaceId);
+    expect(serialized).not.toContain(accountId);
+
+    const settled = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, checkpoint: deliveredBody.checkpoint },
+    });
+    expect(settled.json()).toMatchObject({
+      items: [],
+      checkpoint: deliveredBody.checkpoint,
+    });
+
+    visible = false;
+    const hidden = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, checkpoint: baseline.checkpoint },
+    });
+    expect(hidden.json<{ items: unknown[] }>().items).toEqual([]);
+
+    visible = true;
+    const accountPreference = preferencesByScope.get(
+      `${accountId}:account:${accountId}`,
+    );
+    if (!accountPreference) throw new Error('account preference is missing');
+    preferencesByScope.set(`${accountId}:account:${accountId}`, {
+      ...accountPreference,
+      mode: 'none',
+      version: 2,
+    });
+    const muted = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, checkpoint: baseline.checkpoint },
+    });
+    expect(muted.json<{ items: unknown[] }>().items).toEqual([]);
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/v1/desktop-notification-deliveries/query',
+      payload: { actorId: accountId, checkpoint: 'not-a-checkpoint' },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(JSON.stringify(invalid.json())).not.toContain('checkpoint');
+    await app.close();
+  });
+
   it('applies scoped preference writes with stale-write protection', async () => {
     const values = new Map<string, NotificationPreference>();
     const store: NotificationPreferenceStore = {

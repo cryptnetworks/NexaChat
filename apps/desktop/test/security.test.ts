@@ -52,6 +52,9 @@ describe('desktop process boundary', () => {
         'allow-select-stored-account',
         'allow-remove-stored-account',
         'allow-clear-stored-accounts',
+        'allow-desktop-notification-status',
+        'allow-request-desktop-notification-permission',
+        'allow-deliver-desktop-notification',
       ],
     });
     expect(cargo).toContain('tauri-plugin-opener = "=2.5.4"');
@@ -61,9 +64,13 @@ describe('desktop process boundary', () => {
     expect(runtime).toContain('NewWindowResponse::Deny');
     expect(runtime).toContain('tauri::generate_handler!');
     expect(runtime.indexOf('tauri_plugin_single_instance::init')).toBeLessThan(
+      runtime.indexOf('tauri_plugin_notification::init'),
+    );
+    expect(runtime.indexOf('tauri_plugin_notification::init')).toBeLessThan(
       runtime.indexOf('tauri_plugin_opener::init'),
     );
     expect(capability).not.toContain('core:default');
     expect(capability).not.toContain('opener:');
+    expect(capability).not.toContain('notification:');
   });
 });

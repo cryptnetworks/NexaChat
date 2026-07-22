@@ -1,6 +1,6 @@
 export type AppRoute =
   | { kind: 'login'; requiresAuth: false }
-  | { kind: 'home' | 'settings'; requiresAuth: true }
+  | { kind: 'home' | 'settings' | 'notifications'; requiresAuth: true }
   | { kind: 'community'; communityId: string; requiresAuth: true }
   | {
       kind: 'space';
@@ -19,6 +19,8 @@ export function resolveAppRoute(pathname: string): AppRoute {
     return { kind: 'login', requiresAuth: false };
   if (parts.length === 1 && parts[0] === 'settings')
     return { kind: 'settings', requiresAuth: true };
+  if (parts.length === 1 && parts[0] === 'notifications')
+    return { kind: 'notifications', requiresAuth: true };
   if (parts[0] === 'communities' && parts[1] && identifier.test(parts[1])) {
     if (parts.length === 2)
       return { kind: 'community', communityId: parts[1], requiresAuth: true };

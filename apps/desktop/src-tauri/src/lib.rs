@@ -1,8 +1,13 @@
 mod credentials;
+mod notifications;
 
 use credentials::{
     CredentialState, clear_stored_accounts, credential_store_status, list_stored_accounts,
     remove_stored_account, select_stored_account, store_session_credential,
+};
+use notifications::{
+    DesktopNotificationState, deliver_desktop_notification, desktop_notification_status,
+    request_desktop_notification_permission,
 };
 use tauri::{Manager, Url, webview::NewWindowResponse};
 use tauri_plugin_opener::OpenerExt;
@@ -44,15 +49,20 @@ pub fn run() {
                 }
             },
         ))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .manage(CredentialState::default())
+        .manage(DesktopNotificationState::default())
         .invoke_handler(tauri::generate_handler![
             credential_store_status,
             list_stored_accounts,
             store_session_credential,
             select_stored_account,
             remove_stored_account,
-            clear_stored_accounts
+            clear_stored_accounts,
+            desktop_notification_status,
+            request_desktop_notification_permission,
+            deliver_desktop_notification
         ])
         .setup(|app| {
             let window_config = app.config().app.windows.first().ok_or_else(|| {
