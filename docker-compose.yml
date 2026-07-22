@@ -6,7 +6,11 @@ services:
       POSTGRES_DB: nexa
       POSTGRES_USER: nexa
       POSTGRES_PASSWORD: local-development-password
-    ports: ['${POSTGRES_PUBLISHED_PORT:-5432}:5432']
+    ports:
+      - target: 5432
+        published: '${POSTGRES_PUBLISHED_PORT:-5432}'
+        host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
+        protocol: tcp
     volumes: ['postgres-data:/var/lib/postgresql/data']
     healthcheck:
       {
@@ -19,7 +23,11 @@ services:
   redis:
     image: valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
     command: ['valkey-server', '--appendonly', 'yes']
-    ports: ['${VALKEY_PUBLISHED_PORT:-6379}:6379']
+    ports:
+      - target: 6379
+        published: '${VALKEY_PUBLISHED_PORT:-6379}'
+        host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
+        protocol: tcp
     volumes: ['redis-data:/data']
     healthcheck:
       {
@@ -37,7 +45,10 @@ services:
       AWS_SECRET_ACCESS_KEY: change-this-local-secret
       S3_BUCKET: nexa-attachments
     ports:
-      - '${S3_PUBLISHED_PORT:-8333}:8333'
+      - target: 8333
+        published: '${S3_PUBLISHED_PORT:-8333}'
+        host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
+        protocol: tcp
     volumes: ['object-data:/data']
     healthcheck:
       {
