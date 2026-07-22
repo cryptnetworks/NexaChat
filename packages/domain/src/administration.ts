@@ -294,3 +294,104 @@ export class RegistrationPolicyService extends AdministrationService {
     return saved;
   }
 }
+
+export interface MaintenanceState {
+  active: boolean;
+  retryAfterSeconds: number;
+  reasonCode: string;
+  updatedBy: string;
+  updatedAt: string;
+  version: number;
+}
+export interface MaintenanceStore extends AdminStore {
+  maintenance(): Promise<MaintenanceState | undefined>;
+  saveMaintenance(
+    value: MaintenanceState,
+    expectedVersion?: number,
+  ): Promise<MaintenanceState | undefined>;
+  publishMaintenance(value: MaintenanceState): Promise<void>;
+}
+export class MaintenanceService extends AdministrationService {
+  constructor(
+    private readonly maintenanceStore: MaintenanceStore,
+    authorization: AdminAuthorization,
+  ) {
+    super(maintenanceStore, authorization);
+  }
+  async update(
+    actorId: string,
+    input: {
+      active: boolean;
+      retryAfterSeconds: number;
+      reasonCode: string;
+      expectedVersion?: number;
+      authenticatedAt: string;
+      correlationId: string;
+      now: Date;
+    },
+  ): Promise<MaintenanceState> {
+    await this.sensitive(
+      actorId,
+      input.authenticatedAt,
+      'instance.maintenance.manage',
+      input.now,
+    );
+    if (
+      !Number.isInteger(input.retryAfterSeconds) ||
+      input.retryAfterSeconds < 5 ||
+      input.retryAfterSeconds > 3600 ||
+      !/^[a-z0-9_]{3,64}$/.test(input.reasonCode)
+    )
+      throw new Error('invalid_maintenance_state');
+    const current = await this.maintenanceStore.maintenance();
+    if (current && input.expectedVersion === undefined)
+      throw new Error('stale_maintenance_state');
+    const saved = await this.maintenanceStore.saveMaintenance(
+      {
+        active: input.active,
+        retryAfterSeconds: input.retryAfterSeconds,
+        reasonCode: input.reasonCode,
+        updatedBy: actorId,
+        updatedAt: input.now.toISOString(),
+        version: current ? current.version + 1 : 1,
+      },
+      input.expectedVersion,
+    );
+    if (!saved) throw new Error('stale_maintenance_state');
+    await this.maintenanceStore.publishMaintenance(saved);
+    await this.audit(
+      actorId,
+      input.active ? 'maintenance.activate' : 'maintenance.deactivate',
+      null,
+      'succeeded',
+      input.correlationId,
+      input.now,
+    );
+    return saved;
+  }
+  async enforce(
+    method: string,
+    path: string,
+    actorId?: string,
+  ): Promise<{ retryAfterSeconds: number } | null> {
+    const state = await this.maintenanceStore.maintenance();
+    if (
+      !state?.active ||
+      (method === 'GET' && ['/health/live', '/health/ready'].includes(path))
+    )
+      return null;
+    if (actorId) {
+      try {
+        await this.authorization.assertPermission(
+          actorId,
+          'instance.maintenance.bypass',
+        );
+        return null;
+      } catch {
+        /* deny below */
+      }
+    }
+    if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return null;
+    return { retryAfterSeconds: state.retryAfterSeconds };
+  }
+}
