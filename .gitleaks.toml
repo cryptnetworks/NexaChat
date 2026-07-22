@@ -8,5 +8,5 @@ description = "SEC-22 public release-evidence service versions"
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^\.github/workflows/release-candidate\.yml$''']
+paths = ['''(^|.*/)\.github/workflows/release-candidate\.yml$''']
 regexes = ['''^\s*services:\s*\{\s*postgres:\s*"17\.10-alpine3\.23",\s*valkey:\s*"8\.1\.9-alpine3\.24"\s*\},\s*$''']
