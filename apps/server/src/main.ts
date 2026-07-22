@@ -22,6 +22,7 @@ const database = await initializeDatabase(
   config.database,
   config.authentication,
   config.webPush.config,
+  coordination,
 );
 const app = buildApp(
   database.service,
@@ -38,6 +39,9 @@ app.websocketHub = attachWebsocketHub(app.server, database.service, {
   trustedOrigin: config.authentication.trustedOrigin,
   limits: config.websocket,
   ...(coordination ? { coordination } : {}),
+  ...(database.experience.presence
+    ? { presence: database.experience.presence }
+    : {}),
 });
 database.experience.notificationReadState.setPublisher({
   publish(state) {

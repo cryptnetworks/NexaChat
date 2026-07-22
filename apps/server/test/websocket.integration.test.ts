@@ -8,7 +8,7 @@ import {
   InMemoryAuthStore,
   type PasswordHasher,
 } from '@nexa/auth';
-import { InMemoryCommunityService } from '@nexa/domain';
+import { InMemoryCommunityService, PresenceService } from '@nexa/domain';
 import {
   realtimeDeliverySchema,
   type RealtimeEnvelope,
@@ -84,11 +84,12 @@ describe('secure real WebSocket integration', () => {
     await app.close();
   });
 
-  function attach() {
+  function attach(presence?: PresenceService) {
     app.websocketHub = attachWebsocketHub(app.server, service, {
       auth,
       trustedOrigin: origin,
       limits,
+      ...(presence ? { presence } : {}),
     });
   }
 
@@ -213,6 +214,53 @@ describe('secure real WebSocket integration', () => {
     });
     first.close(1000);
     second.close(1000);
+  });
+
+  it('returns coarse presence without exposing expiry or activity details', async () => {
+    await app.websocketHub?.close();
+    const targetId = randomUUID();
+    const presence = new PresenceService(
+      {
+        get: () =>
+          Promise.resolve({
+            accountId: targetId,
+            state: 'online',
+            expiresAt: new Date(Date.now() + 90_000).toISOString(),
+            revision: 'private-revision',
+          }),
+        set: () => Promise.resolve(),
+        publish: () => Promise.resolve(),
+        allowUpdate: () => Promise.resolve(true),
+      },
+      { mayView: () => Promise.resolve(true) },
+    );
+    attach(presence);
+    const owner = await identity('presence-reader');
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    const requestId = randomUUID();
+    socket.send(
+      JSON.stringify({
+        version: 1,
+        type: 'presence_subscribe',
+        requestId,
+        accountIds: [targetId],
+      }),
+    );
+    await expect(nextMessage(socket)).resolves.toEqual({
+      version: 1,
+      type: 'presence_subscribed',
+      requestId,
+      accountIds: [targetId],
+    });
+    const update = await nextMessage(socket);
+    expect(update).toEqual({
+      version: 1,
+      type: 'presence',
+      presence: { accountId: targetId, state: 'online' },
+    });
+    expect(JSON.stringify(update)).not.toContain('private-revision');
+    socket.close(1000);
   });
 
   it('rejects anonymous, spoofed-origin, revoked, and suspended sessions during connection establishment', async () => {

@@ -4,6 +4,7 @@ import {
   NotificationService,
   NotificationPreferenceService,
   NotificationReadService,
+  PresenceService,
   type NotificationPreference,
   type NotificationPreferenceStore,
   type NotificationReadState,
@@ -249,6 +250,57 @@ describe('notification HTTP integration', () => {
       url: '/v1/web-push/config',
     });
     expect(JSON.stringify(configuration.json())).not.toContain('private-key');
+    await app.close();
+  });
+
+  it('exposes only coarse authorized presence and stable rate limits', async () => {
+    const accountId = randomUUID();
+    let allowed = true;
+    let value:
+      | {
+          accountId: string;
+          state: 'online' | 'idle';
+          expiresAt: string;
+          revision: string;
+        }
+      | undefined;
+    const presence = new PresenceService(
+      {
+        get: () => Promise.resolve(value),
+        set: (next) => {
+          value = next;
+          return Promise.resolve();
+        },
+        publish: () => Promise.resolve(),
+        allowUpdate: () => Promise.resolve(allowed),
+      },
+      { mayView: (viewer, target) => Promise.resolve(viewer === target) },
+    );
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        presence,
+      },
+    );
+    const heartbeat = await app.inject({
+      method: 'POST',
+      url: '/v1/presence/heartbeat',
+      payload: { actorId: accountId, available: true },
+    });
+    expect(heartbeat.json()).toEqual({ accountId, state: 'online' });
+    expect(JSON.stringify(heartbeat.json())).not.toContain('expiresAt');
+    allowed = false;
+    const limited = await app.inject({
+      method: 'POST',
+      url: '/v1/presence/heartbeat',
+      payload: { actorId: accountId, available: true },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('15');
     await app.close();
   });
 });

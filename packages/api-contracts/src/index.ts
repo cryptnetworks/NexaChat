@@ -531,6 +531,15 @@ export const webPushSubscriptionSchema = z.object({
 export const revokeWebPushSubscriptionSchema = z
   .object({ actorId: id })
   .strict();
+export const presenceStateSchema = z.enum(['online', 'idle', 'offline']);
+export const presenceSchema = z.object({
+  accountId: id,
+  state: presenceStateSchema,
+});
+export const presenceQuerySchema = z.object({ actorId: id }).strict();
+export const presenceHeartbeatSchema = z
+  .object({ actorId: id, available: z.boolean() })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
@@ -609,6 +618,14 @@ export const websocketClientMessageSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ version: z.literal(1), type: z.literal('heartbeat') }).strict(),
+  z
+    .object({
+      version: z.literal(1),
+      type: z.literal('presence_subscribe'),
+      requestId: websocketRequestId,
+      accountIds: z.array(id).min(1).max(100),
+    })
+    .strict(),
 ]);
 
 export const websocketServerMessageSchema = z.discriminatedUnion('type', [
@@ -640,6 +657,17 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
     version: z.literal(1),
     type: z.literal('notification_read'),
     state: notificationReadStateSchema.omit({ accountId: true }),
+  }),
+  z.object({
+    version: z.literal(1),
+    type: z.literal('presence_subscribed'),
+    requestId: websocketRequestId,
+    accountIds: z.array(id).min(1).max(100),
+  }),
+  z.object({
+    version: z.literal(1),
+    type: z.literal('presence'),
+    presence: presenceSchema,
   }),
 ]);
 

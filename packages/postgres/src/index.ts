@@ -36,6 +36,7 @@ import type {
   NotificationReadAuthorization,
   NotificationReadState,
   NotificationReadStore,
+  PresenceVisibility,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -659,6 +660,30 @@ export class PostgresNotificationReadAuthorization implements NotificationReadAu
            AND s.id=$2 AND s.archived_at IS NULL LIMIT 1`
         : `SELECT 1 FROM accounts WHERE id=$1 AND status='active' LIMIT 1`,
       spaceId ? [accountId, spaceId] : [accountId],
+    );
+    return result.rows.length === 1;
+  }
+}
+
+export class PostgresPresenceVisibility implements PresenceVisibility {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayView(viewerId: string, accountId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM accounts viewer JOIN accounts target ON target.id=$2
+       WHERE viewer.id=$1 AND viewer.status='active' AND target.status='active'
+       AND ($1=$2 OR EXISTS (
+         SELECT 1 FROM memberships vm JOIN memberships tm
+           ON tm.community_id=vm.community_id
+         WHERE vm.account_id=$1 AND tm.account_id=$2
+           AND vm.status='active' AND tm.status='active'
+       ))
+       AND NOT EXISTS (
+         SELECT 1 FROM account_blocks b
+         WHERE (b.blocker_id=$1 AND b.blocked_id=$2)
+            OR (b.blocker_id=$2 AND b.blocked_id=$1)
+       ) LIMIT 1`,
+      [viewerId, accountId],
     );
     return result.rows.length === 1;
   }

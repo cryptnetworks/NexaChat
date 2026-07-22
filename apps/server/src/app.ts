@@ -62,6 +62,9 @@ import {
   revokeWebPushSubscriptionSchema,
   webPushConfigurationSchema,
   webPushSubscriptionSchema,
+  presenceHeartbeatSchema,
+  presenceQuerySchema,
+  presenceSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -70,6 +73,7 @@ import {
   type NotificationService,
   type NotificationPreferenceService,
   type NotificationReadService,
+  type PresenceService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
@@ -86,6 +90,7 @@ import {
 } from './auth-routes.js';
 import type { RuntimeConfig } from './config.js';
 import type { WebPushController } from './web-push.js';
+import { CoordinationError } from '@nexa/coordination';
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
@@ -325,6 +330,41 @@ export function buildApp(
           request.params.subscriptionId,
         );
         return reply.code(204).send();
+      },
+    );
+  }
+
+  if (experience.presence) {
+    app.post('/v1/presence/heartbeat', async (request, reply) => {
+      const input = presenceHeartbeatSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const value = await experience.presence!.heartbeat(
+        actorId,
+        input.available,
+        new Date(),
+      );
+      return reply.send(
+        presenceSchema.parse({ accountId: actorId, state: value.state }),
+      );
+    });
+    app.get<{ Params: { accountId: string } }>(
+      '/v1/presence/:accountId',
+      async (request, reply) => {
+        const input = presenceQuerySchema.parse(request.query);
+        const actorId = await verifiedActor(request, auth, input.actorId);
+        const accountId = presenceSchema.shape.accountId.parse(
+          request.params.accountId,
+        );
+        return reply.send(
+          presenceSchema.parse({
+            accountId,
+            state: await experience.presence!.view(
+              actorId,
+              accountId,
+              new Date(),
+            ),
+          }),
+        );
       },
     );
   }
@@ -1131,6 +1171,10 @@ export function buildApp(
       error.message === 'invalid_web_push_subscription'
     )
       return sendApiError(reply, 400, 'invalid_request', request.id);
+    if (error instanceof CoordinationError)
+      return sendApiError(reply, 503, 'dependency_unavailable', request.id, 5);
+    if (error instanceof Error && error.message === 'presence_rate_limited')
+      return sendApiError(reply, 429, 'rate_limited', request.id, 15);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -1163,6 +1207,7 @@ export interface ExperienceRuntime {
   notificationPreferences?: NotificationPreferenceService;
   notificationReadState?: NotificationReadService;
   webPush?: WebPushController;
+  presence?: PresenceService;
 }
 
 function sendApiError(

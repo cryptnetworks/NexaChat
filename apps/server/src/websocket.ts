@@ -7,7 +7,7 @@ import {
   type WebsocketServerMessage,
 } from '@nexa/api-contracts';
 import { AuthenticationError, type AuthenticatedSession } from '@nexa/auth';
-import type { CommunityService } from '@nexa/domain';
+import type { CommunityService, PresenceService } from '@nexa/domain';
 import {
   realtimeDeliverySchema,
   realtimeEnvelopeSchema,
@@ -16,6 +16,7 @@ import {
 } from '@nexa/realtime-contracts';
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
 import type { EphemeralCoordination } from '@nexa/coordination';
+import { parsePresence, PRESENCE_CHANNEL } from './presence.js';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -44,6 +45,7 @@ export interface WebsocketHubOptions {
   metrics?: WebsocketMetrics;
   coordination?: EphemeralCoordination;
   instanceId?: string;
+  presence?: PresenceService;
 }
 
 export interface WebsocketHub {
@@ -82,6 +84,7 @@ interface ConnectionState {
   token: string;
   address: string;
   subscriptions: Set<string>;
+  presenceSubscriptions: Set<string>;
   lastSeenAt: number;
   rateStartedAt: number;
   messagesInWindow: number;
@@ -115,6 +118,7 @@ export function attachWebsocketHub(
   const seenEvents = new Set<string>();
   const instanceId = options.instanceId ?? randomUUID();
   let unsubscribeFanout: (() => Promise<void>) | undefined;
+  let unsubscribePresence: (() => Promise<void>) | undefined;
   let draining = false;
   const wss = new WebSocketServer({
     server,
@@ -185,6 +189,7 @@ export function attachWebsocketHub(
       token: authenticated.token,
       address: request.socket.remoteAddress ?? 'unknown',
       subscriptions: new Set(),
+      presenceSubscriptions: new Set(),
       lastSeenAt: now,
       rateStartedAt: now,
       messagesInWindow: 0,
@@ -281,6 +286,44 @@ export function attachWebsocketHub(
         requestId: parsed.data.requestId,
         error: 'server_draining',
       });
+      return;
+    }
+    if (parsed.data.type === 'presence_subscribe') {
+      if (!options.presence) {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          requestId: parsed.data.requestId,
+          error: 'unavailable',
+        });
+        return;
+      }
+      try {
+        await options.auth.service.authenticate(state.token);
+      } catch {
+        socket.close(1008, 'unauthenticated');
+        return;
+      }
+      state.presenceSubscriptions = new Set(parsed.data.accountIds);
+      safeSend(socket, state, {
+        version: 1,
+        type: 'presence_subscribed',
+        requestId: parsed.data.requestId,
+        accountIds: [...state.presenceSubscriptions],
+      });
+      for (const accountId of state.presenceSubscriptions)
+        safeSend(socket, state, {
+          version: 1,
+          type: 'presence',
+          presence: {
+            accountId,
+            state: await options.presence.view(
+              state.actorId,
+              accountId,
+              new Date(),
+            ),
+          },
+        });
       return;
     }
     if (parsed.data.type === 'unsubscribe') {
@@ -418,6 +461,40 @@ export function attachWebsocketHub(
       .catch(() => {
         metrics.increment('realtime_fanout_degraded');
       });
+  if (options.coordination && options.presence)
+    void options.coordination
+      .subscribe(PRESENCE_CHANNEL, (payload) => {
+        void receivePresence(payload);
+      })
+      .then((unsubscribe) => {
+        unsubscribePresence = unsubscribe;
+      })
+      .catch(() => {
+        metrics.increment('presence_fanout_degraded');
+      });
+
+  async function receivePresence(payload: string): Promise<void> {
+    try {
+      const presence = parsePresence(payload);
+      for (const [socket, state] of connections) {
+        if (!state.presenceSubscriptions.has(presence.accountId)) continue;
+        safeSend(socket, state, {
+          version: 1,
+          type: 'presence',
+          presence: {
+            accountId: presence.accountId,
+            state: await options.presence!.view(
+              state.actorId,
+              presence.accountId,
+              new Date(),
+            ),
+          },
+        });
+      }
+    } catch {
+      metrics.increment('presence_fanout_invalid');
+    }
+  }
 
   function remember(eventId: string): boolean {
     if (seenEvents.has(eventId)) return false;
@@ -526,6 +603,7 @@ export function attachWebsocketHub(
       clearInterval(heartbeat);
       clearInterval(authorizationCheck);
       await unsubscribeFanout?.();
+      await unsubscribePresence?.();
       for (const [socket, state] of connections) {
         safeSend(socket, state, {
           version: 1,

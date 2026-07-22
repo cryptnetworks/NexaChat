@@ -8,6 +8,7 @@ import {
   PostgresNotificationPreferenceStore,
   PostgresNotificationReadAuthorization,
   PostgresNotificationReadStore,
+  PostgresPresenceVisibility,
   createPostgresPool,
   migratePostgres,
   verifyPostgresSchema,
@@ -21,13 +22,17 @@ import {
   NotificationPreferenceService,
   NotificationReadService,
   NotificationService,
+  PresenceService,
 } from '@nexa/domain';
 import { WebPushRuntime, type WebPushRuntimeConfig } from './web-push.js';
+import type { EphemeralCoordination } from '@nexa/coordination';
+import { CoordinatedPresence } from './presence.js';
 
 export async function initializeDatabase(
   config: PostgresConfig,
   authentication?: RuntimeConfig['authentication'],
   webPushConfig?: WebPushRuntimeConfig,
+  coordination?: EphemeralCoordination,
 ) {
   const pool = createPostgresPool(config);
   try {
@@ -77,6 +82,12 @@ export async function initializeDatabase(
       publish: (notification) =>
         webPush.deliver(notification).then(() => undefined),
     });
+  const presence = coordination
+    ? new PresenceService(
+        new CoordinatedPresence(coordination),
+        new PostgresPresenceVisibility(pool),
+      )
+    : undefined;
   return {
     pool,
     service: new CommunityService(persistence, authorization),
@@ -87,6 +98,7 @@ export async function initializeDatabase(
       notificationPreferences,
       notificationReadState,
       ...(webPush ? { webPush } : {}),
+      ...(presence ? { presence } : {}),
     },
     ...(authentication
       ? { auth: createAuthRuntime(pool, authentication) }
