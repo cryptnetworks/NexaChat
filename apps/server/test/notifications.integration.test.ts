@@ -198,4 +198,57 @@ describe('notification HTTP integration', () => {
     }
     await app.close();
   });
+
+  it('registers web push without returning endpoint or key material', async () => {
+    const accountId = randomUUID();
+    const subscriptionId = randomUUID();
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        webPush: {
+          config: {
+            subject: 'mailto:operator@example.test',
+            publicKey: 'public-key',
+            privateKey: 'private-key',
+            encryptionKey: 'encryption-key',
+            allowedHosts: ['.example.test'],
+          },
+          register: (actorId) =>
+            Promise.resolve({
+              id: subscriptionId,
+              accountId: actorId,
+              endpointHash: 'a'.repeat(64),
+              active: true,
+              expiresAt: null,
+            }),
+          revoke: () => Promise.resolve(),
+        },
+      },
+    );
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/web-push/subscriptions',
+      payload: {
+        actorId: accountId,
+        subscription: {
+          endpoint: 'https://push.example.test/private-token',
+          expirationTime: null,
+          keys: { p256dh: 'p'.repeat(32), auth: 'a'.repeat(16) },
+        },
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ id: subscriptionId, accountId });
+    expect(JSON.stringify(response.json())).not.toContain('private-token');
+    const configuration = await app.inject({
+      method: 'GET',
+      url: '/v1/web-push/config',
+    });
+    expect(JSON.stringify(configuration.json())).not.toContain('private-key');
+    await app.close();
+  });
 });

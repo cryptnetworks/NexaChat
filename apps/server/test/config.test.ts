@@ -27,6 +27,23 @@ describe('runtime configuration', () => {
     expect(config.server.rateLimit).toBe(1_000);
     expect(config.objectStorage.enabled).toBe(false);
     expect(config.coordination.enabled).toBe(false);
+    expect(config.webPush.enabled).toBe(false);
+  });
+
+  it('requires explicit bounded web push secrets when enabled', () => {
+    const config = parseRuntimeConfig({
+      ...development,
+      NEXA_WEB_PUSH_ENABLED: 'true',
+      NEXA_WEB_PUSH_SUBJECT: 'mailto:operator@example.test',
+      NEXA_WEB_PUSH_PUBLIC_KEY: 'public',
+      NEXA_WEB_PUSH_PRIVATE_KEY: 'private',
+      NEXA_WEB_PUSH_ENCRYPTION_KEY: Buffer.alloc(32).toString('base64url'),
+      NEXA_WEB_PUSH_ALLOWED_HOSTS: '.example.test',
+    });
+    expect(config.webPush).toMatchObject({
+      enabled: true,
+      config: { subject: 'mailto:operator@example.test' },
+    });
   });
 
   it('parses bounded ephemeral coordination settings', () => {
@@ -104,6 +121,10 @@ describe('runtime configuration', () => {
     [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
     [{ ...development, NEXA_OBJECT_STORAGE_ENABLED: 'true' }, 'S3_ENDPOINT'],
     [{ ...development, NEXA_COORDINATION_ENABLED: 'true' }, 'REDIS_URL'],
+    [
+      { ...development, NEXA_WEB_PUSH_ENABLED: 'true' },
+      'NEXA_WEB_PUSH_SUBJECT',
+    ],
     [
       {
         ...production,

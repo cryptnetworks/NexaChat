@@ -500,6 +500,37 @@ export const advanceNotificationReadStateSchema = z
     eventId: id,
   })
   .strict();
+export const webPushConfigurationSchema = z.object({
+  enabled: z.boolean(),
+  publicKey: z.string().max(256).nullable(),
+});
+export const registerWebPushSubscriptionSchema = z
+  .object({
+    actorId: id,
+    subscription: z
+      .object({
+        endpoint: z.string().url().max(2048),
+        expirationTime: z.number().int().positive().nullable(),
+        keys: z
+          .object({
+            p256dh: z.string().min(16).max(512),
+            auth: z.string().min(8).max(256),
+          })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict();
+export const webPushSubscriptionSchema = z.object({
+  id,
+  accountId: id,
+  endpointHash: z.string().length(64),
+  active: z.boolean(),
+  expiresAt: z.string().datetime().nullable(),
+});
+export const revokeWebPushSubscriptionSchema = z
+  .object({ actorId: id })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,

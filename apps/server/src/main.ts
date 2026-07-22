@@ -21,6 +21,7 @@ const objectStorage = await initializeObjectStorage(config.objectStorage);
 const database = await initializeDatabase(
   config.database,
   config.authentication,
+  config.webPush.config,
 );
 const app = buildApp(
   database.service,

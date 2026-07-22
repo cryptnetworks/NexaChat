@@ -81,6 +81,9 @@ export interface NotificationAuthorization {
     scopeId?: string | null,
   ): Promise<boolean>;
 }
+export interface NotificationPublisher {
+  publish(notification: NotificationRecord): Promise<void>;
+}
 
 const dedupe = (input: {
   accountId: string;
@@ -98,7 +101,11 @@ export class NotificationService {
   constructor(
     private readonly store: NotificationStore,
     private readonly authorization: NotificationAuthorization,
+    private publisher?: NotificationPublisher,
   ) {}
+  setPublisher(publisher: NotificationPublisher): void {
+    this.publisher = publisher;
+  }
   async create(input: {
     accountId: string;
     kind: NotificationKind;
@@ -117,7 +124,7 @@ export class NotificationService {
     )
       return null;
     const key = dedupe(input);
-    return this.store.transaction(async (store) => {
+    const notification = await this.store.transaction(async (store) => {
       if (
         !(await this.authorization.mayNotify(
           input.accountId,
@@ -162,6 +169,9 @@ export class NotificationService {
         version: 1,
       });
     });
+    if (notification)
+      await this.publisher?.publish(notification).catch(() => undefined);
+    return notification;
   }
   async list(
     accountId: string,

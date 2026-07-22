@@ -58,6 +58,10 @@ import {
   advanceNotificationReadStateSchema,
   notificationReadStateQuerySchema,
   notificationReadStateSchema,
+  registerWebPushSubscriptionSchema,
+  revokeWebPushSubscriptionSchema,
+  webPushConfigurationSchema,
+  webPushSubscriptionSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -81,6 +85,7 @@ import {
   type AuthRuntime,
 } from './auth-routes.js';
 import type { RuntimeConfig } from './config.js';
+import type { WebPushController } from './web-push.js';
 
 export function buildApp(
   service: CommunityService = new InMemoryCommunityService(),
@@ -288,6 +293,40 @@ export function buildApp(
         ),
       );
     });
+  }
+
+  app.get('/v1/web-push/config', (_request, reply) =>
+    reply.send(
+      webPushConfigurationSchema.parse({
+        enabled: Boolean(experience.webPush),
+        publicKey: experience.webPush?.config.publicKey ?? null,
+      }),
+    ),
+  );
+  if (experience.webPush) {
+    app.post('/v1/web-push/subscriptions', async (request, reply) => {
+      const input = registerWebPushSubscriptionSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply
+        .code(201)
+        .send(
+          webPushSubscriptionSchema.parse(
+            await experience.webPush!.register(actorId, input.subscription),
+          ),
+        );
+    });
+    app.delete<{ Params: { subscriptionId: string } }>(
+      '/v1/web-push/subscriptions/:subscriptionId',
+      async (request, reply) => {
+        const input = revokeWebPushSubscriptionSchema.parse(request.body);
+        const actorId = await verifiedActor(request, auth, input.actorId, true);
+        await experience.webPush!.revoke(
+          actorId,
+          request.params.subscriptionId,
+        );
+        return reply.code(204).send();
+      },
+    );
   }
 
   app.post('/v1/communities', async (request, reply) => {
@@ -1082,6 +1121,16 @@ export function buildApp(
           : 'stale_write',
         request.id,
       );
+    if (
+      error instanceof Error &&
+      error.message === 'web_push_subscription_not_found'
+    )
+      return sendApiError(reply, 404, 'not_found', request.id);
+    if (
+      error instanceof Error &&
+      error.message === 'invalid_web_push_subscription'
+    )
+      return sendApiError(reply, 400, 'invalid_request', request.id);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -1113,6 +1162,7 @@ export interface ExperienceRuntime {
   notifications?: NotificationService;
   notificationPreferences?: NotificationPreferenceService;
   notificationReadState?: NotificationReadService;
+  webPush?: WebPushController;
 }
 
 function sendApiError(

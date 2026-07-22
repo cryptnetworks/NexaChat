@@ -22,10 +22,12 @@ import {
   NotificationReadService,
   NotificationService,
 } from '@nexa/domain';
+import { WebPushRuntime, type WebPushRuntimeConfig } from './web-push.js';
 
 export async function initializeDatabase(
   config: PostgresConfig,
   authentication?: RuntimeConfig['authentication'],
+  webPushConfig?: WebPushRuntimeConfig,
 ) {
   const pool = createPostgresPool(config);
   try {
@@ -49,9 +51,10 @@ export async function initializeDatabase(
     new PostgresAuthorizationStore(pool),
   );
   const readiness = postgresReadiness(pool);
+  const notificationAuthorization = new PostgresNotificationAuthorization(pool);
   const notifications = new NotificationService(
     new PostgresNotificationStore(pool),
-    new PostgresNotificationAuthorization(pool),
+    notificationAuthorization,
   );
   const notificationPreferences = new NotificationPreferenceService(
     new PostgresNotificationPreferenceStore(pool),
@@ -61,6 +64,19 @@ export async function initializeDatabase(
     new PostgresNotificationReadStore(pool),
     new PostgresNotificationReadAuthorization(pool),
   );
+  const webPush = webPushConfig
+    ? new WebPushRuntime(
+        pool,
+        webPushConfig,
+        notificationAuthorization,
+        notificationPreferences,
+      )
+    : undefined;
+  if (webPush)
+    notifications.setPublisher({
+      publish: (notification) =>
+        webPush.deliver(notification).then(() => undefined),
+    });
   return {
     pool,
     service: new CommunityService(persistence, authorization),
@@ -70,6 +86,7 @@ export async function initializeDatabase(
       notifications,
       notificationPreferences,
       notificationReadState,
+      ...(webPush ? { webPush } : {}),
     },
     ...(authentication
       ? { auth: createAuthRuntime(pool, authentication) }
