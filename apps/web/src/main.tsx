@@ -121,7 +121,9 @@ function App() {
         setDraft((event.newValue ?? '').slice(0, 4000));
     };
     window.addEventListener('storage', synchronize);
-    return () => window.removeEventListener('storage', synchronize);
+    return () => {
+      window.removeEventListener('storage', synchronize);
+    };
   }, [account, space]);
 
   useEffect(() => {
@@ -451,7 +453,7 @@ function App() {
                 onChange={(event) => {
                   const value = event.currentTarget.value;
                   setDraft(value);
-                  if (account && space)
+                  if (account)
                     saveDraft(localStorage, account.id, space.id, value);
                 }}
                 required

@@ -411,7 +411,9 @@ export function attachWebsocketHub(
       .then((unsubscribe) => {
         unsubscribeFanout = unsubscribe;
       })
-      .catch(() => metrics.increment('realtime_fanout_degraded'));
+      .catch(() => {
+        metrics.increment('realtime_fanout_degraded');
+      });
 
   function remember(eventId: string): boolean {
     if (seenEvents.has(eventId)) return false;
@@ -453,7 +455,7 @@ export function attachWebsocketHub(
       const event = realtimeEnvelopeSchema.parse(parsed.event);
       if (seenEvents.has(event.id)) return;
       // Revalidate each local subscriber before cross-instance disclosure.
-      for (const [socket, state] of connections) {
+      for (const state of connections.values()) {
         if (!state.subscriptions.has(parsed.spaceId)) continue;
         try {
           await service.authorizeSpaceSubscription(
@@ -480,7 +482,9 @@ export function attachWebsocketHub(
             'realtime:events',
             JSON.stringify({ instanceId, spaceId, event }),
           )
-          .catch(() => metrics.increment('realtime_fanout_degraded'));
+          .catch(() => {
+            metrics.increment('realtime_fanout_degraded');
+          });
     },
     async close() {
       if (draining) return;

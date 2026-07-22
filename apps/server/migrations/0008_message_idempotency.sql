@@ -3,7 +3,7 @@ ALTER TABLE messages
   ADD COLUMN created_event_id uuid;
 
 UPDATE messages
-SET request_fingerprint = encode(sha256(convert_to(id::text, 'UTF8')), 'hex'),
+SET request_fingerprint = md5(id::text) || md5('nexa:' || id::text),
     created_event_id = gen_random_uuid()
 WHERE request_fingerprint IS NULL OR created_event_id IS NULL;
 

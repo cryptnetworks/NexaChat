@@ -12,7 +12,7 @@ export function safeLinkSegments(value: string): LinkSegment[] {
   let offset = 0;
   let links = 0;
   for (const match of value.matchAll(expression)) {
-    if (links >= MAX_LINKS_PER_MESSAGE || match.index === undefined) break;
+    if (links >= MAX_LINKS_PER_MESSAGE) break;
     if (match.index > offset)
       result.push({ type: 'text', value: value.slice(offset, match.index) });
     const raw = match[0];
