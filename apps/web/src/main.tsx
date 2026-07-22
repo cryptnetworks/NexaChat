@@ -18,6 +18,7 @@ import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
 import { safeLinkSegments } from './links.js';
+import { clearDraft, draftKey, loadDraft, saveDraft } from './drafts.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -46,6 +47,8 @@ function App() {
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [spaces, setSpaces] = useState<SpaceResponse[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [draft, setDraft] = useState('');
+  const sendKey = useRef<string | undefined>(undefined);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -103,6 +106,22 @@ function App() {
     return () => {
       active = false;
     };
+  }, [account, space]);
+
+  useEffect(() => {
+    if (!account || !space) {
+      setDraft('');
+      return;
+    }
+    sendKey.current = undefined;
+    setDraft(loadDraft(localStorage, account.id, space.id));
+    const key = draftKey(account.id, space.id);
+    const synchronize = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && event.key === key)
+        setDraft((event.newValue ?? '').slice(0, 4000));
+    };
+    window.addEventListener('storage', synchronize);
+    return () => window.removeEventListener('storage', synchronize);
   }, [account, space]);
 
   useEffect(() => {
@@ -235,14 +254,21 @@ function App() {
 
   async function send(form: React.FormEvent<HTMLFormElement>) {
     form.preventDefault();
-    const data = new FormData(form.currentTarget);
     if (!account || !space) return;
-    await post(`/v1/spaces/${space.id}/messages`, {
-      authorId: account.id,
-      body: data.get('message'),
-      idempotencyKey: crypto.randomUUID(),
-    });
-    form.currentTarget.reset();
+    const key = sendKey.current ?? crypto.randomUUID();
+    sendKey.current = key;
+    try {
+      await post(`/v1/spaces/${space.id}/messages`, {
+        authorId: account.id,
+        body: draft,
+        idempotencyKey: key,
+      });
+      clearDraft(localStorage, account.id, space.id);
+      setDraft('');
+      sendKey.current = undefined;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to send');
+    }
   }
 
   async function createInvite(form: React.FormEvent<HTMLFormElement>) {
@@ -421,6 +447,13 @@ function App() {
                 id="message"
                 name="message"
                 maxLength={4000}
+                value={draft}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setDraft(value);
+                  if (account && space)
+                    saveDraft(localStorage, account.id, space.id, value);
+                }}
                 required
                 placeholder={`Write in ${space.name}`}
               />
