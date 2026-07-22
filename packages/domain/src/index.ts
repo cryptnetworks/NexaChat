@@ -4,6 +4,7 @@ export * from './spam.js';
 export * from './retention.js';
 export * from './privacy-export.js';
 export * from './account-deletion.js';
+export * from './direct.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';
