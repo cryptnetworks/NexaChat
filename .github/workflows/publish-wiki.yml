@@ -1,0 +1,74 @@
+name: Publish documentation wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**/*.md'
+      - 'tools/wiki/**'
+      - '.github/workflows/publish-wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-documentation-wiki
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: github.repository == 'cryptnetworks/NexaChat' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out documentation only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            /docs/
+            /tools/wiki/
+            /.node-version
+          sparse-checkout-cone-mode: false
+
+      - name: Use the pinned Node.js runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Verify the exporter
+        run: node --test tools/wiki/export.node-test.mjs
+
+      - name: Clone the current wiki
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          git clone --depth=1 --branch=master
+          "https://x-access-token:${GITHUB_TOKEN}@github.com/cryptnetworks/NexaChat.wiki.git"
+          .wiki
+
+      - name: Generate wiki pages
+        run: >-
+          node tools/wiki/export.mjs
+          --source=docs
+          --destination=.wiki
+          --repository=cryptnetworks/NexaChat
+          --branch=main
+
+      - name: Commit and publish changed pages
+        working-directory: .wiki
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          if git diff --cached --quiet; then
+            echo 'Wiki content is already current.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "docs: sync from NexaChat@${SOURCE_SHA:0:12}"
+          git push origin HEAD:master
+          echo "Published wiki pages from \`${SOURCE_SHA}\`." >> "$GITHUB_STEP_SUMMARY"
