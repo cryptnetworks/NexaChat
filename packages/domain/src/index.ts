@@ -14,6 +14,7 @@ export * from './presence.js';
 export * from './member-status.js';
 export * from './mentions.js';
 export * from './threads.js';
+export * from './saved-messages.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';
