@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import {
   websocketClientMessageSchema,
@@ -14,6 +15,7 @@ import {
   type RealtimeEnvelope,
 } from '@nexa/realtime-contracts';
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
+import type { EphemeralCoordination } from '@nexa/coordination';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -40,6 +42,8 @@ export interface WebsocketHubOptions {
   trustedOrigin: string;
   limits?: Partial<WebsocketLimits>;
   metrics?: WebsocketMetrics;
+  coordination?: EphemeralCoordination;
+  instanceId?: string;
 }
 
 export interface WebsocketHub {
@@ -104,6 +108,9 @@ export function attachWebsocketHub(
   >();
   const connections = new Map<WebSocket, ConnectionState>();
   const sequences = new Map<string, number>();
+  const seenEvents = new Set<string>();
+  const instanceId = options.instanceId ?? randomUUID();
+  let unsubscribeFanout: (() => Promise<void>) | undefined;
   let draining = false;
   const wss = new WebSocketServer({
     server,
@@ -396,26 +403,91 @@ export function attachWebsocketHub(
   );
   authorizationCheck.unref();
 
+  if (options.coordination)
+    void options.coordination
+      .subscribe('realtime:events', (payload) => {
+        void receiveFanout(payload);
+      })
+      .then((unsubscribe) => {
+        unsubscribeFanout = unsubscribe;
+      })
+      .catch(() => metrics.increment('realtime_fanout_degraded'));
+
+  function remember(eventId: string): boolean {
+    if (seenEvents.has(eventId)) return false;
+    seenEvents.add(eventId);
+    if (seenEvents.size > 10_000) {
+      const oldest = seenEvents.values().next().value;
+      if (oldest) seenEvents.delete(oldest);
+    }
+    return true;
+  }
+
+  function deliver(spaceId: string, event: RealtimeEnvelope): void {
+    if (!remember(event.id)) return;
+    const sequence = (sequences.get(spaceId) ?? 0) + 1;
+    sequences.set(spaceId, sequence);
+    const delivery = realtimeDeliverySchema.parse({
+      version: 1,
+      type: 'event',
+      spaceId,
+      sequence,
+      event,
+    });
+    for (const [socket, state] of connections)
+      if (state.subscriptions.has(spaceId)) safeSend(socket, state, delivery);
+  }
+
+  async function receiveFanout(payload: string): Promise<void> {
+    try {
+      const parsed = JSON.parse(payload) as {
+        instanceId?: unknown;
+        spaceId?: unknown;
+        event?: unknown;
+      };
+      if (
+        parsed.instanceId === instanceId ||
+        typeof parsed.spaceId !== 'string'
+      )
+        return;
+      const event = realtimeEnvelopeSchema.parse(parsed.event);
+      if (seenEvents.has(event.id)) return;
+      // Revalidate each local subscriber before cross-instance disclosure.
+      for (const [socket, state] of connections) {
+        if (!state.subscriptions.has(parsed.spaceId)) continue;
+        try {
+          await service.authorizeSpaceSubscription(
+            parsed.spaceId,
+            state.actorId,
+          );
+        } catch {
+          state.subscriptions.delete(parsed.spaceId);
+        }
+      }
+      deliver(parsed.spaceId, event);
+    } catch {
+      metrics.increment('realtime_fanout_invalid');
+    }
+  }
+
   return {
     broadcast(spaceId, rawEvent) {
       const event = realtimeEnvelopeSchema.parse(rawEvent);
-      const sequence = (sequences.get(spaceId) ?? 0) + 1;
-      sequences.set(spaceId, sequence);
-      const delivery = realtimeDeliverySchema.parse({
-        version: 1,
-        type: 'event',
-        spaceId,
-        sequence,
-        event,
-      });
-      for (const [socket, state] of connections)
-        if (state.subscriptions.has(spaceId)) safeSend(socket, state, delivery);
+      deliver(spaceId, event);
+      if (options.coordination)
+        void options.coordination
+          .publish(
+            'realtime:events',
+            JSON.stringify({ instanceId, spaceId, event }),
+          )
+          .catch(() => metrics.increment('realtime_fanout_degraded'));
     },
     async close() {
       if (draining) return;
       draining = true;
       clearInterval(heartbeat);
       clearInterval(authorizationCheck);
+      await unsubscribeFanout?.();
       for (const [socket, state] of connections) {
         safeSend(socket, state, {
           version: 1,

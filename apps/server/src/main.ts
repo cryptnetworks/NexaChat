@@ -35,6 +35,7 @@ app.websocketHub = attachWebsocketHub(app.server, database.service, {
   auth: database.auth,
   trustedOrigin: config.authentication.trustedOrigin,
   limits: config.websocket,
+  ...(coordination ? { coordination } : {}),
 });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

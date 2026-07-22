@@ -154,7 +154,10 @@ describe('secure real WebSocket integration', () => {
       event: { id: event.id },
     });
     const duplicate = nextMessage(socket);
-    app.websocketHub?.broadcast(first.id, event);
+    app.websocketHub?.broadcast(
+      first.id,
+      envelope(first.id, owner.account.id, 'ordered second'),
+    );
     expect(realtimeDeliverySchema.parse(await duplicate).sequence).toBe(2);
 
     const requestId = randomUUID();
