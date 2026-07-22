@@ -308,12 +308,12 @@ local `.env`, then restart the development process before running:
 ```sh
 docker compose stop redis
 curl --silent --show-error --include http://127.0.0.1:3000/health/ready
-docker compose up -d --wait redis
+docker compose start redis
 curl --silent --show-error --include http://127.0.0.1:3000/health/ready
 
 docker compose stop object-storage
 curl --silent --show-error --include http://127.0.0.1:3000/health/ready
-docker compose up -d --wait object-storage
+docker compose start object-storage
 curl --silent --show-error --include http://127.0.0.1:3000/health/ready
 ```
 

@@ -147,21 +147,21 @@ docker compose -p "$project" stop postgres >/dev/null
 expect_status 503 'dependency outage'
 expect_body '/health/live' '{"status":"ok"}'
 expect_body '/health/startup' '{"status":"started"}'
-docker compose -p "$project" up -d --wait postgres >/dev/null
+docker compose -p "$project" start postgres >/dev/null
 expect_published_port postgres 5432 "$postgres_port"
 expect_status 200 'dependency recovery'
 
 docker compose -p "$project" stop redis >/dev/null
 expect_status 200 'coordination degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait redis >/dev/null
+docker compose -p "$project" start redis >/dev/null
 expect_published_port redis 6379 "$valkey_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 docker compose -p "$project" stop object-storage >/dev/null
 expect_status 200 'object storage degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait object-storage >/dev/null
+docker compose -p "$project" start object-storage >/dev/null
 expect_published_port object-storage 8333 "$s3_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
