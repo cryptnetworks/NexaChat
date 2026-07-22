@@ -383,6 +383,23 @@ export const moderationAppealSchema = z.object({
   decidedAt: z.string().datetime().nullable(),
   version: z.number().int().positive(),
 });
+export const updateContentLimitsSchema = z
+  .object({
+    actorId: id,
+    messageBodyMax: z.number().int().min(1).max(4000),
+    reportDescriptionMax: z.number().int().min(1).max(1000),
+    moderationReasonMax: z.number().int().min(1).max(500),
+    expectedVersion: z.number().int().positive().optional(),
+  })
+  .strict();
+export const contentLimitsSchema = z.object({
+  communityId: id,
+  messageBodyMax: z.number().int().min(1).max(4000),
+  reportDescriptionMax: z.number().int().min(1).max(1000),
+  moderationReasonMax: z.number().int().min(1).max(500),
+  updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,

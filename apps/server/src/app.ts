@@ -45,6 +45,8 @@ import {
   submitAppealSchema,
   decideAppealSchema,
   moderationAppealSchema,
+  updateContentLimitsSchema,
+  contentLimitsSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -224,6 +226,44 @@ export function buildApp(
         ),
       );
   });
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/content-limits',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        contentLimitsSchema.parse(
+          await service.getContentLimits(actorId, request.params.communityId),
+        ),
+      );
+    },
+  );
+
+  app.put<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/content-limits',
+    async (request, reply) => {
+      const input = updateContentLimitsSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        contentLimitsSchema.parse(
+          await service.updateContentLimits(
+            actorId,
+            request.params.communityId,
+            {
+              messageBodyMax: input.messageBodyMax,
+              reportDescriptionMax: input.reportDescriptionMax,
+              moderationReasonMax: input.moderationReasonMax,
+              ...(input.expectedVersion
+                ? { expectedVersion: input.expectedVersion }
+                : {}),
+              correlationId: request.id,
+            },
+          ),
+        ),
+      );
+    },
+  );
 
   app.post<{ Params: { appealId: string } }>(
     '/v1/moderation/appeals/:appealId/decision',

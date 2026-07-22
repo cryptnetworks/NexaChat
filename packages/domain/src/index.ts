@@ -200,6 +200,15 @@ export interface ModerationAppeal {
   decidedAt: string | null;
   version: number;
 }
+export interface CommunityContentLimits {
+  communityId: string;
+  messageBodyMax: number;
+  reportDescriptionMax: number;
+  moderationReasonMax: number;
+  updatedBy: string;
+  updatedAt: string;
+  version: number;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -425,6 +434,13 @@ export interface Persistence {
       expectedVersion: number,
     ): Promise<ModerationAppeal | undefined>;
   };
+  contentLimits: {
+    find(communityId: string): Promise<CommunityContentLimits | undefined>;
+    put(
+      value: CommunityContentLimits,
+      expectedVersion?: number,
+    ): Promise<CommunityContentLimits | undefined>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -625,6 +641,88 @@ export class CommunityService {
         version: 1,
       });
       return community;
+    });
+  }
+
+  async getContentLimits(
+    actorId: string,
+    communityId: string,
+  ): Promise<CommunityContentLimits> {
+    await this.enforce(actorId, 'community.view', [
+      { type: 'community', id: communityId },
+    ]);
+    return (
+      (await this.persistence.contentLimits.find(communityId)) ?? {
+        communityId,
+        messageBodyMax: 4000,
+        reportDescriptionMax: 1000,
+        moderationReasonMax: 500,
+        updatedBy: actorId,
+        updatedAt: new Date(0).toISOString(),
+        version: 1,
+      }
+    );
+  }
+
+  async updateContentLimits(
+    actorId: string,
+    communityId: string,
+    input: {
+      messageBodyMax: number;
+      reportDescriptionMax: number;
+      moderationReasonMax: number;
+      expectedVersion?: number;
+      correlationId: string;
+    },
+  ): Promise<CommunityContentLimits> {
+    if (
+      !Number.isInteger(input.messageBodyMax) ||
+      input.messageBodyMax < 1 ||
+      input.messageBodyMax > 4000 ||
+      !Number.isInteger(input.reportDescriptionMax) ||
+      input.reportDescriptionMax < 1 ||
+      input.reportDescriptionMax > 1000 ||
+      !Number.isInteger(input.moderationReasonMax) ||
+      input.moderationReasonMax < 1 ||
+      input.moderationReasonMax > 500
+    )
+      throw new DomainError('conflict');
+    return this.persistence.transaction(async (persistence) => {
+      await this.enforce(actorId, 'community.manage', [
+        { type: 'community', id: communityId },
+      ]);
+      const current = await persistence.contentLimits.find(communityId);
+      if (current && input.expectedVersion === undefined)
+        throw new DomainError('stale_write');
+      const updatedAt = new Date().toISOString();
+      const saved = await persistence.contentLimits.put(
+        {
+          communityId,
+          messageBodyMax: input.messageBodyMax,
+          reportDescriptionMax: input.reportDescriptionMax,
+          moderationReasonMax: input.moderationReasonMax,
+          updatedBy: actorId,
+          updatedAt,
+          version: current ? current.version + 1 : 1,
+        },
+        input.expectedVersion,
+      );
+      if (!saved) throw new DomainError('stale_write');
+      await this.writeModerationAudit(persistence, {
+        communityId,
+        actorId,
+        targetAccountId: null,
+        action: 'content_limits.update',
+        outcome: 'succeeded',
+        reason: null,
+        correlationId: input.correlationId,
+        metadata: {
+          messageBodyMax: saved.messageBodyMax,
+          reportDescriptionMax: saved.reportDescriptionMax,
+          moderationReasonMax: saved.moderationReasonMax,
+        },
+      });
+      return saved;
     });
   }
 
@@ -1694,6 +1792,9 @@ export class CommunityService {
     ] as const;
     await this.enforce(authorId, 'message.create', scopes);
     const normalizedBody = messageBody(body);
+    const limits = await this.getContentLimits(authorId, space.communityId);
+    if (normalizedBody.length > limits.messageBodyMax)
+      throw new DomainError('conflict');
     const normalizedKey = idempotencyKey(key);
     const fingerprint = createHash('sha256')
       .update(JSON.stringify({ body: normalizedBody, replyToId }))
@@ -2305,6 +2406,7 @@ type MemoryState = {
   moderationCases: Map<string, ModerationCase>;
   moderationCaseActivity: Map<string, ModerationCaseActivity>;
   moderationAppeals: Map<string, ModerationAppeal>;
+  contentLimits: Map<string, CommunityContentLimits>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -2326,6 +2428,7 @@ const clone = (state: MemoryState): MemoryState => ({
   moderationCases: new Map(state.moderationCases),
   moderationCaseActivity: new Map(state.moderationCaseActivity),
   moderationAppeals: new Map(state.moderationAppeals),
+  contentLimits: new Map(state.contentLimits),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -2361,6 +2464,7 @@ export class InMemoryPersistence implements Persistence {
     moderationCases: new Map(),
     moderationCaseActivity: new Map(),
     moderationAppeals: new Map(),
+    contentLimits: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -2933,6 +3037,20 @@ export class InMemoryPersistence implements Persistence {
         decisionReason: reason,
         decidedAt,
       })),
+  };
+  readonly contentLimits = {
+    find: async (communityId: string) =>
+      this.state.contentLimits.get(communityId),
+    put: async (value: CommunityContentLimits, expectedVersion?: number) => {
+      const current = this.state.contentLimits.get(value.communityId);
+      if (
+        (current && current.version !== expectedVersion) ||
+        (!current && expectedVersion !== undefined)
+      )
+        return undefined;
+      this.state.contentLimits.set(value.communityId, value);
+      return value;
+    },
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

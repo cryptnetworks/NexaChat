@@ -18,6 +18,7 @@ import type {
   ModerationCase,
   ModerationCaseActivity,
   ModerationAppeal,
+  CommunityContentLimits,
   Category,
   Community,
   Invitation,
@@ -101,6 +102,7 @@ export class PostgresPersistence implements Persistence {
   readonly moderationCases;
   readonly moderationCaseActivity;
   readonly moderationAppeals;
+  readonly contentLimits;
 
   constructor(
     private readonly pool: Pool,
@@ -127,6 +129,7 @@ export class PostgresPersistence implements Persistence {
     this.moderationCases = moderationCaseRepository(queryable);
     this.moderationCaseActivity = moderationCaseActivityRepository(queryable);
     this.moderationAppeals = moderationAppealRepository(queryable);
+    this.contentLimits = contentLimitsRepository(queryable);
   }
 
   async transaction<T>(
@@ -729,6 +732,15 @@ type ModerationAppealRow = {
   correlation_id: string;
   created_at: Date;
   decided_at: Date | null;
+  version: number;
+};
+type ContentLimitsRow = {
+  community_id: string;
+  message_body_max: number;
+  report_description_max: number;
+  moderation_reason_max: number;
+  updated_by: string;
+  updated_at: Date;
   version: number;
 };
 
@@ -1719,6 +1731,54 @@ function moderationAppealRepository(
   };
 }
 
+function contentLimitsRepository(db: Queryable): Persistence['contentLimits'] {
+  const fields =
+    'community_id,message_body_max,report_description_max,moderation_reason_max,updated_by,updated_at,version';
+  return {
+    async find(communityId) {
+      const result = await db.query<ContentLimitsRow>(
+        `SELECT ${fields} FROM community_content_limits WHERE community_id=$1`,
+        [communityId],
+      );
+      return result.rows[0] ? mapContentLimits(result.rows[0]) : undefined;
+    },
+    async put(value, expectedVersion) {
+      const result =
+        expectedVersion === undefined
+          ? await db.query<ContentLimitsRow>(
+              `INSERT INTO community_content_limits
+                (community_id,message_body_max,report_description_max,
+                 moderation_reason_max,updated_by,updated_at,version)
+               VALUES ($1,$2,$3,$4,$5,$6,1) RETURNING ${fields}`,
+              [
+                value.communityId,
+                value.messageBodyMax,
+                value.reportDescriptionMax,
+                value.moderationReasonMax,
+                value.updatedBy,
+                value.updatedAt,
+              ],
+            )
+          : await db.query<ContentLimitsRow>(
+              `UPDATE community_content_limits SET message_body_max=$2,
+                 report_description_max=$3,moderation_reason_max=$4,updated_by=$5,
+                 updated_at=$6,version=version+1
+               WHERE community_id=$1 AND version=$7 RETURNING ${fields}`,
+              [
+                value.communityId,
+                value.messageBodyMax,
+                value.reportDescriptionMax,
+                value.moderationReasonMax,
+                value.updatedBy,
+                value.updatedAt,
+                expectedVersion,
+              ],
+            );
+      return result.rows[0] ? mapContentLimits(result.rows[0]) : undefined;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1954,6 +2014,15 @@ const mapModerationAppeal = (row: ModerationAppealRow): ModerationAppeal => ({
   correlationId: row.correlation_id,
   createdAt: row.created_at.toISOString(),
   decidedAt: row.decided_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapContentLimits = (row: ContentLimitsRow): CommunityContentLimits => ({
+  communityId: row.community_id,
+  messageBodyMax: row.message_body_max,
+  reportDescriptionMax: row.report_description_max,
+  moderationReasonMax: row.moderation_reason_max,
+  updatedBy: row.updated_by,
+  updatedAt: row.updated_at.toISOString(),
   version: row.version,
 });
 
