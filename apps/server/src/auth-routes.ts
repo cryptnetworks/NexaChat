@@ -129,7 +129,7 @@ export function registerAuthRoutes(
 
   app.post('/v1/sessions/revoke-others', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await request.enforceAccountRateLimit(
       authenticated.account.id,
       'authenticated',
     );
