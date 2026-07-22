@@ -12,7 +12,7 @@ development processes in the foreground. Stop the processes with Ctrl-C;
 
 ## Local services
 
-Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
+Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. Provider ports bind to loopback by default; do not widen `NEXA_DEVELOPMENT_BIND_ADDRESS` on an untrusted network. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness,
 `/health/startup` reports completed initialization, and `/health/ready` returns
@@ -38,7 +38,7 @@ point this test at shared or production providers.
   file and install npm 11.16.0; do not bypass the check.
 - A published-port conflict: stop the process using 5432/6379/8333, or set
   `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
-  `S3_PUBLISHED_PORT` before startup
+  `S3_PUBLISHED_PORT` to an available port or port range before startup
   and update matching application URLs in `.env`.
 - A service never becomes healthy: run `docker compose ps` and bounded
   `docker compose logs --tail=100 <service>`; logs must not be pasted publicly

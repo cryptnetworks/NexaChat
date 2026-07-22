@@ -103,9 +103,9 @@ bash scripts/check-toolchain.sh
 npm ci --ignore-scripts
 docker compose config --quiet
 
-export POSTGRES_PUBLISHED_PORT=0
-export VALKEY_PUBLISHED_PORT=0
-export S3_PUBLISHED_PORT=0
+export POSTGRES_PUBLISHED_PORT=20000-20499
+export VALKEY_PUBLISHED_PORT=21000-21499
+export S3_PUBLISHED_PORT=22000-22499
 export NEXA_SERVER_PORT="$server_port"
 export NEXA_SERVER_HOST=127.0.0.1
 export NEXA_WEB_ORIGIN=http://localhost:5173
