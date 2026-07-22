@@ -1,0 +1,8 @@
+{
+  "algorithm": "Ed25519",
+  "keyEnvironment": "test",
+  "keyId": "sha256:b9b4e9287c02eb74e8c00211df083af35fa6c0cfd2ab794271a5c7999adc11e7",
+  "manifestSha256": "cb6b33397244e4380d50b77ca8ef57b63e838a625f6b1e4dad639b7f24d59cf0",
+  "schemaVersion": 1,
+  "signature": "A8NQCkfmUGQCVvXB2txOXYK/r+sap3zggcVeisN7IpCu6recamn7ZBOmLaJXo6ckf+NtFbRT7IPCZKviZ08pAg=="
+}

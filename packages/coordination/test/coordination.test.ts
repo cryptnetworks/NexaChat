@@ -93,6 +93,19 @@ describe('Valkey coordination bounds', () => {
         ),
     ).toThrow(new CoordinationError('invalid_coordination'));
   });
+
+  it('publishes bounded namespaced payloads', async () => {
+    const client = fake();
+    client.publish.mockResolvedValue(1);
+    const store = new ValkeyCoordination(config, client);
+    await store.publish('events', 'bounded');
+    expect(client.publish).toHaveBeenCalledWith('nexa-test:events', 'bounded');
+    await expect(store.publish('events', 'x'.repeat(17))).rejects.toMatchObject(
+      {
+        code: 'invalid_coordination',
+      },
+    );
+  });
 });
 
 describe('Valkey coordination observer', () => {
@@ -273,6 +286,7 @@ function fake() {
     set: vi.fn().mockResolvedValue('OK'),
     eval: vi.fn().mockResolvedValue([1, 10]),
     del: vi.fn().mockResolvedValue(0),
+    publish: vi.fn().mockResolvedValue(0),
     quit: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn(),
     on: vi.fn(),

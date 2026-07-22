@@ -19,6 +19,8 @@ import type { AuthRuntime } from '../src/auth-routes.js';
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
   'postgresql://nexa:local-development-password@127.0.0.1:5432/nexa';
+const databaseConfigured = Boolean(process.env.DATABASE_TEST_URL);
+const integration = databaseConfigured ? describe : describe.skip;
 const databaseName = `nexa_auth_test_${randomUUID().replaceAll('-', '')}`;
 const databaseUrl = new URL(adminUrl);
 databaseUrl.pathname = `/${databaseName}`;
@@ -67,6 +69,7 @@ async function withAdminPool(
 }
 
 beforeAll(async () => {
+  if (!databaseConfigured) return;
   await withAdminPool(async (admin) => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
@@ -77,6 +80,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!databaseConfigured) return;
   const cleanupErrors: Error[] = [];
   if (poolInitialized) {
     try {
@@ -103,7 +107,7 @@ afterAll(async () => {
   }
 });
 
-describe('local authentication HTTP lifecycle', () => {
+integration('local authentication HTTP lifecycle', () => {
   it('registers, logs in with rotation, retrieves account, lists sessions, and logs out', async () => {
     const app = buildApp(undefined, undefined, runtime(pool, true));
     const registered = await register(app, 'Mira');

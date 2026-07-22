@@ -21,6 +21,11 @@ export interface EphemeralCoordination {
     ttlSeconds: number,
   ): Promise<{ count: number; ttlSeconds: number }>;
   delete(key: string): Promise<boolean>;
+  publish(channel: string, value: string): Promise<void>;
+  subscribe(
+    channel: string,
+    listener: (value: string) => void,
+  ): Promise<() => Promise<void>>;
   close(): Promise<void>;
 }
 
@@ -58,6 +63,13 @@ interface Client {
     options: { keys: string[]; arguments: string[] },
   ): Promise<unknown>;
   del(key: string): Promise<number>;
+  publish?(channel: string, value: string): Promise<number>;
+  duplicate?(): Client;
+  subscribe?(
+    channel: string,
+    listener: (value: string) => void,
+  ): Promise<unknown>;
+  unsubscribe?(channel: string): Promise<unknown>;
   quit(): Promise<unknown>;
   destroy(): void;
   on(event: 'error', listener: (error: Error) => void): unknown;
@@ -178,6 +190,48 @@ export class ValkeyCoordination implements EphemeralCoordination {
     return (await this.execute(() => this.client.del(namespacedKey))) > 0;
   }
 
+  async publish(channel: string, value: string): Promise<void> {
+    this.payload(value);
+    const publish = this.client.publish?.bind(this.client);
+    if (!publish) throw unavailable();
+    await this.execute(() => publish(this.key(channel), value));
+  }
+
+  async subscribe(
+    channel: string,
+    listener: (value: string) => void,
+  ): Promise<() => Promise<void>> {
+    const subscriber = this.client.duplicate?.();
+    const subscribe = subscriber?.subscribe?.bind(subscriber);
+    const unsubscribe = subscriber?.unsubscribe?.bind(subscriber);
+    if (!subscriber || !subscribe || !unsubscribe) throw unavailable();
+    const namespaced = this.key(channel);
+    try {
+      await bounded(subscriber.connect(), this.config.connectTimeoutMs);
+      await bounded(
+        subscribe(namespaced, (value) => {
+          if (Buffer.byteLength(value) <= this.config.maxValueBytes)
+            listener(value);
+        }),
+        this.config.operationTimeoutMs,
+      );
+      return async () => {
+        try {
+          await bounded(
+            unsubscribe(namespaced),
+            this.config.operationTimeoutMs,
+          );
+          await bounded(subscriber.quit(), this.config.operationTimeoutMs);
+        } catch {
+          subscriber.destroy();
+        }
+      };
+    } catch {
+      subscriber.destroy();
+      throw unavailable();
+    }
+  }
+
   async close(): Promise<void> {
     const startedAt = Date.now();
     try {
@@ -233,6 +287,9 @@ export class ValkeyCoordination implements EphemeralCoordination {
       ttlSeconds > this.config.maxTtlSeconds
     )
       throw invalid();
+  }
+  private payload(value: string): void {
+    if (Buffer.byteLength(value) > this.config.maxValueBytes) throw invalid();
   }
 
   private success(): void {

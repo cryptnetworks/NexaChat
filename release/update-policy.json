@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "product": "nexa-chat",
+  "targetVersion": "0.1.0",
+  "supportedPaths": [
+    {
+      "sourceVersion": "0.1.0",
+      "targetVersion": "0.1.0",
+      "mode": "same-version-recovery"
+    }
+  ],
+  "channels": {
+    "stable": ["stable"],
+    "beta": ["stable", "beta"],
+    "nightly": ["nightly"]
+  },
+  "platforms": [
+    { "platform": "linux", "arch": "x64" },
+    { "platform": "macos", "arch": "arm64" },
+    { "platform": "macos", "arch": "x64" },
+    { "platform": "windows", "arch": "x64" }
+  ],
+  "maximumMetadataBytes": 32768,
+  "maximumArtifactBytes": 4294967296,
+  "minimumFreeSpaceMultiplier": 2,
+  "installation": {
+    "strategy": "dual-slot-pointer",
+    "dataMigration": "copy-on-write",
+    "automaticRollbackOnUnhealthy": true,
+    "retainedHealthySlots": 2
+  },
+  "requiredScenarios": [
+    "artifact-corruption",
+    "download-interruption",
+    "insufficient-space",
+    "invalid-signature",
+    "migration-failure",
+    "permission-failure",
+    "post-activation-health-failure",
+    "pre-activation-interruption",
+    "release-channel-separation",
+    "successful-activation-and-rollback"
+  ],
+  "evidence": {
+    "maximumBytes": 65536,
+    "retentionDays": 180
+  }
+}

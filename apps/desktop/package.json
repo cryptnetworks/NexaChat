@@ -1,0 +1,14 @@
+{
+  "name": "@nexa/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "dev": "tauri dev",
+    "build:app": "tauri build --no-bundle",
+    "package": "tauri build",
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit"
+  }
+}

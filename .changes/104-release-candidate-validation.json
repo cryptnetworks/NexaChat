@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 104,
+  "category": "changed",
+  "summary": "Add a deterministic release-candidate matrix and evidence-based go or no-go gate.",
+  "audience": "operators",
+  "packages": ["nexa-chat"],
+  "breaking": false,
+  "migration": null
+}

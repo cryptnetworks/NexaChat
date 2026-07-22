@@ -39,6 +39,11 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run release:check
+      - run: npm run release:candidate -- policy
+      - run: npm run release:support -- policy
+      - run: npm run release:update-recovery -- policy
+      - run: npm run release:upgrade -- policy
       - run: npm run test:architecture
       - run: npm run test:contracts
       - run: npm run verify:security-policy
@@ -49,6 +54,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run browser accessibility gate
         run: npm run test:accessibility
+      - run: npm run test:update-recovery
       - run: npm run build
       - run: docker compose config --quiet
       - name: Validate production Compose model

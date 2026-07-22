@@ -7,8 +7,10 @@ import { parseTrustedProxyCidrs } from './client-address.js';
 
 export type RuntimeMode = 'development' | 'test' | 'production';
 export type DeploymentProfile = 'standard' | 'single-host-private';
+export const RUNTIME_CONFIGURATION_SCHEMA_VERSION = 1;
 export interface RuntimeConfig {
   mode: RuntimeMode;
+  configurationSchemaVersion: number;
   deployment: {
     profile: DeploymentProfile;
     publicUrl: string;
@@ -30,6 +32,16 @@ export interface RuntimeConfig {
   database: PostgresConfig;
   objectStorage: { enabled: boolean; config?: ObjectStorageConfig };
   coordination: { enabled: boolean; config?: CoordinationConfig };
+  webPush: {
+    enabled: boolean;
+    config?: {
+      subject: string;
+      publicKey: string;
+      privateKey: string;
+      encryptionKey: string;
+      allowedHosts: string[];
+    };
+  };
   authentication: {
     trustedOrigin: string;
     secureCookies: boolean;
@@ -68,6 +80,7 @@ export class ConfigurationError extends Error {
 
 const keys = new Set([
   'NODE_ENV',
+  'NEXA_CONFIG_SCHEMA',
   'DATABASE_URL',
   'NEXA_DEPLOYMENT_PROFILE',
   'NEXA_PUBLIC_URL',
@@ -111,6 +124,12 @@ const keys = new Set([
   'NEXA_COORDINATION_CIRCUIT_RESET_MS',
   'NEXA_COORDINATION_MAX_VALUE_BYTES',
   'NEXA_COORDINATION_MAX_TTL_SECONDS',
+  'NEXA_WEB_PUSH_ENABLED',
+  'NEXA_WEB_PUSH_SUBJECT',
+  'NEXA_WEB_PUSH_PUBLIC_KEY',
+  'NEXA_WEB_PUSH_PRIVATE_KEY',
+  'NEXA_WEB_PUSH_ENCRYPTION_KEY',
+  'NEXA_WEB_PUSH_ALLOWED_HOSTS',
   'NEXA_WS_MAX_CONNECTIONS',
   'NEXA_WS_MAX_CONNECTIONS_PER_ACCOUNT',
   'NEXA_WS_MAX_CONNECTIONS_PER_ADDRESS',
@@ -150,6 +169,13 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       'NODE_TLS_REJECT_UNAUTHORIZED',
       'cannot disable certificate verification in production',
     );
+  const configurationSchemaVersion = int(
+    env.NEXA_CONFIG_SCHEMA,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    'NEXA_CONFIG_SCHEMA',
+  );
   const connectionString = required(env, 'DATABASE_URL');
   const databaseUrl = url(connectionString, 'DATABASE_URL');
   if (
@@ -298,8 +324,46 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
         'must be enabled for the single-host-private profile',
       );
   }
+  const webPushEnabled = bool(
+    env.NEXA_WEB_PUSH_ENABLED,
+    false,
+    'NEXA_WEB_PUSH_ENABLED',
+  );
+  const webPushSubject = webPushEnabled
+    ? required(env, 'NEXA_WEB_PUSH_SUBJECT')
+    : undefined;
+  if (
+    webPushSubject &&
+    !webPushSubject.startsWith('mailto:') &&
+    !webPushSubject.startsWith('https://')
+  )
+    fail('NEXA_WEB_PUSH_SUBJECT', 'must use mailto or HTTPS');
+  const webPushEncryptionKey = webPushEnabled
+    ? required(env, 'NEXA_WEB_PUSH_ENCRYPTION_KEY')
+    : undefined;
+  if (
+    webPushEncryptionKey &&
+    Buffer.from(webPushEncryptionKey, 'base64url').length !== 32
+  )
+    fail('NEXA_WEB_PUSH_ENCRYPTION_KEY', 'must encode exactly 32 bytes');
+  const webPushAllowedHosts = webPushEnabled
+    ? required(env, 'NEXA_WEB_PUSH_ALLOWED_HOSTS')
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  if (
+    webPushAllowedHosts.length > 32 ||
+    webPushAllowedHosts.some(
+      (value) =>
+        !/^(?:\.)?[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(value) ||
+        !value.includes('.'),
+    )
+  )
+    fail('NEXA_WEB_PUSH_ALLOWED_HOSTS', 'must contain at most 32 DNS suffixes');
   return {
     mode,
+    configurationSchemaVersion,
     deployment: {
       profile: deploymentProfile,
       publicUrl,
@@ -478,6 +542,23 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
                 2_592_000,
                 'NEXA_COORDINATION_MAX_TTL_SECONDS',
               ),
+            },
+          }
+        : {}),
+    },
+    webPush: {
+      enabled: webPushEnabled,
+      ...(webPushEnabled
+        ? {
+            config: {
+              subject:
+                webPushSubject ?? fail('NEXA_WEB_PUSH_SUBJECT', 'is required'),
+              publicKey: required(env, 'NEXA_WEB_PUSH_PUBLIC_KEY'),
+              privateKey: required(env, 'NEXA_WEB_PUSH_PRIVATE_KEY'),
+              encryptionKey:
+                webPushEncryptionKey ??
+                fail('NEXA_WEB_PUSH_ENCRYPTION_KEY', 'is required'),
+              allowedHosts: webPushAllowedHosts,
             },
           }
         : {}),

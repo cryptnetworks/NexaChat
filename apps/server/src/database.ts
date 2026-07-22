@@ -2,6 +2,14 @@ import { CommunityService } from '@nexa/domain';
 import {
   PostgresPersistence,
   PostgresAuthorizationStore,
+  PostgresNotificationAuthorization,
+  PostgresNotificationStore,
+  PostgresNotificationPreferenceAuthorization,
+  PostgresNotificationPreferenceStore,
+  PostgresNotificationReadAuthorization,
+  PostgresNotificationReadStore,
+  PostgresPresenceVisibility,
+  PostgresMemberStatusStore,
   createPostgresPool,
   migratePostgres,
   readMigrations,
@@ -14,11 +22,24 @@ import { createAuthRuntime } from './auth-config.js';
 import { AuthorizationService } from '@nexa/authorization';
 import type { RuntimeConfig } from './config.js';
 import type { Telemetry } from './telemetry.js';
+import {
+  NotificationPreferenceService,
+  NotificationReadService,
+  NotificationService,
+  PresenceService,
+  MemberStatusService,
+} from '@nexa/domain';
+import { WebPushRuntime, type WebPushRuntimeConfig } from './web-push.js';
+import type { EphemeralCoordination } from '@nexa/coordination';
+import { CoordinatedPresence, MEMBER_STATUS_CHANNEL } from './presence.js';
+import { MentionRuntime } from './mentions.js';
 
 export async function initializeDatabase(
   config: PostgresConfig,
   authentication?: RuntimeConfig['authentication'],
   telemetry?: Telemetry,
+  webPushConfig?: WebPushRuntimeConfig,
+  coordination?: EphemeralCoordination,
 ) {
   const startedAt = Date.now();
   const pool = createPostgresPool(config, {
@@ -77,12 +98,71 @@ export async function initializeDatabase(
       },
     },
   );
+  const notificationAuthorization = new PostgresNotificationAuthorization(pool);
+  const notifications = new NotificationService(
+    new PostgresNotificationStore(pool),
+    notificationAuthorization,
+  );
+  const notificationPreferences = new NotificationPreferenceService(
+    new PostgresNotificationPreferenceStore(pool),
+    new PostgresNotificationPreferenceAuthorization(pool),
+  );
+  const notificationReadState = new NotificationReadService(
+    new PostgresNotificationReadStore(pool),
+    new PostgresNotificationReadAuthorization(pool),
+  );
+  const webPush = webPushConfig
+    ? new WebPushRuntime(
+        pool,
+        webPushConfig,
+        notificationAuthorization,
+        notificationPreferences,
+      )
+    : undefined;
+  if (webPush)
+    notifications.setPublisher({
+      publish: (notification) =>
+        webPush.deliver(notification).then(() => undefined),
+    });
+  const memberVisibility = new PostgresPresenceVisibility(pool);
+  const presence = coordination
+    ? new PresenceService(
+        new CoordinatedPresence(coordination),
+        memberVisibility,
+      )
+    : undefined;
+  const memberStatus = new MemberStatusService(
+    new PostgresMemberStatusStore(pool),
+    memberVisibility,
+  );
+  if (coordination)
+    memberStatus.setPublisher({
+      publish: (status) =>
+        coordination.publish(
+          MEMBER_STATUS_CHANNEL,
+          JSON.stringify({
+            accountId: status.accountId,
+            updatedAt: status.updatedAt,
+            version: status.version,
+          }),
+        ),
+    });
+  const mentions = new MentionRuntime(pool, authorization, notifications);
   const readiness = postgresReadiness(pool, telemetry, expectedMigrations);
   return {
     pool,
     service: new CommunityService(persistence, authorization),
     authorization,
     readiness,
+    experience: {
+      notifications,
+      notificationPreferences,
+      notificationReadState,
+      ...(webPush ? { webPush } : {}),
+      ...(presence ? { presence } : {}),
+      memberStatus,
+      mentions,
+    },
     ...(authentication
       ? { auth: createAuthRuntime(pool, authentication) }
       : {}),

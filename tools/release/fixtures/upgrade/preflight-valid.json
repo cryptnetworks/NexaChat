@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "phase": "preflight",
+  "evaluatedAt": "2026-07-22T12:00:00.000Z",
+  "sourceVersion": "0.1.0",
+  "targetVersion": "0.1.0",
+  "sourceChannel": "stable",
+  "targetChannel": "stable",
+  "databaseSchema": 40,
+  "configurationSchema": 1,
+  "backup": {
+    "status": "verified",
+    "verifiedAt": "2026-07-22T06:00:00.000Z",
+    "restoreTestId": "synthetic-restore-test-103"
+  },
+  "space": {
+    "availableBytes": 2000000000,
+    "estimatedInstallBytes": 100000000,
+    "estimatedDatabaseGrowthBytes": 100000000
+  },
+  "artifact": {
+    "verified": true,
+    "commit": "2e25ff58b773bc4a6d9fc47e683568059c5c8232"
+  },
+  "maintenance": {
+    "enabled": true,
+    "activeOldVersionInstances": 0,
+    "runningJobs": 0
+  },
+  "dependencies": {
+    "postgres": "ready",
+    "objectStorage": "disabled",
+    "coordination": "ready"
+  }
+}

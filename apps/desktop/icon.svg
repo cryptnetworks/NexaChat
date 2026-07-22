@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Nexa Chat</title>
+  <defs>
+    <linearGradient id="background" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3157D5"/>
+      <stop offset="1" stop-color="#172C7A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <path d="M258 700V324c0-45 52-70 87-42l334 266V324c0-30 24-54 54-54s54 24 54 54v376c0 45-52 70-87 42L366 476v224c0 30-24 54-54 54s-54-24-54-54Z" fill="#FFF"/>
+  <circle cx="744" cy="760" r="72" fill="#69E1C2"/>
+</svg>

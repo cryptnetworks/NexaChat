@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-stored-account"
+description = "Enables the select_stored_account command without any pre-configured scope."
+commands.allow = ["select_stored_account"]
+
+[[permission]]
+identifier = "deny-select-stored-account"
+description = "Denies the select_stored_account command without any pre-configured scope."
+commands.deny = ["select_stored_account"]

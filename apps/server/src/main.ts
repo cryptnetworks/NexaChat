@@ -170,6 +170,8 @@ async function start(): Promise<void> {
       config.database,
       config.authentication,
       telemetry,
+      config.webPush.config,
+      coordination.coordination,
     );
     interruptIfRequested();
     readiness = new OperationalReadiness(
@@ -196,6 +198,7 @@ async function start(): Promise<void> {
       config.server,
       telemetry,
       coordination.coordination,
+      database.experience,
     );
     if (!database.auth) throw new Error('authentication_unavailable');
     await app.listen({
@@ -211,6 +214,30 @@ async function start(): Promise<void> {
       limits: config.websocket,
       metrics: telemetry.websocketMetrics(),
       rateLimiter: app.requestRateLimiter,
+      ...(coordination.coordination
+        ? { coordination: coordination.coordination }
+        : {}),
+      ...(database.experience.presence
+        ? { presence: database.experience.presence }
+        : {}),
+      memberStatus: database.experience.memberStatus,
+    });
+    await app.websocketHub.ready();
+    database.experience.notificationReadState.setPublisher({
+      publish(state) {
+        app?.websocketHub?.broadcastAccount(state.accountId, {
+          version: 1,
+          type: 'notification_read',
+          state: {
+            stream: state.stream,
+            sequence: state.sequence,
+            eventId: state.eventId,
+            updatedAt: state.updatedAt,
+            version: state.version,
+          },
+        });
+        return Promise.resolve();
+      },
     });
     readiness.markStarted();
     app.log.info({ event: 'startup.ready' }, 'service ready');

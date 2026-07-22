@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import {
   websocketClientMessageSchema,
@@ -6,7 +7,11 @@ import {
   type WebsocketServerMessage,
 } from '@nexa/api-contracts';
 import { AuthenticationError, type AuthenticatedSession } from '@nexa/auth';
-import type { CommunityService } from '@nexa/domain';
+import type {
+  CommunityService,
+  MemberStatusService,
+  PresenceService,
+} from '@nexa/domain';
 import {
   realtimeDeliverySchema,
   realtimeEnvelopeSchema,
@@ -16,6 +21,12 @@ import {
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
 import { createClientAddressResolver } from './client-address.js';
 import type { RateLimitDecision, RequestRateLimiter } from './rate-limit.js';
+import type { EphemeralCoordination } from '@nexa/coordination';
+import {
+  MEMBER_STATUS_CHANNEL,
+  parsePresence,
+  PRESENCE_CHANNEL,
+} from './presence.js';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -45,12 +56,28 @@ export interface WebsocketHubOptions {
   limits?: Partial<WebsocketLimits>;
   metrics?: WebsocketMetrics;
   rateLimiter?: RequestRateLimiter;
+  coordination?: EphemeralCoordination;
+  instanceId?: string;
+  presence?: PresenceService;
+  memberStatus?: MemberStatusService;
 }
 
 export interface WebsocketHub {
   broadcast(spaceId: string, event: RealtimeEnvelope): void;
+  broadcastAccount(
+    accountId: string,
+    message: Extract<WebsocketServerMessage, { type: 'notification_read' }>,
+  ): void;
+  ready(): Promise<void>;
   close(): Promise<void>;
   snapshot?(): { connections: number; subscriptions: number };
+  capacitySnapshot?(): {
+    connections: number;
+    subscriptions: number;
+    queueDepth: number;
+    queueBytes: number;
+    fanout: 'disabled' | 'connecting' | 'ready' | 'degraded';
+  };
 }
 
 declare module 'fastify' {
@@ -79,6 +106,7 @@ interface ConnectionState {
   token: string;
   address: string;
   subscriptions: Set<string>;
+  presenceSubscriptions: Set<string>;
   lastSeenAt: number;
   rateStartedAt: number;
   messagesInWindow: number;
@@ -128,7 +156,17 @@ export function attachWebsocketHub(
   const connections = new Map<WebSocket, ConnectionState>();
   const sequences = new Map<string, number>();
   let outboundQueueBytes = 0;
+  const seenEvents = new Set<string>();
+  const instanceId = options.instanceId ?? randomUUID();
+  let unsubscribeFanout: (() => Promise<void>) | undefined;
+  let unsubscribePresence: (() => Promise<void>) | undefined;
+  let unsubscribeMemberStatus: (() => Promise<void>) | undefined;
   let draining = false;
+  let queuedMessages = 0;
+  let queuedBytes = 0;
+  let fanoutState: 'disabled' | 'connecting' | 'ready' | 'degraded' =
+    options.coordination ? 'connecting' : 'disabled';
+  let fanoutSubscribed = false;
   const wss = new WebSocketServer({
     server,
     path: '/v1/realtime',
@@ -245,6 +283,7 @@ export function attachWebsocketHub(
       token: authenticated.token,
       address: authenticated.address,
       subscriptions: new Set(),
+      presenceSubscriptions: new Set(),
       lastSeenAt: now,
       rateStartedAt: now,
       messagesInWindow: 0,
@@ -290,6 +329,11 @@ export function attachWebsocketHub(
 
   function reportOutboundQueue(): void {
     metrics.gauge('realtime_outbound_queue_bytes', outboundQueueBytes);
+  }
+
+  function reportQueue(): void {
+    metrics.gauge('realtime_queue_depth', queuedMessages);
+    metrics.gauge('realtime_queue_bytes', queuedBytes);
   }
 
   function consume(state: ConnectionState): boolean {
@@ -377,6 +421,56 @@ export function attachWebsocketHub(
       });
       return;
     }
+    if (parsed.data.type === 'presence_subscribe') {
+      if (!options.presence) {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          requestId: parsed.data.requestId,
+          error: 'unavailable',
+        });
+        return;
+      }
+      try {
+        await options.auth.service.authenticate(state.token);
+      } catch {
+        socket.close(1008, 'unauthenticated');
+        return;
+      }
+      state.presenceSubscriptions = new Set(parsed.data.accountIds);
+      safeSend(socket, state, {
+        version: 1,
+        type: 'presence_subscribed',
+        requestId: parsed.data.requestId,
+        accountIds: [...state.presenceSubscriptions],
+      });
+      for (const accountId of state.presenceSubscriptions) {
+        safeSend(socket, state, {
+          version: 1,
+          type: 'presence',
+          presence: {
+            accountId,
+            state: await options.presence.view(
+              state.actorId,
+              accountId,
+              new Date(),
+            ),
+          },
+        });
+        if (options.memberStatus)
+          safeSend(socket, state, {
+            version: 1,
+            type: 'member_status',
+            accountId,
+            status: await options.memberStatus.view(
+              state.actorId,
+              accountId,
+              new Date(),
+            ),
+          });
+      }
+      return;
+    }
     if (parsed.data.type === 'unsubscribe') {
       state.subscriptions.delete(parsed.data.spaceId);
       metrics.increment('realtime_subscription_changed', {
@@ -459,13 +553,28 @@ export function attachWebsocketHub(
     state.outboundBytes += bytes;
     outboundQueueBytes += bytes;
     reportOutboundQueue();
-    socket.send(payload, (error) => {
+    queuedMessages += 1;
+    queuedBytes += bytes;
+    reportQueue();
+    let settled = false;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
       const released = Math.min(bytes, state.outboundBytes);
       state.outboundBytes -= released;
       outboundQueueBytes = Math.max(0, outboundQueueBytes - released);
+      queuedMessages = Math.max(0, queuedMessages - 1);
+      queuedBytes = Math.max(0, queuedBytes - bytes);
       reportOutboundQueue();
+      reportQueue();
       if (error) socket.terminate();
-    });
+    };
+    try {
+      socket.send(payload, settle);
+    } catch (error) {
+      settle(error instanceof Error ? error : new Error('send_failed'));
+      return false;
+    }
     return true;
   }
 
@@ -520,42 +629,239 @@ export function attachWebsocketHub(
   reportConnections();
   reportOutboundQueue();
 
-  return {
-    broadcast(spaceId, rawEvent) {
-      const startedAt = Date.now();
-      const event = realtimeEnvelopeSchema.parse(rawEvent);
-      const sequence = (sequences.get(spaceId) ?? 0) + 1;
-      sequences.set(spaceId, sequence);
-      const delivery = realtimeDeliverySchema.parse({
-        version: 1,
-        type: 'event',
-        spaceId,
-        sequence,
-        event,
-      });
-      let delivered = 0;
-      for (const [socket, state] of connections)
-        if (
-          state.subscriptions.has(spaceId) &&
-          safeSend(socket, state, delivery)
-        )
-          delivered += 1;
-      metrics.increment('realtime_delivery', {
-        reason: delivered > 0 ? 'success' : 'no_subscriber',
-      });
-      metrics.observe?.(
-        'realtime_delivery_duration_ms',
-        Date.now() - startedAt,
-        {
-          outcome: delivered > 0 ? 'success' : 'no_subscriber',
-        },
+  async function startSubscription(
+    channel: string,
+    listener: (payload: string) => void,
+    degradedMetric: string,
+    assign: (unsubscribe: () => Promise<void>) => void,
+    fanout = false,
+  ): Promise<void> {
+    if (!options.coordination) return;
+    try {
+      const unsubscribe = await options.coordination.subscribe(
+        channel,
+        listener,
       );
+      if (draining) await unsubscribe();
+      else {
+        assign(unsubscribe);
+        if (fanout) {
+          fanoutSubscribed = true;
+          fanoutState = 'ready';
+        }
+      }
+    } catch {
+      if (fanout) {
+        fanoutSubscribed = false;
+        fanoutState = 'degraded';
+      }
+      metrics.increment(degradedMetric);
+    }
+  }
+
+  const subscriptionsReady = Promise.all([
+    startSubscription(
+      'realtime:events',
+      (payload) => void receiveFanout(payload),
+      'realtime_fanout_degraded',
+      (unsubscribe) => {
+        unsubscribeFanout = unsubscribe;
+      },
+      true,
+    ),
+    ...(options.presence
+      ? [
+          startSubscription(
+            PRESENCE_CHANNEL,
+            (payload) => void receivePresence(payload),
+            'presence_fanout_degraded',
+            (unsubscribe) => {
+              unsubscribePresence = unsubscribe;
+            },
+          ),
+        ]
+      : []),
+    ...(options.memberStatus
+      ? [
+          startSubscription(
+            MEMBER_STATUS_CHANNEL,
+            (payload) => void receiveMemberStatus(payload),
+            'member_status_fanout_degraded',
+            (unsubscribe) => {
+              unsubscribeMemberStatus = unsubscribe;
+            },
+          ),
+        ]
+      : []),
+  ]).then(() => undefined);
+
+  async function receivePresence(payload: string): Promise<void> {
+    try {
+      if (!options.presence) throw new Error('presence_unavailable');
+      const presence = parsePresence(payload);
+      for (const [socket, state] of connections) {
+        if (!state.presenceSubscriptions.has(presence.accountId)) continue;
+        safeSend(socket, state, {
+          version: 1,
+          type: 'presence',
+          presence: {
+            accountId: presence.accountId,
+            state: await options.presence.view(
+              state.actorId,
+              presence.accountId,
+              new Date(),
+            ),
+          },
+        });
+      }
+    } catch {
+      metrics.increment('presence_fanout_invalid');
+    }
+  }
+
+  async function receiveMemberStatus(payload: string): Promise<void> {
+    try {
+      if (!options.memberStatus) throw new Error('member_status_unavailable');
+      const event = JSON.parse(payload) as Record<string, unknown>;
+      if (
+        typeof event.accountId !== 'string' ||
+        !/^[0-9a-f-]{36}$/i.test(event.accountId) ||
+        typeof event.version !== 'number' ||
+        !Number.isSafeInteger(event.version) ||
+        typeof event.updatedAt !== 'string' ||
+        !Number.isFinite(Date.parse(event.updatedAt))
+      )
+        throw new Error('invalid_member_status_event');
+      for (const [socket, state] of connections) {
+        if (!state.presenceSubscriptions.has(event.accountId)) continue;
+        safeSend(socket, state, {
+          version: 1,
+          type: 'member_status',
+          accountId: event.accountId,
+          status: await options.memberStatus.view(
+            state.actorId,
+            event.accountId,
+            new Date(),
+          ),
+        });
+      }
+    } catch {
+      metrics.increment('member_status_fanout_invalid');
+    }
+  }
+
+  function remember(eventId: string): boolean {
+    if (seenEvents.has(eventId)) {
+      metrics.increment('realtime_event_duplicate');
+      return false;
+    }
+    seenEvents.add(eventId);
+    if (seenEvents.size > 10_000) {
+      const oldest = seenEvents.values().next().value;
+      if (oldest) seenEvents.delete(oldest);
+    }
+    return true;
+  }
+
+  function deliver(spaceId: string, event: RealtimeEnvelope): void {
+    if (!remember(event.id)) return;
+    const sequence = (sequences.get(spaceId) ?? 0) + 1;
+    sequences.set(spaceId, sequence);
+    const delivery = realtimeDeliverySchema.parse({
+      version: 1,
+      type: 'event',
+      spaceId,
+      sequence,
+      event,
+    });
+    for (const [socket, state] of connections)
+      if (state.subscriptions.has(spaceId) && safeSend(socket, state, delivery))
+        metrics.increment('realtime_event_delivered');
+  }
+
+  async function receiveFanout(payload: string): Promise<void> {
+    try {
+      const parsed = JSON.parse(payload) as {
+        instanceId?: unknown;
+        spaceId?: unknown;
+        accountId?: unknown;
+        message?: unknown;
+        event?: unknown;
+      };
+      if (parsed.instanceId === instanceId) return;
+      if (typeof parsed.accountId === 'string') {
+        const message = websocketServerMessageSchema.parse(parsed.message);
+        if (message.type !== 'notification_read') return;
+        if (!remember(message.state.eventId)) return;
+        for (const [socket, state] of connections) {
+          if (state.actorId !== parsed.accountId) continue;
+          try {
+            await options.auth.service.authenticate(state.token);
+            safeSend(socket, state, message);
+          } catch {
+            socket.close(1008, 'unauthenticated');
+          }
+        }
+        return;
+      }
+      if (typeof parsed.spaceId !== 'string') return;
+      const event = realtimeEnvelopeSchema.parse(parsed.event);
+      if (seenEvents.has(event.id)) return;
+      // Revalidate each local subscriber before cross-instance disclosure.
+      for (const state of connections.values()) {
+        if (!state.subscriptions.has(parsed.spaceId)) continue;
+        try {
+          await service.authorizeSpaceSubscription(
+            parsed.spaceId,
+            state.actorId,
+          );
+        } catch {
+          state.subscriptions.delete(parsed.spaceId);
+        }
+      }
+      deliver(parsed.spaceId, event);
+    } catch {
+      metrics.increment('realtime_fanout_invalid');
+    }
+  }
+
+  function publishFanout(payload: string): void {
+    if (!options.coordination) return;
+    void options.coordination.publish('realtime:events', payload).then(
+      () => {
+        fanoutState = fanoutSubscribed ? 'ready' : 'degraded';
+      },
+      () => {
+        fanoutState = 'degraded';
+        metrics.increment('realtime_fanout_degraded');
+      },
+    );
+  }
+
+  return {
+    ready: () => subscriptionsReady,
+    broadcast(spaceId, rawEvent) {
+      const event = realtimeEnvelopeSchema.parse(rawEvent);
+      deliver(spaceId, event);
+      publishFanout(JSON.stringify({ instanceId, spaceId, event }));
+    },
+    broadcastAccount(accountId, rawMessage) {
+      const message = websocketServerMessageSchema.parse(rawMessage);
+      if (message.type !== 'notification_read') return;
+      if (!remember(message.state.eventId)) return;
+      for (const [socket, state] of connections)
+        if (state.actorId === accountId) safeSend(socket, state, message);
+      publishFanout(JSON.stringify({ instanceId, accountId, message }));
     },
     async close() {
       if (draining) return;
       draining = true;
       clearInterval(heartbeat);
       clearInterval(authorizationCheck);
+      await subscriptionsReady;
+      await unsubscribeFanout?.();
+      await unsubscribePresence?.();
+      await unsubscribeMemberStatus?.();
       for (const [socket, state] of connections) {
         safeSend(socket, state, {
           version: 1,
@@ -585,6 +891,18 @@ export function attachWebsocketHub(
           (total, state) => total + state.subscriptions.size,
           0,
         ),
+      };
+    },
+    capacitySnapshot() {
+      return {
+        connections: connections.size,
+        subscriptions: [...connections.values()].reduce(
+          (total, state) => total + state.subscriptions.size,
+          0,
+        ),
+        queueDepth: queuedMessages,
+        queueBytes: queuedBytes,
+        fanout: fanoutState,
       };
     },
   };

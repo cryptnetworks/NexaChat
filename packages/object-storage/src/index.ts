@@ -126,17 +126,29 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
     const startedAt = Date.now();
     return this.observed('put', startedAt, async () => {
       const sha256 = digest(bytes);
-      await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          Key: key,
-          Body: bytes,
-          ContentLength: bytes.byteLength,
-          ContentType: contentType,
-          Metadata: { 'nexa-sha256': sha256 },
-        }),
-        this.options(),
-      );
+      try {
+        await this.client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            Key: key,
+            Body: bytes,
+            ContentLength: bytes.byteLength,
+            ContentType: contentType,
+            Metadata: { 'nexa-sha256': sha256 },
+            IfNoneMatch: '*',
+          }),
+          this.options(),
+        );
+      } catch (error) {
+        if (!alreadyExists(error)) throw error;
+        const existing = await this.get(key);
+        if (
+          existing.byteLength !== bytes.byteLength ||
+          existing.sha256 !== sha256 ||
+          existing.contentType !== contentType
+        )
+          throw new ObjectStorageError('integrity_failure');
+      }
       return { byteLength: bytes.byteLength, sha256 };
     });
   }
@@ -313,4 +325,20 @@ function unsupported(error: unknown): boolean {
 function timedOut(error: unknown): boolean {
   const errorName = name(error);
   return errorName === 'TimeoutError' || errorName === 'AbortError';
+}
+
+function alreadyExists(error: unknown): boolean {
+  if (
+    ['PreconditionFailed', 'ConditionalRequestConflict'].includes(name(error))
+  )
+    return true;
+  if (typeof error !== 'object' || error === null || !('$metadata' in error))
+    return false;
+  const metadata = error.$metadata;
+  return (
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    'httpStatusCode' in metadata &&
+    (metadata.httpStatusCode === 409 || metadata.httpStatusCode === 412)
+  );
 }

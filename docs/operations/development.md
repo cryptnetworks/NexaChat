@@ -55,7 +55,7 @@ install`, or replace pinned image digests as an outage workaround.
 
 ## Runtime configuration
 
-The server reads the environment once at process startup and passes typed configuration into database, authentication, HTTP, and WebSocket composition. Unknown `NEXA_*` keys are rejected so misspellings and removed settings cannot silently weaken behavior. Required values are `DATABASE_URL` and `NEXA_WEB_ORIGIN`. Production additionally requires an exact HTTPS origin, secure cookies, and development identity disabled. Startup reports `invalid_configuration` with the affected key and a safe reason before opening a database connection or listening; configured values are never echoed.
+The server reads the environment once at process startup and passes typed configuration into database, authentication, HTTP, and WebSocket composition. `NEXA_CONFIG_SCHEMA` is currently exactly `1`; absent means the backward-compatible schema-1 default, while any unsupported value fails startup. Unknown `NEXA_*` keys are rejected so misspellings and removed settings cannot silently weaken behavior. Required values are `DATABASE_URL` and `NEXA_WEB_ORIGIN`. Production additionally requires an exact HTTPS origin, secure cookies, and development identity disabled. Startup reports `invalid_configuration` with the affected key and a safe reason before opening a database connection or listening; configured values are never echoed.
 
 `.env.example` is the development inventory. It includes bounded server body
 size, request and shutdown timeouts; structured log level and trace sample rate;
@@ -67,6 +67,8 @@ already-running process exposes required dependency loss through
 `/health/ready` and automatically reports ready again after PostgreSQL recovers.
 
 For production, supply secrets through the deployment secret manager rather than committing an environment file. Rotate database credentials by creating a replacement credential, updating instances, confirming readiness, then revoking the old credential. If rotation fails, restore the prior secret while it remains valid. Recovery after an outage requires no configuration mutation; readiness is rechecked on every probe. Configuration rollback means restoring the previously reviewed key set and restarting. Retain a database backup before migrations as described below.
+
+Web notifications are disabled by default. Enabling them requires an explicit VAPID subject and key pair plus a separate 32-byte encryption key and an operator-reviewed push-service DNS suffix allowlist. The allowlist prevents user-controlled subscriptions from turning delivery into a private-network request primitive. Endpoints and browser key material are encrypted in PostgreSQL; only endpoint hashes, subscription identifiers, and generic notification routes appear in ordinary application state. Push payloads never contain message text, actor names, community names, or resource identifiers. Rotate VAPID or encryption keys during a controlled maintenance window and revoke existing subscriptions when old ciphertext can no longer be decrypted.
 
 ## Local authentication
 

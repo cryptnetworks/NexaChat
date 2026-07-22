@@ -12,7 +12,7 @@ Local development may create the configured bucket. The Compose SeaweedFS creden
 
 ## Integrity, cleanup, and recovery
 
-Writes store a SHA-256 digest in private object metadata. Reads verify both that digest and the declared byte length, and reject oversized or altered objects with `integrity_failure`. Operations use a bounded timeout and one SDK attempt so retries remain owned by the calling job. Prefix cleanup lists at most the configured page size and deletes only returned opaque keys; callers must persist progress and repeat bounded pages.
+Writes use a create-only condition and store a SHA-256 digest in private object metadata. An ambiguous retry succeeds only when the existing length, calculated digest, metadata digest, and content type match; it can never overwrite different bytes. Reads verify both the digest and declared byte length and reject oversized or altered objects with `integrity_failure`. Operations use a bounded timeout and one SDK attempt so retries remain owned by the calling job. Prefix cleanup lists at most the configured page size and deletes only returned opaque keys; callers must persist progress and repeat bounded pages. See the [failure-recovery runbook](failure-recovery.md).
 
 If startup or runtime verification fails, check endpoint reachability,
 credentials, bucket existence, and bucket policy without logging secrets.

@@ -8,9 +8,13 @@ Local account registration and login use Argon2id password hashes and revocable 
 
 - Node.js 24.18.0 (pinned in `.node-version`, `.nvmrc`, and `.tool-versions`)
 - npm 11.16.0 (pinned by `packageManager`)
+- Rust 1.97.1 (pinned by `rust-toolchain.toml`) for desktop development
 - Docker Engine with Docker Compose, for PostgreSQL and local adapter services
 
-Rust desktop prerequisites are not currently satisfied on the verified development machine. See [Desktop status](#desktop-status).
+Desktop packaging also requires the target platform prerequisites described in
+the [desktop architecture guide](docs/architecture/desktop.md). Supported and
+unsupported browser, desktop, server, dependency, and protocol combinations are
+defined by the [support and compatibility policy](docs/releases/support-compatibility.md).
 
 ## Local setup
 
@@ -44,15 +48,20 @@ npm run test:config
 npm run test:architecture
 npm run test:contracts
 npm run verify:security-policy
+npm run test:performance
+npm run test:realtime-capacity
+npm run test:resilience
+npm run test:desktop
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
+npm run desktop:build
 docker compose config --quiet
 npm audit
 npm run verify:clean-env
 ```
 
-`npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
+`npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts. The bounded API benchmark and its disposable-PostgreSQL release profile are documented in the [performance runbook](docs/operations/performance.md). Connection, fan-out, reconnect, slow-consumer, Valkey, and soak workloads are documented in the [real-time capacity runbook](docs/operations/realtime-capacity.md). Immutable storage retries, worker leases, checkpoints, and injected recovery failures are documented in the [failure-recovery runbook](docs/operations/failure-recovery.md).
 
 Pull requests also run immutable dependency review, full-history and proposed-tree secret scanning, pinned static analysis, license/migration/workflow checks, validated CycloneDX output, and a disposable encrypted backup/restore cycle. Scheduled default-branch verification adds production image scans and BuildKit provenance validation. See the [supply-chain security guide](docs/operations/supply-chain-security.md) for trust boundaries, thresholds, triage, suppressions, and local reproduction, and the [backup and restore runbook](docs/operations/backup-and-restore.md) for recovery.
 
@@ -94,6 +103,7 @@ local credentials and never creates a real tunnel.
 - `packages/realtime-contracts` owns versioned server event envelopes and reuses message response schemas from `api-contracts`.
 - `packages/domain` contains storage ports, the community service, authorization rules, and an in-memory test adapter without transport-specific logic.
 - `packages/postgres` implements the storage ports, connection pooling, schema verification, and concurrency-safe migrations.
+- [Data lifecycle and retention model](docs/privacy/data-lifecycle.md) defines policy precedence, export and deletion handling, legal holds, backup recovery, and operator responsibilities.
 
 Malformed HTTP input returns a stable `invalid_request` response with a correlation ID and no validation internals. Malformed WebSocket messages return `invalid_message`; missing and unauthorized subscription targets both return the non-disclosing `unavailable` error.
 
@@ -111,16 +121,25 @@ Community invitations are bounded, revocable, optionally account-targeted, and s
 
 ## Desktop status
 
-The web/domain split is suitable for a thin Tauri shell without duplicating interface or domain logic, but the desktop scaffold is deferred because `rustc`, `cargo`, and the Tauri CLI are not installed locally. Xcode 26.6 is available.
-
-Before adding `apps/desktop`, install the stable Rust toolchain (including `rustc` and `cargo`) using the official Rust installer, ensure the macOS Xcode command-line tools are selected, and make the Tauri CLI available as a repository-local development dependency. The future desktop package should load or build `apps/web` and expose root-level desktop development and build commands.
+`apps/desktop` is a thin Tauri 2 shell that builds and loads `apps/web`. The
+Rust toolchain and repository-local Tauri CLI are pinned, native capabilities
+are explicit, and the shell exposes no application IPC commands or shell
+execution. Use `npm run desktop:dev` for development, `npm run desktop:build`
+for a native executable, and `npm run desktop:package` only on a host prepared
+to package the target platform. See the
+[desktop architecture guide](docs/architecture/desktop.md) for the verified
+platform scope and trust boundary.
 
 ## Current limitations
 
 - PostgreSQL persistence, a private S3-compatible object-storage adapter, and a resilient Valkey coordination adapter are implemented. Attachment and coordination application flows are not connected.
 - Real-time sequences are intentionally process-local and are gap signals, not durable replay cursors; HTTP history remains authoritative after reconnects and server restarts.
 - The web client provides keyboard-accessible community/category/space navigation and loading, empty, and error states; lifecycle administration forms are not yet exposed.
-- There is no desktop application scaffold until the documented toolchain is available.
+- Desktop navigation, protected credentials, and privacy-preserving native
+  notification adapters are implemented and locally tested. Production
+  signing/notarization, a protected update service, and retained validation on
+  every supported platform are not complete, so no production desktop release
+  is claimed.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
 Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [observability guide](docs/operations/observability.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).

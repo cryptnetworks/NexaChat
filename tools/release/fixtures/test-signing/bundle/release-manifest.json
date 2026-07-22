@@ -1,0 +1,54 @@
+{
+  "channel": "beta",
+  "checksums": {
+    "name": "SHA256SUMS",
+    "sha256": "5c16a7c881c6c2b80884648e93d0dc02a888ae5789f54a4b0246b1977bc7fc97"
+  },
+  "files": [
+    {
+      "bytes": 59,
+      "kind": "artifact",
+      "name": "NexaChat-0.1.0-beta-macos-arm64.dmg",
+      "sha256": "77ad6dac0764a8cd386654df1c7a7c1e3b3f06f5227c7edf0670a4e3fe7fed8d"
+    },
+    {
+      "bytes": 91,
+      "kind": "sbom",
+      "name": "NexaChat-0.1.0-desktop-cargo.cdx.json",
+      "sha256": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7"
+    },
+    {
+      "bytes": 91,
+      "kind": "sbom",
+      "name": "NexaChat-0.1.0-source-npm.cdx.json",
+      "sha256": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7"
+    },
+    {
+      "bytes": 1978,
+      "kind": "provenance",
+      "name": "provenance.intoto.jsonl",
+      "sha256": "fcba96ec0945267ae205235b0c4155f56707af5a58389e0e8bb9cd56326d74ff"
+    }
+  ],
+  "product": "nexa-chat",
+  "provenance": {
+    "name": "provenance.intoto.jsonl",
+    "sha256": "fcba96ec0945267ae205235b0c4155f56707af5a58389e0e8bb9cd56326d74ff"
+  },
+  "schemaVersion": 1,
+  "signing": {
+    "algorithm": "Ed25519",
+    "detached": true,
+    "publicKeyEmbedded": false
+  },
+  "source": {
+    "commit": "80b16a2a1e043f650ebb643476af0954d34f3558",
+    "repository": "https://github.com/cryptnetworks/NexaChat",
+    "sourceDateEpoch": 1784678400
+  },
+  "target": {
+    "arch": "arm64",
+    "platform": "macos"
+  },
+  "version": "0.1.0"
+}

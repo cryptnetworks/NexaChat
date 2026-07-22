@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "product": "nexa-chat",
+  "targetVersion": "0.1.0",
+  "retentionDays": 180,
+  "maxEvidenceBytes": 1048576,
+  "maxResidualRisks": 32,
+  "maximumAcceptedRisk": "medium",
+  "requiredTargets": [
+    { "platform": "linux", "arch": "x64" },
+    { "platform": "macos", "arch": "arm64" },
+    { "platform": "macos", "arch": "x64" },
+    { "platform": "windows", "arch": "x64" }
+  ],
+  "requiredGlobalChecks": [
+    "accessibility",
+    "authorization",
+    "backup-restore",
+    "clean-install",
+    "compatibility-review",
+    "dependency-audit",
+    "failure-recovery",
+    "format",
+    "lint",
+    "localization",
+    "performance",
+    "postgresql",
+    "production-build",
+    "provenance",
+    "realtime-capacity",
+    "rollback-rehearsal",
+    "rolling-upgrade",
+    "secret-scan",
+    "unit-integration",
+    "upgrade-rehearsal"
+  ],
+  "requiredTargetChecks": [
+    "clean-install",
+    "credential-store",
+    "desktop-security",
+    "native-notifications",
+    "package",
+    "reconnect",
+    "reproducible-build",
+    "smoke",
+    "update-recovery"
+  ],
+  "requireProductionDetachedSignature": true,
+  "requireNativeSignatureOn": ["macos", "windows"],
+  "requireBuildAttestation": true,
+  "requireBothSboms": true
+}

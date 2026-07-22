@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 103,
+  "category": "changed",
+  "summary": "Define fail-closed upgrade policy, migration preflight, postflight checks, and rollback boundaries.",
+  "audience": "operators",
+  "packages": ["@nexa/postgres", "@nexa/server", "nexa-chat"],
+  "breaking": false,
+  "migration": null
+}
