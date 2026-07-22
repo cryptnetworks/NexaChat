@@ -10,6 +10,8 @@ import {
 import type {
   Account,
   AuditEvent,
+  ModerationRestriction,
+  ModerationAuditEvent,
   Category,
   Community,
   Invitation,
@@ -85,6 +87,8 @@ export class PostgresPersistence implements Persistence {
   readonly sessions;
   readonly invitations;
   readonly auditEvents;
+  readonly moderationRestrictions;
+  readonly moderationAuditEvents;
 
   constructor(
     private readonly pool: Pool,
@@ -101,6 +105,8 @@ export class PostgresPersistence implements Persistence {
     this.sessions = sessionRepository(queryable);
     this.invitations = invitationRepository(queryable);
     this.auditEvents = auditEventRepository(queryable);
+    this.moderationRestrictions = moderationRestrictionRepository(queryable);
+    this.moderationAuditEvents = moderationAuditRepository(queryable);
   }
 
   async transaction<T>(
@@ -596,6 +602,36 @@ type AuditEventRow = {
   action: AuditEvent['action'];
   outcome: AuditEvent['outcome'];
   occurred_at: Date;
+};
+type ModerationRestrictionRow = {
+  id: string;
+  community_id: string;
+  actor_id: string;
+  target_account_id: string;
+  kind: 'timeout';
+  reason: string;
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
+  version: number;
+};
+type ModerationAuditRow = {
+  id: string;
+  community_id: string;
+  actor_id: string;
+  target_account_id: string | null;
+  target_message_id: string | null;
+  action: string;
+  outcome: 'succeeded' | 'rejected';
+  reason: string | null;
+  correlation_id: string;
+  occurred_at: Date;
+  previous_hash: string | null;
+  event_hash: string;
+  metadata: Record<string, string | number | boolean | null>;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1156,6 +1192,115 @@ function auditEventRepository(db: Queryable): Persistence['auditEvents'] {
   };
 }
 
+function moderationRestrictionRepository(
+  db: Queryable,
+): Persistence['moderationRestrictions'] {
+  const fields =
+    'id, community_id, actor_id, target_account_id, kind, reason, request_fingerprint, idempotency_key, correlation_id, created_at, expires_at, revoked_at, version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `INSERT INTO moderation_restrictions
+          (id, community_id, actor_id, target_account_id, kind, reason,
+           request_fingerprint, idempotency_key, correlation_id, created_at, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (actor_id, community_id, idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.actorId,
+          value.targetAccountId,
+          value.kind,
+          value.reason,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.expiresAt,
+        ],
+      );
+      return mapModerationRestriction(requiredRow(result.rows));
+    },
+    async findByIdempotencyKey(actorId, communityId, key) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions
+         WHERE actor_id=$1 AND community_id=$2 AND idempotency_key=$3`,
+        [actorId, communityId, key],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+    async findEffective(communityId, accountId) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions
+         WHERE community_id=$1 AND target_account_id=$2 AND revoked_at IS NULL
+           AND expires_at>CURRENT_TIMESTAMP
+         ORDER BY expires_at DESC,id DESC LIMIT 1`,
+        [communityId, accountId],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+    async revoke(id, expectedVersion, revokedAt) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `UPDATE moderation_restrictions
+         SET revoked_at=COALESCE(revoked_at,$3),version=version+1
+         WHERE id=$1 AND version=$2 RETURNING ${fields}`,
+        [id, expectedVersion, revokedAt],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
+  };
+}
+
+function moderationAuditRepository(
+  db: Queryable,
+): Persistence['moderationAuditEvents'] {
+  const fields =
+    'id, community_id, actor_id, target_account_id, target_message_id, action, outcome, reason, correlation_id, occurred_at, previous_hash, event_hash, metadata';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationAuditRow>(
+        `INSERT INTO moderation_audit_events
+          (id, community_id, actor_id, target_account_id, target_message_id,
+           action, outcome, reason, correlation_id, occurred_at, previous_hash,
+           event_hash, metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.actorId,
+          value.targetAccountId,
+          value.targetMessageId,
+          value.action,
+          value.outcome,
+          value.reason,
+          value.correlationId,
+          value.occurredAt,
+          value.previousHash,
+          value.eventHash,
+          value.metadata,
+        ],
+      );
+      return mapModerationAudit(requiredRow(result.rows));
+    },
+    async latestHash(communityId) {
+      const result = await db.query<{ event_hash: string }>(
+        `SELECT event_hash FROM moderation_audit_events
+         WHERE community_id=$1 ORDER BY occurred_at DESC,id DESC LIMIT 1`,
+        [communityId],
+      );
+      return result.rows[0]?.event_hash;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1276,6 +1421,38 @@ const mapAuditEvent = (row: AuditEventRow): AuditEvent => ({
   action: row.action,
   outcome: row.outcome,
   occurredAt: row.occurred_at.toISOString(),
+});
+const mapModerationRestriction = (
+  row: ModerationRestrictionRow,
+): ModerationRestriction => ({
+  id: row.id,
+  communityId: row.community_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  kind: row.kind,
+  reason: row.reason,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  expiresAt: row.expires_at.toISOString(),
+  revokedAt: row.revoked_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapModerationAudit = (row: ModerationAuditRow): ModerationAuditEvent => ({
+  id: row.id,
+  communityId: row.community_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  targetMessageId: row.target_message_id,
+  action: row.action,
+  outcome: row.outcome,
+  reason: row.reason,
+  correlationId: row.correlation_id,
+  occurredAt: row.occurred_at.toISOString(),
+  previousHash: row.previous_hash,
+  eventHash: row.event_hash,
+  metadata: row.metadata,
 });
 
 interface Migration {

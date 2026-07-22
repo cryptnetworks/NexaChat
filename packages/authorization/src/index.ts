@@ -15,6 +15,7 @@ export const permissionCatalog = [
   'invitation.create',
   'invitation.manage',
   'moderation.ban',
+  'moderation.timeout',
   'moderation.audit',
 ] as const;
 export type Permission = (typeof permissionCatalog)[number];
@@ -191,6 +192,45 @@ export class AuthorizationService {
       });
       if (!authority.allowed) throw new AuthorizationError(authority.reason);
       return store.putDecision(decision);
+    });
+  }
+  assertCanModerate(
+    actorId: string,
+    targetId: string,
+    communityId: string,
+    permission: Permission,
+  ): Promise<void> {
+    return this.store.transaction(async (store) => {
+      const scopes = [{ type: 'community' as const, id: communityId }];
+      const [actor, target] = await Promise.all([
+        store.snapshot(actorId, scopes),
+        store.snapshot(targetId, scopes),
+      ]);
+      const authority = evaluatePermission({
+        ...actor,
+        permission,
+        scopes,
+      });
+      if (!authority.allowed || actorId === targetId)
+        throw new AuthorizationError(authority.reason);
+      if (target.actor.ownerOf?.includes(communityId))
+        throw new AuthorizationError('deny');
+      if (actor.actor.ownerOf?.includes(communityId)) return;
+      const position = (snapshot: AuthorizationSnapshot, subject: string) =>
+        Math.max(
+          -1,
+          ...snapshot.roles
+            .filter((role) =>
+              snapshot.assignments.some(
+                (assignment) =>
+                  assignment.actorId === subject &&
+                  assignment.roleId === role.id,
+              ),
+            )
+            .map((role) => role.position),
+        );
+      if (position(actor, actorId) <= position(target, targetId))
+        throw new AuthorizationError('deny');
     });
   }
   async updateRole(

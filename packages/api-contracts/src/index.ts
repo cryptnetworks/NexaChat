@@ -145,6 +145,7 @@ export const permissionSchema = z.enum([
   'invitation.create',
   'invitation.manage',
   'moderation.ban',
+  'moderation.timeout',
   'moderation.audit',
 ]);
 export const permissionScopeSchema = z.object({
@@ -245,6 +246,29 @@ export const reactionAggregateSchema = z.object({
   key: reactionKeySchema,
   count: z.number().int().positive(),
   reactedByActor: z.boolean(),
+});
+export const timeoutMemberSchema = z
+  .object({
+    actorId: id,
+    targetAccountId: id,
+    durationSeconds: z.number().int().min(60).max(2_592_000),
+    reason: z.string().trim().min(1).max(500),
+    idempotencyKey: z.string().min(8).max(128),
+  })
+  .strict();
+export const moderationRestrictionSchema = z.object({
+  id,
+  communityId: id,
+  actorId: id,
+  targetAccountId: id,
+  kind: z.literal('timeout'),
+  reason: z.string().min(1).max(500),
+  idempotencyKey: z.string().min(8).max(128),
+  correlationId: id,
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  revokedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
 });
 export const invitationSchema = z.object({
   id,

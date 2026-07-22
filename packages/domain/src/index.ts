@@ -90,6 +90,36 @@ export interface AuditEvent {
   outcome: 'succeeded' | 'rejected';
   occurredAt: string;
 }
+export interface ModerationRestriction {
+  id: string;
+  communityId: string;
+  actorId: string;
+  targetAccountId: string;
+  kind: 'timeout';
+  reason: string;
+  requestFingerprint: string;
+  idempotencyKey: string;
+  correlationId: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  version: number;
+}
+export interface ModerationAuditEvent {
+  id: string;
+  communityId: string;
+  actorId: string;
+  targetAccountId: string | null;
+  targetMessageId: string | null;
+  action: string;
+  outcome: 'succeeded' | 'rejected';
+  reason: string | null;
+  correlationId: string;
+  occurredAt: string;
+  previousHash: string | null;
+  eventHash: string;
+  metadata: Record<string, string | number | boolean | null>;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -228,6 +258,28 @@ export interface Persistence {
     create(event: AuditEvent): Promise<AuditEvent>;
     list(communityId: string): Promise<AuditEvent[]>;
   };
+  moderationRestrictions: {
+    create(value: ModerationRestriction): Promise<ModerationRestriction>;
+    findByIdempotencyKey(
+      actorId: string,
+      communityId: string,
+      key: string,
+    ): Promise<ModerationRestriction | undefined>;
+    findEffective(
+      communityId: string,
+      accountId: string,
+      now: string,
+    ): Promise<ModerationRestriction | undefined>;
+    revoke(
+      id: string,
+      expectedVersion: number,
+      revokedAt: string,
+    ): Promise<ModerationRestriction | undefined>;
+  };
+  moderationAuditEvents: {
+    create(value: ModerationAuditEvent): Promise<ModerationAuditEvent>;
+    latestHash(communityId: string): Promise<string | undefined>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -266,9 +318,18 @@ export interface AuthorizationGateway {
       | 'message.manage'
       | 'space.view'
       | 'invitation.create'
-      | 'invitation.manage',
+      | 'invitation.manage'
+      | 'moderation.timeout'
+      | 'moderation.ban'
+      | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
+  assertCanModerate?(
+    actorId: string,
+    targetId: string,
+    communityId: string,
+    permission: 'moderation.timeout' | 'moderation.ban',
+  ): Promise<void>;
 }
 
 const normalizeName = (value: string): string =>
@@ -318,6 +379,11 @@ function reactionKey(value: string): string {
     /[\p{L}\p{N}]/u.test(normalized)
   )
     throw new DomainError('conflict');
+  return normalized;
+}
+function moderationReason(value: string): string {
+  const normalized = value.trim().replace(/\s+/g, ' ').normalize('NFC');
+  if (!normalized || normalized.length > 500) throw new DomainError('conflict');
   return normalized;
 }
 
@@ -394,6 +460,107 @@ export class CommunityService {
       });
       return community;
     });
+  }
+
+  async timeoutMember(
+    actorId: string,
+    communityId: string,
+    targetAccountId: string,
+    durationSeconds: number,
+    reasonValue: string,
+    keyValue: string,
+    correlationId: string,
+  ): Promise<ModerationRestriction> {
+    const reason = moderationReason(reasonValue);
+    const key = idempotencyKey(keyValue);
+    if (
+      !Number.isInteger(durationSeconds) ||
+      durationSeconds < 60 ||
+      durationSeconds > 2_592_000
+    )
+      throw new DomainError('conflict');
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ targetAccountId, durationSeconds, reason }))
+      .digest('hex');
+    try {
+      await this.assertModerationHierarchy(
+        actorId,
+        targetAccountId,
+        communityId,
+        'moderation.timeout',
+      );
+      return await this.persistence.transaction(async (persistence) => {
+        const existing =
+          await persistence.moderationRestrictions.findByIdempotencyKey(
+            actorId,
+            communityId,
+            key,
+          );
+        if (existing) {
+          if (existing.requestFingerprint !== fingerprint)
+            throw new DomainError('conflict');
+          return existing;
+        }
+        const community = await persistence.communities.findById(communityId);
+        const target = await persistence.memberships.findByCommunityAndAccount(
+          communityId,
+          targetAccountId,
+        );
+        if (
+          !community ||
+          community.archivedAt ||
+          community.ownerId === targetAccountId ||
+          !target ||
+          target.status !== 'active'
+        )
+          throw new DomainError('not_found');
+        await this.assertModerationHierarchy(
+          actorId,
+          targetAccountId,
+          communityId,
+          'moderation.timeout',
+        );
+        const createdAt = new Date().toISOString();
+        const restriction = await persistence.moderationRestrictions.create({
+          id: randomUUID(),
+          communityId,
+          actorId,
+          targetAccountId,
+          kind: 'timeout',
+          reason,
+          requestFingerprint: fingerprint,
+          idempotencyKey: key,
+          correlationId,
+          createdAt,
+          expiresAt: new Date(
+            new Date(createdAt).getTime() + durationSeconds * 1000,
+          ).toISOString(),
+          revokedAt: null,
+          version: 1,
+        });
+        await this.writeModerationAudit(persistence, {
+          communityId,
+          actorId,
+          targetAccountId,
+          action: 'member.timeout',
+          outcome: 'succeeded',
+          reason,
+          correlationId,
+          metadata: { durationSeconds, restrictionId: restriction.id },
+        });
+        return restriction;
+      });
+    } catch (error) {
+      await this.writeRejectedModerationAudit({
+        communityId,
+        actorId,
+        targetAccountId,
+        action: 'member.timeout',
+        reason,
+        correlationId,
+      });
+      throw error;
+    }
   }
 
   async listCommunities(
@@ -1117,6 +1284,82 @@ export class CommunityService {
       return mutation(message, persistence);
     });
   }
+  private async assertModerationHierarchy(
+    actorId: string,
+    targetAccountId: string,
+    communityId: string,
+    permission: 'moderation.timeout' | 'moderation.ban',
+  ): Promise<void> {
+    if (this.authorization?.assertCanModerate) {
+      await this.authorization.assertCanModerate(
+        actorId,
+        targetAccountId,
+        communityId,
+        permission,
+      );
+      return;
+    }
+    const community = await this.persistence.communities.findById(communityId);
+    if (
+      !community ||
+      community.ownerId !== actorId ||
+      actorId === targetAccountId
+    )
+      throw new DomainError('forbidden');
+    await this.enforce(actorId, permission, [
+      { type: 'community', id: communityId },
+    ]);
+  }
+
+  private async writeModerationAudit(
+    persistence: Persistence,
+    input: {
+      communityId: string;
+      actorId: string;
+      targetAccountId: string | null;
+      action: string;
+      outcome: 'succeeded' | 'rejected';
+      reason: string | null;
+      correlationId: string;
+      metadata?: Record<string, string | number | boolean | null>;
+    },
+  ): Promise<void> {
+    const occurredAt = new Date().toISOString();
+    const previousHash =
+      (await persistence.moderationAuditEvents.latestHash(input.communityId)) ??
+      null;
+    const material = JSON.stringify({
+      ...input,
+      metadata: input.metadata ?? {},
+      occurredAt,
+      previousHash,
+    });
+    await persistence.moderationAuditEvents.create({
+      id: randomUUID(),
+      ...input,
+      targetMessageId: null,
+      occurredAt,
+      previousHash,
+      eventHash: createHash('sha256').update(material).digest('hex'),
+      metadata: input.metadata ?? {},
+    });
+  }
+
+  private async writeRejectedModerationAudit(
+    input: Omit<
+      Parameters<CommunityService['writeModerationAudit']>[1],
+      'outcome'
+    >,
+  ): Promise<void> {
+    try {
+      await this.writeModerationAudit(this.persistence, {
+        ...input,
+        outcome: 'rejected',
+      });
+    } catch {
+      // Audit failure must not replace or disclose the original denial.
+    }
+  }
   async authorizeSpaceSubscription(
     spaceId: string,
     actorId: string,
@@ -1157,6 +1400,16 @@ export class CommunityService {
       return;
     }
     const communityId = scopes.find((scope) => scope.type === 'community')?.id;
+    if (
+      communityId &&
+      !permission.startsWith('moderation.') &&
+      (await this.persistence.moderationRestrictions.findEffective(
+        communityId,
+        actorId,
+        new Date().toISOString(),
+      ))
+    )
+      throw new DomainError('forbidden');
     const community = communityId
       ? await this.persistence.communities.findById(communityId)
       : undefined;
@@ -1190,6 +1443,8 @@ type MemoryState = {
   sessions: Map<string, SessionRecord>;
   invitations: Map<string, Invitation>;
   auditEvents: Map<string, AuditEvent>;
+  moderationRestrictions: Map<string, ModerationRestriction>;
+  moderationAuditEvents: Map<string, ModerationAuditEvent>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -1203,6 +1458,8 @@ const clone = (state: MemoryState): MemoryState => ({
   sessions: new Map(state.sessions),
   invitations: new Map(state.invitations),
   auditEvents: new Map(state.auditEvents),
+  moderationRestrictions: new Map(state.moderationRestrictions),
+  moderationAuditEvents: new Map(state.moderationAuditEvents),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -1230,6 +1487,8 @@ export class InMemoryPersistence implements Persistence {
     sessions: new Map(),
     invitations: new Map(),
     auditEvents: new Map(),
+    moderationRestrictions: new Map(),
+    moderationAuditEvents: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -1586,6 +1845,69 @@ export class InMemoryPersistence implements Persistence {
       [...this.state.auditEvents.values()].filter(
         (event) => event.communityId === communityId,
       ),
+  };
+  readonly moderationRestrictions = {
+    create: async (value: ModerationRestriction) => {
+      const existing = await this.moderationRestrictions.findByIdempotencyKey(
+        value.actorId,
+        value.communityId,
+        value.idempotencyKey,
+      );
+      if (existing) return existing;
+      this.state.moderationRestrictions.set(value.id, value);
+      return value;
+    },
+    findByIdempotencyKey: async (
+      actorId: string,
+      communityId: string,
+      key: string,
+    ) =>
+      [...this.state.moderationRestrictions.values()].find(
+        (value) =>
+          value.actorId === actorId &&
+          value.communityId === communityId &&
+          value.idempotencyKey === key,
+      ),
+    findEffective: async (
+      communityId: string,
+      accountId: string,
+      now: string,
+    ) =>
+      [...this.state.moderationRestrictions.values()]
+        .filter(
+          (value) =>
+            value.communityId === communityId &&
+            value.targetAccountId === accountId &&
+            !value.revokedAt &&
+            value.expiresAt > now,
+        )
+        .sort((left, right) =>
+          right.expiresAt.localeCompare(left.expiresAt),
+        )[0],
+    revoke: async (id: string, version: number, revokedAt: string) =>
+      this.updateMap(
+        this.state.moderationRestrictions,
+        id,
+        version,
+        (value) => ({
+          ...value,
+          revokedAt: value.revokedAt ?? revokedAt,
+        }),
+      ),
+  };
+  readonly moderationAuditEvents = {
+    create: async (value: ModerationAuditEvent) => {
+      this.state.moderationAuditEvents.set(value.id, value);
+      return value;
+    },
+    latestHash: async (communityId: string) =>
+      [...this.state.moderationAuditEvents.values()]
+        .filter((value) => value.communityId === communityId)
+        .sort(
+          (left, right) =>
+            right.occurredAt.localeCompare(left.occurredAt) ||
+            right.id.localeCompare(left.id),
+        )[0]?.eventHash,
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

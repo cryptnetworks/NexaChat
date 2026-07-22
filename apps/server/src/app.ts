@@ -32,6 +32,8 @@ import {
   type ErrorResponse,
   reactionMutationSchema,
   reactionAggregateSchema,
+  timeoutMemberSchema,
+  moderationRestrictionSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -515,6 +517,24 @@ export function buildApp(
           token: created.token,
         }),
       );
+    },
+  );
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/timeouts',
+    async (request, reply) => {
+      const input = timeoutMemberSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const timeout = await service.timeoutMember(
+        actorId,
+        request.params.communityId,
+        input.targetAccountId,
+        input.durationSeconds,
+        input.reason,
+        input.idempotencyKey,
+        request.id,
+      );
+      return reply.code(201).send(moderationRestrictionSchema.parse(timeout));
     },
   );
 
