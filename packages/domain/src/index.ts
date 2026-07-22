@@ -56,6 +56,17 @@ export interface Message {
   deletedAt: string | null;
   version: number;
 }
+export interface MessageReaction {
+  messageId: string;
+  actorId: string;
+  key: string;
+  createdAt: string;
+}
+export interface ReactionAggregate {
+  key: string;
+  count: number;
+  reactedByActor: boolean;
+}
 export interface Invitation {
   id: string;
   communityId: string;
@@ -180,6 +191,11 @@ export interface Persistence {
     ): Promise<Message | undefined>;
     remove(id: string): Promise<boolean>;
   };
+  reactions: {
+    add(reaction: MessageReaction): Promise<boolean>;
+    remove(messageId: string, actorId: string, key: string): Promise<boolean>;
+    list(messageId: string, actorId: string): Promise<ReactionAggregate[]>;
+  };
   invitations: {
     create(invitation: Invitation): Promise<Invitation>;
     findById(id: string): Promise<Invitation | undefined>;
@@ -267,6 +283,22 @@ function messageBody(value: string): string {
 function idempotencyKey(value: string): string {
   const normalized = value.trim();
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(normalized))
+    throw new DomainError('conflict');
+  return normalized;
+}
+function reactionKey(value: string): string {
+  const normalized = value.normalize('NFC');
+  const segments = [
+    ...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(
+      normalized,
+    ),
+  ];
+  if (
+    segments.length !== 1 ||
+    normalized.length > 16 ||
+    !/\p{Extended_Pictographic}/u.test(normalized) ||
+    /[\p{L}\p{N}]/u.test(normalized)
+  )
     throw new DomainError('conflict');
   return normalized;
 }
@@ -723,6 +755,57 @@ export class CommunityService {
       ),
     );
   }
+  async listReactions(
+    messageId: string,
+    actorId: string,
+  ): Promise<ReactionAggregate[]> {
+    const message = await this.messageForMutation(messageId, actorId, false);
+    return this.persistence.reactions.list(message.id, actorId);
+  }
+  async addReaction(
+    messageId: string,
+    actorId: string,
+    key: string,
+  ): Promise<ReactionAggregate[]> {
+    const normalized = reactionKey(key);
+    return this.persistence.transaction(async (persistence) => {
+      const message = await this.messageForMutation(messageId, actorId, false);
+      await persistence.reactions.add({
+        messageId: message.id,
+        actorId,
+        key: normalized,
+        createdAt: new Date().toISOString(),
+      });
+      return persistence.reactions.list(message.id, actorId);
+    });
+  }
+  async removeReaction(
+    messageId: string,
+    actorId: string,
+    key: string,
+  ): Promise<ReactionAggregate[]> {
+    const normalized = reactionKey(key);
+    return this.persistence.transaction(async (persistence) => {
+      const message = await this.messageForMutation(messageId, actorId, false);
+      await persistence.reactions.remove(message.id, actorId, normalized);
+      return persistence.reactions.list(message.id, actorId);
+    });
+  }
+
+  private async messageForMutation(
+    id: string,
+    actorId: string,
+    requireAuthor: boolean,
+  ): Promise<Message> {
+    const message = await this.persistence.messages.findById(id);
+    if (!message) throw new DomainError('not_found');
+    const space = await this.persistence.spaces.findById(message.spaceId);
+    if (!space || space.archivedAt) throw new DomainError('not_found');
+    await this.authorizeSpaceSubscription(space.id, actorId);
+    if (requireAuthor && message.authorId !== actorId)
+      throw new DomainError('forbidden');
+    return message;
+  }
   async createInvitation(
     actorId: string,
     communityId: string,
@@ -1065,6 +1148,7 @@ type MemoryState = {
   categories: Map<string, Category>;
   spaces: Map<string, Space>;
   messages: Map<string, Message>;
+  reactions: Map<string, MessageReaction>;
   sessions: Map<string, SessionRecord>;
   invitations: Map<string, Invitation>;
   auditEvents: Map<string, AuditEvent>;
@@ -1076,6 +1160,7 @@ const clone = (state: MemoryState): MemoryState => ({
   categories: new Map(state.categories),
   spaces: new Map(state.spaces),
   messages: new Map(state.messages),
+  reactions: new Map(state.reactions),
   sessions: new Map(state.sessions),
   invitations: new Map(state.invitations),
   auditEvents: new Map(state.auditEvents),
@@ -1101,6 +1186,7 @@ export class InMemoryPersistence implements Persistence {
     categories: new Map(),
     spaces: new Map(),
     messages: new Map(),
+    reactions: new Map(),
     sessions: new Map(),
     invitations: new Map(),
     auditEvents: new Map(),
@@ -1339,6 +1425,37 @@ export class InMemoryPersistence implements Persistence {
         updatedAt: deletedAt,
       })),
     remove: async (id: string) => this.state.messages.delete(id),
+  };
+  readonly reactions = {
+    add: async (reaction: MessageReaction) => {
+      const key = `${reaction.messageId}:${reaction.actorId}:${reaction.key}`;
+      if (this.state.reactions.has(key)) return false;
+      this.state.reactions.set(key, reaction);
+      return true;
+    },
+    remove: async (messageId: string, actorId: string, reaction: string) =>
+      this.state.reactions.delete(`${messageId}:${actorId}:${reaction}`),
+    list: async (messageId: string, actorId: string) => {
+      const grouped = new Map<
+        string,
+        { count: number; reactedByActor: boolean }
+      >();
+      for (const reaction of this.state.reactions.values()) {
+        if (reaction.messageId !== messageId) continue;
+        const current = grouped.get(reaction.key) ?? {
+          count: 0,
+          reactedByActor: false,
+        };
+        grouped.set(reaction.key, {
+          count: current.count + 1,
+          reactedByActor:
+            current.reactedByActor || reaction.actorId === actorId,
+        });
+      }
+      return [...grouped.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => ({ key, ...value }));
+    },
   };
   readonly sessions = {
     create: async (v: SessionRecord) => (this.state.sessions.set(v.id, v), v),

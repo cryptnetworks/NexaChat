@@ -30,6 +30,8 @@ import {
   createdInvitationSchema,
   invitationPreviewSchema,
   type ErrorResponse,
+  reactionMutationSchema,
+  reactionAggregateSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -455,6 +457,43 @@ export function buildApp(
       return reply.send(messageSchema.parse(message));
     },
   );
+
+  app.get<{ Params: { messageId: string } }>(
+    '/v1/messages/:messageId/reactions',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        (await service.listReactions(request.params.messageId, actorId)).map(
+          (reaction) => reactionAggregateSchema.parse(reaction),
+        ),
+      );
+    },
+  );
+
+  for (const method of ['PUT', 'DELETE'] as const)
+    app.route<{ Params: { messageId: string; key: string } }>({
+      method,
+      url: '/v1/messages/:messageId/reactions/:key',
+      async handler(request, reply) {
+        const input = reactionMutationSchema.parse(request.body);
+        const actorId = await verifiedActor(request, auth, input.actorId, true);
+        const aggregate = await (method === 'PUT'
+          ? service.addReaction(
+              request.params.messageId,
+              actorId,
+              request.params.key,
+            )
+          : service.removeReaction(
+              request.params.messageId,
+              actorId,
+              request.params.key,
+            ));
+        return reply.send(
+          aggregate.map((reaction) => reactionAggregateSchema.parse(reaction)),
+        );
+      },
+    });
 
   app.post<{ Params: { communityId: string } }>(
     '/v1/communities/:communityId/invitations',

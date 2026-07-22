@@ -237,6 +237,13 @@ export const markReadSchema = z
     expectedVersion: z.number().int().positive().optional(),
   })
   .strict();
+export const reactionKeySchema = z.string().min(1).max(16);
+export const reactionMutationSchema = z.object({ actorId: id }).strict();
+export const reactionAggregateSchema = z.object({
+  key: reactionKeySchema,
+  count: z.number().int().positive(),
+  reactedByActor: z.boolean(),
+});
 export const invitationSchema = z.object({
   id,
   communityId: id,

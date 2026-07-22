@@ -80,6 +80,7 @@ export class PostgresPersistence implements Persistence {
   readonly categories;
   readonly spaces;
   readonly messages;
+  readonly reactions;
   readonly sessions;
   readonly invitations;
   readonly auditEvents;
@@ -94,6 +95,7 @@ export class PostgresPersistence implements Persistence {
     this.categories = categoryRepository(queryable);
     this.spaces = spaceRepository(queryable);
     this.messages = messageRepository(queryable);
+    this.reactions = reactionRepository(queryable);
     this.sessions = sessionRepository(queryable);
     this.invitations = invitationRepository(queryable);
     this.auditEvents = auditEventRepository(queryable);
@@ -937,6 +939,49 @@ function messageRepository(db: Queryable): Persistence['messages'] {
     async remove(id) {
       const result = await db.query('DELETE FROM messages WHERE id=$1', [id]);
       return result.rowCount === 1;
+    },
+  };
+}
+
+function reactionRepository(db: Queryable): Persistence['reactions'] {
+  return {
+    async add(reaction) {
+      const result = await db.query(
+        `INSERT INTO message_reactions (message_id, actor_id, reaction_key, created_at)
+         VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+        [
+          reaction.messageId,
+          reaction.actorId,
+          reaction.key,
+          reaction.createdAt,
+        ],
+      );
+      return result.rowCount === 1;
+    },
+    async remove(messageId, actorId, key) {
+      const result = await db.query(
+        'DELETE FROM message_reactions WHERE message_id=$1 AND actor_id=$2 AND reaction_key=$3',
+        [messageId, actorId, key],
+      );
+      return result.rowCount === 1;
+    },
+    async list(messageId, actorId) {
+      const result = await db.query<{
+        reaction_key: string;
+        reaction_count: string;
+        reacted_by_actor: boolean;
+      }>(
+        `SELECT reaction_key, count(*)::text reaction_count,
+           bool_or(actor_id=$2) reacted_by_actor
+         FROM message_reactions WHERE message_id=$1
+         GROUP BY reaction_key ORDER BY reaction_key`,
+        [messageId, actorId],
+      );
+      return result.rows.map((row) => ({
+        key: row.reaction_key,
+        count: Number(row.reaction_count),
+        reactedByActor: row.reacted_by_actor,
+      }));
     },
   };
 }
