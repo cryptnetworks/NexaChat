@@ -112,7 +112,7 @@ export function registerAuthRoutes(
 
   app.delete('/v1/sessions/:handle', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await request.enforceAccountRateLimit(
       authenticated.account.id,
       'authenticated',
     );
