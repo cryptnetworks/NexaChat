@@ -95,13 +95,13 @@ export interface ModerationRestriction {
   communityId: string;
   actorId: string;
   targetAccountId: string;
-  kind: 'timeout';
+  kind: 'timeout' | 'ban';
   reason: string;
   requestFingerprint: string;
   idempotencyKey: string;
   correlationId: string;
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
   revokedAt: string | null;
   version: number;
 }
@@ -260,6 +260,7 @@ export interface Persistence {
   };
   moderationRestrictions: {
     create(value: ModerationRestriction): Promise<ModerationRestriction>;
+    findById(id: string): Promise<ModerationRestriction | undefined>;
     findByIdempotencyKey(
       actorId: string,
       communityId: string,
@@ -561,6 +562,155 @@ export class CommunityService {
       });
       throw error;
     }
+  }
+
+  async banMember(
+    actorId: string,
+    communityId: string,
+    targetAccountId: string,
+    durationSeconds: number | null,
+    reasonValue: string,
+    keyValue: string,
+    correlationId: string,
+  ): Promise<ModerationRestriction> {
+    const reason = moderationReason(reasonValue);
+    const key = idempotencyKey(keyValue);
+    if (
+      durationSeconds !== null &&
+      (!Number.isInteger(durationSeconds) ||
+        durationSeconds < 60 ||
+        durationSeconds > 31_536_000)
+    )
+      throw new DomainError('conflict');
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ targetAccountId, durationSeconds, reason }))
+      .digest('hex');
+    try {
+      await this.assertModerationHierarchy(
+        actorId,
+        targetAccountId,
+        communityId,
+        'moderation.ban',
+      );
+      return await this.persistence.transaction(async (persistence) => {
+        const existing =
+          await persistence.moderationRestrictions.findByIdempotencyKey(
+            actorId,
+            communityId,
+            key,
+          );
+        if (existing) {
+          if (
+            existing.kind !== 'ban' ||
+            existing.requestFingerprint !== fingerprint
+          )
+            throw new DomainError('conflict');
+          return existing;
+        }
+        const community = await persistence.communities.findById(communityId);
+        const target = await persistence.memberships.findByCommunityAndAccount(
+          communityId,
+          targetAccountId,
+        );
+        if (
+          !community ||
+          community.archivedAt ||
+          community.ownerId === targetAccountId ||
+          !target
+        )
+          throw new DomainError('not_found');
+        await this.assertModerationHierarchy(
+          actorId,
+          targetAccountId,
+          communityId,
+          'moderation.ban',
+        );
+        const createdAt = new Date().toISOString();
+        const restriction = await persistence.moderationRestrictions.create({
+          id: randomUUID(),
+          communityId,
+          actorId,
+          targetAccountId,
+          kind: 'ban',
+          reason,
+          requestFingerprint: fingerprint,
+          idempotencyKey: key,
+          correlationId,
+          createdAt,
+          expiresAt:
+            durationSeconds === null
+              ? null
+              : new Date(
+                  new Date(createdAt).getTime() + durationSeconds * 1000,
+                ).toISOString(),
+          revokedAt: null,
+          version: 1,
+        });
+        await this.writeModerationAudit(persistence, {
+          communityId,
+          actorId,
+          targetAccountId,
+          action: 'member.ban',
+          outcome: 'succeeded',
+          reason,
+          correlationId,
+          metadata: {
+            durationSeconds,
+            restrictionId: restriction.id,
+          },
+        });
+        return restriction;
+      });
+    } catch (error) {
+      await this.writeRejectedModerationAudit({
+        communityId,
+        actorId,
+        targetAccountId,
+        action: 'member.ban',
+        reason,
+        correlationId,
+      });
+      throw error;
+    }
+  }
+
+  async reverseRestriction(
+    actorId: string,
+    restrictionId: string,
+    reasonValue: string,
+    expectedVersion: number,
+    correlationId: string,
+  ): Promise<ModerationRestriction> {
+    const reason = moderationReason(reasonValue);
+    return this.persistence.transaction(async (persistence) => {
+      const current =
+        await persistence.moderationRestrictions.findById(restrictionId);
+      if (!current) throw new DomainError('not_found');
+      await this.assertModerationHierarchy(
+        actorId,
+        current.targetAccountId,
+        current.communityId,
+        current.kind === 'ban' ? 'moderation.ban' : 'moderation.timeout',
+      );
+      if (current.revokedAt) return current;
+      const reversed = await persistence.moderationRestrictions.revoke(
+        current.id,
+        expectedVersion,
+        new Date().toISOString(),
+      );
+      if (!reversed) throw new DomainError('stale_write');
+      await this.writeModerationAudit(persistence, {
+        communityId: current.communityId,
+        actorId,
+        targetAccountId: current.targetAccountId,
+        action: `member.${current.kind}.reverse`,
+        outcome: 'succeeded',
+        reason,
+        correlationId,
+        metadata: { restrictionId },
+      });
+      return reversed;
+    });
   }
 
   async listCommunities(
@@ -1168,6 +1318,14 @@ export class CommunityService {
       if (!(await persistence.accounts.findById(actorId)))
         throw new DomainError('invitation_unavailable');
       const now = new Date().toISOString();
+      if (
+        await persistence.moderationRestrictions.findEffective(
+          invitation.communityId,
+          actorId,
+          now,
+        )
+      )
+        throw new DomainError('invitation_unavailable');
       const claimed = await persistence.invitations.claim(
         invitation.id,
         invitation.version,
@@ -1857,6 +2015,7 @@ export class InMemoryPersistence implements Persistence {
       this.state.moderationRestrictions.set(value.id, value);
       return value;
     },
+    findById: async (id: string) => this.state.moderationRestrictions.get(id),
     findByIdempotencyKey: async (
       actorId: string,
       communityId: string,
@@ -1879,10 +2038,10 @@ export class InMemoryPersistence implements Persistence {
             value.communityId === communityId &&
             value.targetAccountId === accountId &&
             !value.revokedAt &&
-            value.expiresAt > now,
+            (value.expiresAt === null || value.expiresAt > now),
         )
         .sort((left, right) =>
-          right.expiresAt.localeCompare(left.expiresAt),
+          (right.expiresAt ?? '9999').localeCompare(left.expiresAt ?? '9999'),
         )[0],
     revoke: async (id: string, version: number, revokedAt: string) =>
       this.updateMap(

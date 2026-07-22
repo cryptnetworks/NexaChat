@@ -256,17 +256,39 @@ export const timeoutMemberSchema = z
     idempotencyKey: z.string().min(8).max(128),
   })
   .strict();
+export const banMemberSchema = z
+  .object({
+    actorId: id,
+    targetAccountId: id,
+    durationSeconds: z
+      .number()
+      .int()
+      .min(60)
+      .max(31_536_000)
+      .nullable()
+      .optional(),
+    reason: z.string().trim().min(1).max(500),
+    idempotencyKey: z.string().min(8).max(128),
+  })
+  .strict();
+export const reverseRestrictionSchema = z
+  .object({
+    actorId: id,
+    reason: z.string().trim().min(1).max(500),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
   actorId: id,
   targetAccountId: id,
-  kind: z.literal('timeout'),
+  kind: z.enum(['timeout', 'ban']),
   reason: z.string().min(1).max(500),
   idempotencyKey: z.string().min(8).max(128),
   correlationId: id,
   createdAt: z.string().datetime(),
-  expiresAt: z.string().datetime(),
+  expiresAt: z.string().datetime().nullable(),
   revokedAt: z.string().datetime().nullable(),
   version: z.number().int().positive(),
 });

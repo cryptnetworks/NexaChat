@@ -34,6 +34,8 @@ import {
   reactionAggregateSchema,
   timeoutMemberSchema,
   moderationRestrictionSchema,
+  banMemberSchema,
+  reverseRestrictionSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -535,6 +537,43 @@ export function buildApp(
         request.id,
       );
       return reply.code(201).send(moderationRestrictionSchema.parse(timeout));
+    },
+  );
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/bans',
+    async (request, reply) => {
+      const input = banMemberSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const ban = await service.banMember(
+        actorId,
+        request.params.communityId,
+        input.targetAccountId,
+        input.durationSeconds ?? null,
+        input.reason,
+        input.idempotencyKey,
+        request.id,
+      );
+      return reply.code(201).send(moderationRestrictionSchema.parse(ban));
+    },
+  );
+
+  app.delete<{ Params: { restrictionId: string } }>(
+    '/v1/moderation/restrictions/:restrictionId',
+    async (request, reply) => {
+      const input = reverseRestrictionSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        moderationRestrictionSchema.parse(
+          await service.reverseRestriction(
+            actorId,
+            request.params.restrictionId,
+            input.reason,
+            input.expectedVersion,
+            request.id,
+          ),
+        ),
+      );
     },
   );
 

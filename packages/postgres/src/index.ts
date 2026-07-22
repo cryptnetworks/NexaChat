@@ -608,13 +608,13 @@ type ModerationRestrictionRow = {
   community_id: string;
   actor_id: string;
   target_account_id: string;
-  kind: 'timeout';
+  kind: 'timeout' | 'ban';
   reason: string;
   request_fingerprint: string;
   idempotency_key: string;
   correlation_id: string;
   created_at: Date;
-  expires_at: Date;
+  expires_at: Date | null;
   revoked_at: Date | null;
   version: number;
 };
@@ -1223,6 +1223,15 @@ function moderationRestrictionRepository(
       );
       return mapModerationRestriction(requiredRow(result.rows));
     },
+    async findById(id) {
+      const result = await db.query<ModerationRestrictionRow>(
+        `SELECT ${fields} FROM moderation_restrictions WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0]
+        ? mapModerationRestriction(result.rows[0])
+        : undefined;
+    },
     async findByIdempotencyKey(actorId, communityId, key) {
       const result = await db.query<ModerationRestrictionRow>(
         `SELECT ${fields} FROM moderation_restrictions
@@ -1237,8 +1246,8 @@ function moderationRestrictionRepository(
       const result = await db.query<ModerationRestrictionRow>(
         `SELECT ${fields} FROM moderation_restrictions
          WHERE community_id=$1 AND target_account_id=$2 AND revoked_at IS NULL
-           AND expires_at>CURRENT_TIMESTAMP
-         ORDER BY expires_at DESC,id DESC LIMIT 1`,
+           AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+         ORDER BY expires_at DESC NULLS FIRST,id DESC LIMIT 1`,
         [communityId, accountId],
       );
       return result.rows[0]
@@ -1435,7 +1444,7 @@ const mapModerationRestriction = (
   idempotencyKey: row.idempotency_key,
   correlationId: row.correlation_id,
   createdAt: row.created_at.toISOString(),
-  expiresAt: row.expires_at.toISOString(),
+  expiresAt: row.expires_at?.toISOString() ?? null,
   revokedAt: row.revoked_at?.toISOString() ?? null,
   version: row.version,
 });
