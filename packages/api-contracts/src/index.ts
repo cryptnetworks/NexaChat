@@ -90,6 +90,7 @@ export const updateSpaceSchema = z
     position: z.number().int().nonnegative().optional(),
     categoryId: id.nullable().optional(),
     archived: z.boolean().optional(),
+    slowModeSeconds: z.number().int().min(0).max(21_600).optional(),
     expectedVersion: z.number().int().positive(),
   })
   .strict();
@@ -197,6 +198,7 @@ export const spaceSchema = z.object({
   categoryId: id.nullable(),
   position: z.number().int().nonnegative(),
   archivedAt: z.string().datetime().nullable(),
+  slowModeSeconds: z.number().int().min(0).max(21_600),
   version: z.number().int().positive(),
 });
 export const communityPageSchema = z.object({

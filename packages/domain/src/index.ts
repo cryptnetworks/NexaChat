@@ -40,6 +40,7 @@ export interface Space {
   kind: 'text';
   position: number;
   archivedAt: string | null;
+  slowModeSeconds: number;
   version: number;
 }
 export interface Message {
@@ -163,7 +164,10 @@ export interface Persistence {
     ): Promise<Page<Space>>;
     update(
       id: string,
-      input: Pick<Space, 'name' | 'position' | 'categoryId' | 'archivedAt'>,
+      input: Pick<
+        Space,
+        'name' | 'position' | 'categoryId' | 'archivedAt' | 'slowModeSeconds'
+      >,
       expectedVersion: number,
     ): Promise<Space | undefined>;
     remove(id: string): Promise<boolean>;
@@ -195,6 +199,14 @@ export interface Persistence {
     add(reaction: MessageReaction): Promise<boolean>;
     remove(messageId: string, actorId: string, key: string): Promise<boolean>;
     list(messageId: string, actorId: string): Promise<ReactionAggregate[]>;
+  };
+  messagePacing: {
+    consume(
+      spaceId: string,
+      actorId: string,
+      intervalSeconds: number,
+      now: string,
+    ): Promise<number>;
   };
   invitations: {
     create(invitation: Invitation): Promise<Invitation>;
@@ -234,6 +246,7 @@ export class DomainError extends Error {
       | 'sole_owner'
       | 'rate_limited'
       | 'invitation_unavailable',
+    public readonly retryAfterSeconds?: number,
   ) {
     super(code);
   }
@@ -272,6 +285,11 @@ function page(input: ListPage): ListPage {
 }
 function position(value: number): number {
   if (!Number.isInteger(value) || value < 0) throw new DomainError('conflict');
+  return value;
+}
+function slowMode(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 21_600)
+    throw new DomainError('conflict');
   return value;
 }
 function messageBody(value: string): string {
@@ -576,6 +594,7 @@ export class CommunityService {
       kind: 'text',
       position,
       archivedAt: null,
+      slowModeSeconds: 0,
       version: 1,
     });
   }
@@ -598,6 +617,7 @@ export class CommunityService {
       position?: number | undefined;
       categoryId?: string | null | undefined;
       archived?: boolean | undefined;
+      slowModeSeconds?: number | undefined;
       expectedVersion: number;
     },
   ): Promise<Space> {
@@ -631,6 +651,10 @@ export class CommunityService {
           archivedAt: input.archived
             ? new Date().toISOString()
             : current.archivedAt,
+          slowModeSeconds:
+            input.slowModeSeconds === undefined
+              ? current.slowModeSeconds
+              : slowMode(input.slowModeSeconds),
         },
         input.expectedVersion,
       ),
@@ -698,6 +722,19 @@ export class CommunityService {
         return retried;
       }
       const now = new Date().toISOString();
+      const community = await persistence.communities.findById(
+        space.communityId,
+      );
+      const bypass = community?.ownerId === authorId;
+      if (!bypass && space.slowModeSeconds > 0) {
+        const retryAfter = await persistence.messagePacing.consume(
+          space.id,
+          authorId,
+          space.slowModeSeconds,
+          now,
+        );
+        if (retryAfter > 0) throw new DomainError('rate_limited', retryAfter);
+      }
       return persistence.messages.create({
         id: randomUUID(),
         spaceId,
@@ -1149,6 +1186,7 @@ type MemoryState = {
   spaces: Map<string, Space>;
   messages: Map<string, Message>;
   reactions: Map<string, MessageReaction>;
+  messagePacing: Map<string, number>;
   sessions: Map<string, SessionRecord>;
   invitations: Map<string, Invitation>;
   auditEvents: Map<string, AuditEvent>;
@@ -1161,6 +1199,7 @@ const clone = (state: MemoryState): MemoryState => ({
   spaces: new Map(state.spaces),
   messages: new Map(state.messages),
   reactions: new Map(state.reactions),
+  messagePacing: new Map(state.messagePacing),
   sessions: new Map(state.sessions),
   invitations: new Map(state.invitations),
   auditEvents: new Map(state.auditEvents),
@@ -1187,6 +1226,7 @@ export class InMemoryPersistence implements Persistence {
     spaces: new Map(),
     messages: new Map(),
     reactions: new Map(),
+    messagePacing: new Map(),
     sessions: new Map(),
     invitations: new Map(),
     auditEvents: new Map(),
@@ -1347,7 +1387,10 @@ export class InMemoryPersistence implements Persistence {
     },
     update: async (
       id: string,
-      input: Pick<Space, 'name' | 'position' | 'categoryId' | 'archivedAt'>,
+      input: Pick<
+        Space,
+        'name' | 'position' | 'categoryId' | 'archivedAt' | 'slowModeSeconds'
+      >,
       version: number,
     ) => {
       const current = this.state.spaces.get(id);
@@ -1455,6 +1498,22 @@ export class InMemoryPersistence implements Persistence {
       return [...grouped.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, value]) => ({ key, ...value }));
+    },
+  };
+  readonly messagePacing = {
+    consume: async (
+      spaceId: string,
+      actorId: string,
+      intervalSeconds: number,
+      now: string,
+    ) => {
+      const key = `${spaceId}:${actorId}`;
+      const current = this.state.messagePacing.get(key) ?? 0;
+      const timestamp = new Date(now).getTime();
+      if (current > timestamp)
+        return Math.max(1, Math.ceil((current - timestamp) / 1000));
+      this.state.messagePacing.set(key, timestamp + intervalSeconds * 1000);
+      return 0;
     },
   };
   readonly sessions = {

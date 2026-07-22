@@ -589,7 +589,7 @@ export function buildApp(
         status,
         error.code,
         request.id,
-        status === 429 ? 60 : undefined,
+        status === 429 ? (error.retryAfterSeconds ?? 60) : undefined,
       );
     }
     if (

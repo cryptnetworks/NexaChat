@@ -81,6 +81,7 @@ export class PostgresPersistence implements Persistence {
   readonly spaces;
   readonly messages;
   readonly reactions;
+  readonly messagePacing;
   readonly sessions;
   readonly invitations;
   readonly auditEvents;
@@ -96,6 +97,7 @@ export class PostgresPersistence implements Persistence {
     this.spaces = spaceRepository(queryable);
     this.messages = messageRepository(queryable);
     this.reactions = reactionRepository(queryable);
+    this.messagePacing = messagePacingRepository(queryable);
     this.sessions = sessionRepository(queryable);
     this.invitations = invitationRepository(queryable);
     this.auditEvents = auditEventRepository(queryable);
@@ -547,6 +549,7 @@ type SpaceRow = {
   kind: 'text';
   position: number;
   archived_at: Date | null;
+  slow_mode_seconds: number;
   version: number;
 };
 type MessageRow = {
@@ -775,14 +778,14 @@ function categoryRepository(db: Queryable): Persistence['categories'] {
 
 function spaceRepository(db: Queryable): Persistence['spaces'] {
   const fields =
-    'id, community_id, category_id, name, kind, position, archived_at, version';
+    'id, community_id, category_id, name, kind, position, archived_at, slow_mode_seconds, version';
   const returning = `RETURNING ${fields}`;
   return {
     async create(space) {
       const result = await db.query<SpaceRow>(
         `INSERT INTO spaces
-          (id, community_id, category_id, name, kind, position, archived_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ${returning}`,
+          (id, community_id, category_id, name, kind, position, archived_at, slow_mode_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ${returning}`,
         [
           space.id,
           space.communityId,
@@ -791,6 +794,7 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
           space.kind,
           space.position,
           space.archivedAt,
+          space.slowModeSeconds,
         ],
       );
       return mapSpace(requiredRow(result.rows));
@@ -822,14 +826,15 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
     },
     async update(id, input, expectedVersion) {
       const result = await db.query<SpaceRow>(
-        `UPDATE spaces SET name=$2, position=$3, category_id=$4, archived_at=$5, version=version+1, updated_at=CURRENT_TIMESTAMP
-         WHERE id=$1 AND version=$6 RETURNING ${fields}`,
+        `UPDATE spaces SET name=$2, position=$3, category_id=$4, archived_at=$5, slow_mode_seconds=$6, version=version+1, updated_at=CURRENT_TIMESTAMP
+         WHERE id=$1 AND version=$7 RETURNING ${fields}`,
         [
           id,
           input.name,
           input.position,
           input.categoryId,
           input.archivedAt,
+          input.slowModeSeconds,
           expectedVersion,
         ],
       );
@@ -982,6 +987,32 @@ function reactionRepository(db: Queryable): Persistence['reactions'] {
         count: Number(row.reaction_count),
         reactedByActor: row.reacted_by_actor,
       }));
+    },
+  };
+}
+
+function messagePacingRepository(db: Queryable): Persistence['messagePacing'] {
+  return {
+    async consume(spaceId, actorId, intervalSeconds) {
+      const result = await db.query<{ retry_after: string }>(
+        `WITH existing AS (
+           SELECT next_allowed_at FROM message_pacing
+           WHERE space_id=$1 AND actor_id=$2 FOR UPDATE
+         ), admitted AS (
+           INSERT INTO message_pacing(space_id, actor_id, next_allowed_at)
+           SELECT $1, $2, CURRENT_TIMESTAMP + make_interval(secs => $3)
+           WHERE NOT EXISTS (SELECT 1 FROM existing WHERE next_allowed_at > CURRENT_TIMESTAMP)
+           ON CONFLICT (space_id, actor_id) DO UPDATE
+             SET next_allowed_at=EXCLUDED.next_allowed_at
+           WHERE message_pacing.next_allowed_at <= CURRENT_TIMESTAMP
+           RETURNING 1
+         )
+         SELECT CASE WHEN EXISTS (SELECT 1 FROM admitted) THEN 0 ELSE
+           GREATEST(1, CEIL(EXTRACT(EPOCH FROM ((SELECT next_allowed_at FROM existing) - CURRENT_TIMESTAMP))))
+         END::text retry_after`,
+        [spaceId, actorId, intervalSeconds],
+      );
+      return Number(result.rows[0]?.retry_after ?? 1);
     },
   };
 }
@@ -1167,6 +1198,7 @@ const mapSpace = (row: SpaceRow): Space => ({
   kind: row.kind,
   position: row.position,
   archivedAt: row.archived_at?.toISOString() ?? null,
+  slowModeSeconds: row.slow_mode_seconds,
   version: row.version,
 });
 

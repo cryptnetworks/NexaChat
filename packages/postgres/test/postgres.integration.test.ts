@@ -139,6 +139,7 @@ describe('PostgreSQL persistence', () => {
       kind: 'text' as const,
       position: 0,
       archivedAt: null,
+      slowModeSeconds: 0,
       version: 1,
     };
     const message = {
