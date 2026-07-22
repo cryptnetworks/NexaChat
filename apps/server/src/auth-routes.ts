@@ -89,6 +89,10 @@ export function registerAuthRoutes(
 
   app.get('/v1/sessions', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
     const sessions = await runtime.service.listSessions(
       authenticated.account.id,
     );

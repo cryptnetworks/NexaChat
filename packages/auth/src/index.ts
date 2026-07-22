@@ -330,6 +330,8 @@ export interface AuthenticationConfig {
   idleSessionMs: number;
 }
 
+const sessionInventoryLimit = 100;
+
 export type AuthenticationErrorCode =
   | 'authentication_failed'
   | 'identifier_unavailable'
@@ -600,8 +602,10 @@ export class AuthenticationService {
       .sort(
         (left, right) =>
           right.lastSeenAt.localeCompare(left.lastSeenAt) ||
-          right.createdAt.localeCompare(left.createdAt),
-      );
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.publicHandle.localeCompare(left.publicHandle),
+      )
+      .slice(0, sessionInventoryLimit);
   }
 
   async getProfile(accountId: string): Promise<PublicProfile> {

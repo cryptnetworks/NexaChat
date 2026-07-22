@@ -452,7 +452,16 @@ export class PostgresAuthStore implements AuthStore {
   async listSessions(accountId: string) {
     const result = await this.authQueryable.query<AuthSessionRow>(
       `SELECT ${AUTH_SESSION_FIELDS} FROM sessions
-       WHERE account_id = $1 ORDER BY created_at DESC, id DESC`,
+       WHERE account_id = $1
+         AND credential_version = (
+           SELECT credential_version FROM accounts
+           WHERE id = $1 AND status = 'active'
+         )
+         AND revoked_at IS NULL
+         AND expires_at > CURRENT_TIMESTAMP
+         AND idle_expires_at > CURRENT_TIMESTAMP
+       ORDER BY last_seen_at DESC, created_at DESC, public_handle DESC
+       LIMIT 100`,
       [accountId],
     );
     return result.rows.map(mapAuthSession);

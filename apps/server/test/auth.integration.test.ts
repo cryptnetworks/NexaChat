@@ -274,6 +274,45 @@ describe('local authentication HTTP lifecycle', () => {
     await app.close();
   });
 
+  it('bounds the PostgreSQL session inventory while retaining the current session', async () => {
+    const app = buildApp(undefined, undefined, runtime(pool, true));
+    const registered = await register(app, 'bounded-inventory');
+    const accountId = registered.response.json<{ id: string }>().id;
+    await pool.query(
+      `INSERT INTO sessions
+        (id, account_id, token_hash, public_handle, credential_version,
+         created_at, last_seen_at, recent_auth_at, expires_at, idle_expires_at,
+         revoked_at)
+       SELECT gen_random_uuid(), $1,
+         encode(digest($1::text || ':' || generated.value::text, 'sha256'), 'hex'),
+         'sess_' || substr(
+           encode(digest('public:' || $1::text || ':' || generated.value::text,
+             'sha256'), 'hex'), 1, 24
+         ),
+         accounts.credential_version,
+         CURRENT_TIMESTAMP - generated.value * interval '1 minute',
+         CURRENT_TIMESTAMP - generated.value * interval '1 minute',
+         CURRENT_TIMESTAMP - generated.value * interval '1 minute',
+         CURRENT_TIMESTAMP + interval '1 day',
+         CURRENT_TIMESTAMP + interval '1 hour',
+         NULL
+       FROM generate_series(1, 105) AS generated(value)
+       JOIN accounts ON accounts.id = $1`,
+      [accountId],
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/sessions',
+      headers: { cookie: registered.cookie },
+    });
+    const sessions = response.json<Array<{ current: boolean }>>();
+    expect(response.statusCode).toBe(200);
+    expect(sessions).toHaveLength(100);
+    expect(sessions.filter((session) => session.current)).toHaveLength(1);
+    await app.close();
+  });
+
   it('retrieves and atomically updates private-safe account profiles', async () => {
     const app = buildApp(undefined, undefined, runtime(pool, true));
     const first = await register(app, 'ProfileOwner');

@@ -128,6 +128,30 @@ describe('AuthenticationService', () => {
     ).rejects.toMatchObject({ code: 'unauthenticated' });
   });
 
+  it('bounds session inventory with deterministic newest-activity ordering', async () => {
+    const { service, store } = fixture();
+    const registered = await service.register(input('bounded-sessions'));
+    const template = registered.session.record;
+    for (let index = 0; index < 105; index += 1) {
+      const timestamp = new Date(
+        new Date(template.createdAt).getTime() + index + 1,
+      ).toISOString();
+      const id = `inventory-${String(index).padStart(3, '0')}`;
+      store.sessions.set(id, {
+        ...template,
+        id,
+        publicHandle: `sess_${String(index).padStart(16, '0')}`,
+        createdAt: timestamp,
+        lastSeenAt: timestamp,
+      });
+    }
+
+    const sessions = await service.listSessions(registered.account.id);
+    expect(sessions).toHaveLength(100);
+    expect(sessions[0]?.id).toBe('inventory-104');
+    expect(sessions.at(-1)?.id).toBe('inventory-005');
+  });
+
   it('uses public handles for owned and all-other session revocation', async () => {
     const { service, store } = fixture();
     const first = await service.register(input('session-owner'));
