@@ -36,7 +36,9 @@ permission map, and review deadline are recorded in `security-policy.json`.
 
 `security-policy.json` is the reviewable source for action revisions, scanner
 image digests, accepted dependency licenses, ownership, review dates, and
-thresholds. `npm run verify:security-policy` fails on:
+thresholds. The verifier requires the dependency-review workflow's SPDX
+allowlist to match that policy exactly. `npm run verify:security-policy` fails
+on:
 
 - an unpinned action, Dockerfile frontend, base image, Compose provider, or
   scanner image;

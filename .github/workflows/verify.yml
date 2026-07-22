@@ -85,4 +85,4 @@ jobs:
           fail-on-severity: high
           fail-on-scopes: runtime, development
           license-check: true
-          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, GPL-3.0-only, ISC, MIT, MPL-2.0
+          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, GPL-3.0-only, ISC, MIT, MITNFA, MPL-2.0

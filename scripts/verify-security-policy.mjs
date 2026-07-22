@@ -149,6 +149,18 @@ for (const file of await readdir(workflowDirectory)) {
   const uses = [
     ...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#\s*(\S+))?/gmu),
   ];
+  if (
+    uses.some(([, reference]) =>
+      reference.startsWith('actions/dependency-review-action@'),
+    )
+  ) {
+    const configuredLicenses = /^\s*allow-licenses:\s*(.+)$/mu.exec(text)?.[1];
+    const workflowLicenses = configuredLicenses
+      ?.split(',')
+      .map((license) => license.trim());
+    if (!sameStringSet(workflowLicenses, policy.allowedLicenses))
+      fail(`${file}: dependency-review licenses differ from reviewed policy`);
+  }
   for (const [, reference, comment] of uses) {
     if (reference.startsWith('./')) continue;
     const match = /^([^@]+)@([0-9a-f]{40})$/u.exec(reference);
@@ -304,4 +316,16 @@ function samePermissions(actual, expected) {
     left.localeCompare(right),
   );
   return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
+}
+
+function sameStringSet(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
+  const sortedActual = [...new Set(actual)].sort();
+  const sortedExpected = [...new Set(expected)].sort();
+  if (
+    sortedActual.length !== actual.length ||
+    sortedExpected.length !== expected.length
+  )
+    return false;
+  return JSON.stringify(sortedActual) === JSON.stringify(sortedExpected);
 }
