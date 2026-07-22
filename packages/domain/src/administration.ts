@@ -224,3 +224,73 @@ export class AccountSuspensionService extends AdministrationService {
     return restored;
   }
 }
+
+export type RegistrationMode = 'open' | 'invite_only' | 'closed';
+export interface RegistrationPolicy {
+  mode: RegistrationMode;
+  updatedBy: string;
+  updatedAt: string;
+  version: number;
+}
+export interface RegistrationPolicyStore extends AdminStore {
+  policy(): Promise<RegistrationPolicy | undefined>;
+  savePolicy(
+    value: RegistrationPolicy,
+    expectedVersion?: number,
+  ): Promise<RegistrationPolicy | undefined>;
+}
+export class RegistrationPolicyService extends AdministrationService {
+  constructor(
+    private readonly policies: RegistrationPolicyStore,
+    authorization: AdminAuthorization,
+  ) {
+    super(policies, authorization);
+  }
+  publicStatus(): Promise<{ mode: RegistrationMode }> {
+    return this.policies
+      .policy()
+      .then((value) => ({ mode: value?.mode ?? 'closed' }));
+  }
+  async assertRegistrationAllowed(invitationValid: boolean): Promise<void> {
+    const { mode } = await this.publicStatus();
+    if (mode === 'closed' || (mode === 'invite_only' && !invitationValid))
+      throw new Error('registration_unavailable');
+  }
+  async update(
+    actorId: string,
+    mode: RegistrationMode,
+    expectedVersion: number | undefined,
+    authenticatedAt: string,
+    correlationId: string,
+    now: Date,
+  ): Promise<RegistrationPolicy> {
+    await this.sensitive(
+      actorId,
+      authenticatedAt,
+      'instance.registration.manage',
+      now,
+    );
+    const current = await this.policies.policy();
+    if (current && expectedVersion === undefined)
+      throw new Error('stale_registration_policy');
+    const saved = await this.policies.savePolicy(
+      {
+        mode,
+        updatedBy: actorId,
+        updatedAt: now.toISOString(),
+        version: current ? current.version + 1 : 1,
+      },
+      expectedVersion,
+    );
+    if (!saved) throw new Error('stale_registration_policy');
+    await this.audit(
+      actorId,
+      'registration_policy.update',
+      null,
+      'succeeded',
+      correlationId,
+      now,
+    );
+    return saved;
+  }
+}
