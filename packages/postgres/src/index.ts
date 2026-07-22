@@ -12,6 +12,8 @@ import type {
   AuditEvent,
   ModerationRestriction,
   ModerationAuditEvent,
+  ModerationMessageEvidence,
+  ModerationMessageDeletion,
   Category,
   Community,
   Invitation,
@@ -89,6 +91,8 @@ export class PostgresPersistence implements Persistence {
   readonly auditEvents;
   readonly moderationRestrictions;
   readonly moderationAuditEvents;
+  readonly moderationMessageEvidence;
+  readonly moderationMessageDeletions;
 
   constructor(
     private readonly pool: Pool,
@@ -107,6 +111,10 @@ export class PostgresPersistence implements Persistence {
     this.auditEvents = auditEventRepository(queryable);
     this.moderationRestrictions = moderationRestrictionRepository(queryable);
     this.moderationAuditEvents = moderationAuditRepository(queryable);
+    this.moderationMessageEvidence =
+      moderationMessageEvidenceRepository(queryable);
+    this.moderationMessageDeletions =
+      moderationMessageDeletionRepository(queryable);
   }
 
   async transaction<T>(
@@ -632,6 +640,30 @@ type ModerationAuditRow = {
   previous_hash: string | null;
   event_hash: string;
   metadata: Record<string, string | number | boolean | null>;
+};
+type ModerationMessageEvidenceRow = {
+  id: string;
+  community_id: string;
+  message_id: string;
+  body_snapshot: string;
+  content_hash: string;
+  captured_at: Date;
+  retained_until: Date;
+  legal_hold: boolean;
+};
+type ModerationMessageDeletionRow = {
+  id: string;
+  community_id: string;
+  message_id: string;
+  actor_id: string;
+  target_account_id: string;
+  evidence_id: string;
+  reason: string;
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  event_id: string;
+  created_at: Date;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1310,6 +1342,77 @@ function moderationAuditRepository(
   };
 }
 
+function moderationMessageEvidenceRepository(
+  db: Queryable,
+): Persistence['moderationMessageEvidence'] {
+  return {
+    async create(value) {
+      const result = await db.query<ModerationMessageEvidenceRow>(
+        `INSERT INTO moderation_message_evidence
+          (id,community_id,message_id,body_snapshot,content_hash,captured_at,retained_until,legal_hold)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (message_id) DO UPDATE SET message_id=EXCLUDED.message_id
+         RETURNING id,community_id,message_id,body_snapshot,content_hash,captured_at,retained_until,legal_hold`,
+        [
+          value.id,
+          value.communityId,
+          value.messageId,
+          value.bodySnapshot,
+          value.contentHash,
+          value.capturedAt,
+          value.retainedUntil,
+          value.legalHold,
+        ],
+      );
+      return mapModerationMessageEvidence(requiredRow(result.rows));
+    },
+  };
+}
+
+function moderationMessageDeletionRepository(
+  db: Queryable,
+): Persistence['moderationMessageDeletions'] {
+  const fields =
+    'id,community_id,message_id,actor_id,target_account_id,evidence_id,reason,request_fingerprint,idempotency_key,correlation_id,event_id,created_at';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationMessageDeletionRow>(
+        `INSERT INTO moderation_message_deletions
+          (id,community_id,message_id,actor_id,target_account_id,evidence_id,reason,
+           request_fingerprint,idempotency_key,correlation_id,event_id,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (actor_id,message_id,idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.messageId,
+          value.actorId,
+          value.targetAccountId,
+          value.evidenceId,
+          value.reason,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.eventId,
+          value.createdAt,
+        ],
+      );
+      return mapModerationMessageDeletion(requiredRow(result.rows));
+    },
+    async findByIdempotencyKey(actorId, messageId, key) {
+      const result = await db.query<ModerationMessageDeletionRow>(
+        `SELECT ${fields} FROM moderation_message_deletions
+         WHERE actor_id=$1 AND message_id=$2 AND idempotency_key=$3`,
+        [actorId, messageId, key],
+      );
+      return result.rows[0]
+        ? mapModerationMessageDeletion(result.rows[0])
+        : undefined;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1462,6 +1565,34 @@ const mapModerationAudit = (row: ModerationAuditRow): ModerationAuditEvent => ({
   previousHash: row.previous_hash,
   eventHash: row.event_hash,
   metadata: row.metadata,
+});
+const mapModerationMessageEvidence = (
+  row: ModerationMessageEvidenceRow,
+): ModerationMessageEvidence => ({
+  id: row.id,
+  communityId: row.community_id,
+  messageId: row.message_id,
+  bodySnapshot: row.body_snapshot,
+  contentHash: row.content_hash,
+  capturedAt: row.captured_at.toISOString(),
+  retainedUntil: row.retained_until.toISOString(),
+  legalHold: row.legal_hold,
+});
+const mapModerationMessageDeletion = (
+  row: ModerationMessageDeletionRow,
+): ModerationMessageDeletion => ({
+  id: row.id,
+  communityId: row.community_id,
+  messageId: row.message_id,
+  actorId: row.actor_id,
+  targetAccountId: row.target_account_id,
+  evidenceId: row.evidence_id,
+  reason: row.reason,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  eventId: row.event_id,
+  createdAt: row.created_at.toISOString(),
 });
 
 interface Migration {

@@ -146,6 +146,7 @@ export const permissionSchema = z.enum([
   'invitation.manage',
   'moderation.ban',
   'moderation.timeout',
+  'moderation.message.delete',
   'moderation.audit',
 ]);
 export const permissionScopeSchema = z.object({
@@ -275,6 +276,14 @@ export const reverseRestrictionSchema = z
   .object({
     actorId: id,
     reason: z.string().trim().min(1).max(500),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export const moderatorDeleteMessageSchema = z
+  .object({
+    actorId: id,
+    reason: z.string().trim().min(1).max(500),
+    idempotencyKey: z.string().min(8).max(128),
     expectedVersion: z.number().int().positive(),
   })
   .strict();

@@ -36,6 +36,7 @@ import {
   moderationRestrictionSchema,
   banMemberSchema,
   reverseRestrictionSchema,
+  moderatorDeleteMessageSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -459,6 +460,32 @@ export function buildApp(
       };
       app.websocketHub?.broadcast(message.spaceId, event);
       return reply.send(messageSchema.parse(message));
+    },
+  );
+
+  app.post<{ Params: { messageId: string } }>(
+    '/v1/messages/:messageId/moderation-delete',
+    async (request, reply) => {
+      const input = moderatorDeleteMessageSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      const result = await service.moderatorDeleteMessage(
+        actorId,
+        request.params.messageId,
+        input.reason,
+        input.idempotencyKey,
+        input.expectedVersion,
+        request.id,
+      );
+      const event: RealtimeEnvelope = {
+        version: 1,
+        id: result.deletion.eventId,
+        type: 'message.deleted',
+        occurredAt: result.deletion.createdAt,
+        correlationId: request.id,
+        payload: { message: result.message },
+      };
+      app.websocketHub?.broadcast(result.message.spaceId, event);
+      return reply.send(messageSchema.parse(result.message));
     },
   );
 

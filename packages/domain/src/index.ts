@@ -120,6 +120,30 @@ export interface ModerationAuditEvent {
   eventHash: string;
   metadata: Record<string, string | number | boolean | null>;
 }
+export interface ModerationMessageEvidence {
+  id: string;
+  communityId: string;
+  messageId: string;
+  bodySnapshot: string;
+  contentHash: string;
+  capturedAt: string;
+  retainedUntil: string;
+  legalHold: boolean;
+}
+export interface ModerationMessageDeletion {
+  id: string;
+  communityId: string;
+  messageId: string;
+  actorId: string;
+  targetAccountId: string;
+  evidenceId: string;
+  reason: string;
+  requestFingerprint: string;
+  idempotencyKey: string;
+  correlationId: string;
+  eventId: string;
+  createdAt: string;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -281,6 +305,21 @@ export interface Persistence {
     create(value: ModerationAuditEvent): Promise<ModerationAuditEvent>;
     latestHash(communityId: string): Promise<string | undefined>;
   };
+  moderationMessageEvidence: {
+    create(
+      value: ModerationMessageEvidence,
+    ): Promise<ModerationMessageEvidence>;
+  };
+  moderationMessageDeletions: {
+    create(
+      value: ModerationMessageDeletion,
+    ): Promise<ModerationMessageDeletion>;
+    findByIdempotencyKey(
+      actorId: string,
+      messageId: string,
+      key: string,
+    ): Promise<ModerationMessageDeletion | undefined>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -322,6 +361,7 @@ export interface AuthorizationGateway {
       | 'invitation.manage'
       | 'moderation.timeout'
       | 'moderation.ban'
+      | 'moderation.message.delete'
       | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
@@ -329,7 +369,8 @@ export interface AuthorizationGateway {
     actorId: string,
     targetId: string,
     communityId: string,
-    permission: 'moderation.timeout' | 'moderation.ban',
+    permission:
+      'moderation.timeout' | 'moderation.ban' | 'moderation.message.delete',
   ): Promise<void>;
 }
 
@@ -710,6 +751,109 @@ export class CommunityService {
         metadata: { restrictionId },
       });
       return reversed;
+    });
+  }
+
+  async moderatorDeleteMessage(
+    actorId: string,
+    messageId: string,
+    reasonValue: string,
+    keyValue: string,
+    expectedVersion: number,
+    correlationId: string,
+  ): Promise<{ message: Message; deletion: ModerationMessageDeletion }> {
+    const reason = moderationReason(reasonValue);
+    const key = idempotencyKey(keyValue);
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ messageId, reason, expectedVersion }))
+      .digest('hex');
+    const initial = await this.persistence.messages.findById(messageId);
+    if (!initial) throw new DomainError('not_found');
+    const initialSpace = await this.persistence.spaces.findById(
+      initial.spaceId,
+    );
+    if (!initialSpace || initialSpace.archivedAt)
+      throw new DomainError('not_found');
+    await this.assertModerationHierarchy(
+      actorId,
+      initial.authorId,
+      initialSpace.communityId,
+      'moderation.message.delete',
+    );
+    return this.persistence.transaction(async (persistence) => {
+      const existing =
+        await persistence.moderationMessageDeletions.findByIdempotencyKey(
+          actorId,
+          messageId,
+          key,
+        );
+      if (existing) {
+        if (existing.requestFingerprint !== fingerprint)
+          throw new DomainError('conflict');
+        const tombstone = await persistence.messages.findById(messageId);
+        if (!tombstone) throw new DomainError('not_found');
+        return { message: tombstone, deletion: existing };
+      }
+      const message = await persistence.messages.findById(messageId);
+      if (!message || message.deletedAt || message.body === null)
+        throw new DomainError('not_found');
+      const space = await persistence.spaces.findById(message.spaceId);
+      if (!space || space.archivedAt) throw new DomainError('not_found');
+      await this.assertModerationHierarchy(
+        actorId,
+        message.authorId,
+        space.communityId,
+        'moderation.message.delete',
+      );
+      const createdAt = new Date().toISOString();
+      const evidence = await persistence.moderationMessageEvidence.create({
+        id: randomUUID(),
+        communityId: space.communityId,
+        messageId,
+        bodySnapshot: message.body,
+        contentHash: createHash('sha256').update(message.body).digest('hex'),
+        capturedAt: createdAt,
+        retainedUntil: new Date(
+          new Date(createdAt).getTime() + 180 * 86_400_000,
+        ).toISOString(),
+        legalHold: false,
+      });
+      const tombstone = await persistence.messages.tombstone(
+        messageId,
+        expectedVersion,
+        createdAt,
+      );
+      if (!tombstone) throw new DomainError('stale_write');
+      const deletion = await persistence.moderationMessageDeletions.create({
+        id: randomUUID(),
+        communityId: space.communityId,
+        messageId,
+        actorId,
+        targetAccountId: message.authorId,
+        evidenceId: evidence.id,
+        reason,
+        requestFingerprint: fingerprint,
+        idempotencyKey: key,
+        correlationId,
+        eventId: randomUUID(),
+        createdAt,
+      });
+      await this.writeModerationAudit(persistence, {
+        communityId: space.communityId,
+        actorId,
+        targetAccountId: message.authorId,
+        targetMessageId: messageId,
+        action: 'message.delete',
+        outcome: 'succeeded',
+        reason,
+        correlationId,
+        metadata: {
+          deletionId: deletion.id,
+          evidenceId: evidence.id,
+          messageId,
+        },
+      });
+      return { message: tombstone, deletion };
     });
   }
 
@@ -1446,7 +1590,8 @@ export class CommunityService {
     actorId: string,
     targetAccountId: string,
     communityId: string,
-    permission: 'moderation.timeout' | 'moderation.ban',
+    permission:
+      'moderation.timeout' | 'moderation.ban' | 'moderation.message.delete',
   ): Promise<void> {
     if (this.authorization?.assertCanModerate) {
       await this.authorization.assertCanModerate(
@@ -1475,6 +1620,7 @@ export class CommunityService {
       communityId: string;
       actorId: string;
       targetAccountId: string | null;
+      targetMessageId?: string | null;
       action: string;
       outcome: 'succeeded' | 'rejected';
       reason: string | null;
@@ -1495,7 +1641,7 @@ export class CommunityService {
     await persistence.moderationAuditEvents.create({
       id: randomUUID(),
       ...input,
-      targetMessageId: null,
+      targetMessageId: input.targetMessageId ?? null,
       occurredAt,
       previousHash,
       eventHash: createHash('sha256').update(material).digest('hex'),
@@ -1603,6 +1749,8 @@ type MemoryState = {
   auditEvents: Map<string, AuditEvent>;
   moderationRestrictions: Map<string, ModerationRestriction>;
   moderationAuditEvents: Map<string, ModerationAuditEvent>;
+  moderationMessageEvidence: Map<string, ModerationMessageEvidence>;
+  moderationMessageDeletions: Map<string, ModerationMessageDeletion>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -1618,6 +1766,8 @@ const clone = (state: MemoryState): MemoryState => ({
   auditEvents: new Map(state.auditEvents),
   moderationRestrictions: new Map(state.moderationRestrictions),
   moderationAuditEvents: new Map(state.moderationAuditEvents),
+  moderationMessageEvidence: new Map(state.moderationMessageEvidence),
+  moderationMessageDeletions: new Map(state.moderationMessageDeletions),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -1647,6 +1797,8 @@ export class InMemoryPersistence implements Persistence {
     auditEvents: new Map(),
     moderationRestrictions: new Map(),
     moderationAuditEvents: new Map(),
+    moderationMessageEvidence: new Map(),
+    moderationMessageDeletions: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -2067,6 +2219,40 @@ export class InMemoryPersistence implements Persistence {
             right.occurredAt.localeCompare(left.occurredAt) ||
             right.id.localeCompare(left.id),
         )[0]?.eventHash,
+  };
+  readonly moderationMessageEvidence = {
+    create: async (value: ModerationMessageEvidence) => {
+      const existing = [...this.state.moderationMessageEvidence.values()].find(
+        (candidate) => candidate.messageId === value.messageId,
+      );
+      if (existing) return existing;
+      this.state.moderationMessageEvidence.set(value.id, value);
+      return value;
+    },
+  };
+  readonly moderationMessageDeletions = {
+    create: async (value: ModerationMessageDeletion) => {
+      const existing =
+        await this.moderationMessageDeletions.findByIdempotencyKey(
+          value.actorId,
+          value.messageId,
+          value.idempotencyKey,
+        );
+      if (existing) return existing;
+      this.state.moderationMessageDeletions.set(value.id, value);
+      return value;
+    },
+    findByIdempotencyKey: async (
+      actorId: string,
+      messageId: string,
+      key: string,
+    ) =>
+      [...this.state.moderationMessageDeletions.values()].find(
+        (value) =>
+          value.actorId === actorId &&
+          value.messageId === messageId &&
+          value.idempotencyKey === key,
+      ),
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();
