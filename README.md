@@ -142,7 +142,7 @@ platform scope and trust boundary.
   is claimed.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
-Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [observability guide](docs/operations/observability.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).
+Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [observability guide](docs/operations/observability.md), [security policy](SECURITY.md), [security threat model](docs/security/threat-model.md), [2026 security audit](docs/security/audit-2026-07-22.md), and [roadmap](ROADMAP.md).
 
 ## License
 
