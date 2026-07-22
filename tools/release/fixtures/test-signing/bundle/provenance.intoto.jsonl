@@ -1,0 +1,70 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "predicate": {
+    "buildDefinition": {
+      "buildType": "https://github.com/cryptnetworks/NexaChat/tools/release/artifact-bundle@v1",
+      "externalParameters": {
+        "channel": "beta",
+        "target": {
+          "arch": "arm64",
+          "platform": "macos"
+        },
+        "version": "0.1.0"
+      },
+      "internalParameters": {
+        "sourceDateEpoch": 1784678400
+      },
+      "resolvedDependencies": [
+        {
+          "digest": {
+            "sha1": "80b16a2a1e043f650ebb643476af0954d34f3558"
+          },
+          "uri": "git+https://github.com/cryptnetworks/NexaChat@80b16a2a1e043f650ebb643476af0954d34f3558"
+        },
+        {
+          "digest": {
+            "sha256": "a942861070db17d648589278ef70a68d7bcceef4294d78b6bd6c96ae61292104"
+          },
+          "uri": "package-lock.json"
+        },
+        {
+          "digest": {
+            "sha256": "f881dab0559b08e8bfa4c13f659cfae02bea868e01b23823c0ecf08a80319c7f"
+          },
+          "uri": "apps/desktop/src-tauri/Cargo.lock"
+        }
+      ]
+    },
+    "runDetails": {
+      "builder": {
+        "id": "urn:nexa:builder:test"
+      },
+      "metadata": {
+        "finishedOn": "2026-07-22T00:00:00.000Z",
+        "invocationId": "issue-102-retained-fixture",
+        "startedOn": "2026-07-22T00:00:00.000Z"
+      }
+    }
+  },
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "subject": [
+    {
+      "digest": {
+        "sha256": "77ad6dac0764a8cd386654df1c7a7c1e3b3f06f5227c7edf0670a4e3fe7fed8d"
+      },
+      "name": "NexaChat-0.1.0-beta-macos-arm64.dmg"
+    },
+    {
+      "digest": {
+        "sha256": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7"
+      },
+      "name": "NexaChat-0.1.0-desktop-cargo.cdx.json"
+    },
+    {
+      "digest": {
+        "sha256": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7"
+      },
+      "name": "NexaChat-0.1.0-source-npm.cdx.json"
+    }
+  ]
+}

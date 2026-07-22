@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "issue": 102,
+  "category": "security",
+  "summary": "Add offline-verifiable release manifests, checksums, provenance, and test-signing evidence.",
+  "audience": "operators",
+  "packages": ["nexa-chat"],
+  "breaking": false,
+  "migration": null
+}
