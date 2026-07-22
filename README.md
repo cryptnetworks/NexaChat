@@ -44,6 +44,7 @@ npm run test:config
 npm run test:architecture
 npm run test:contracts
 npm run test:performance
+npm run test:realtime-capacity
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
@@ -52,7 +53,7 @@ npm audit
 npm run verify:clean-env
 ```
 
-`npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts. The bounded API benchmark and its disposable-PostgreSQL release profile are documented in the [performance runbook](docs/operations/performance.md).
+`npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts. The bounded API benchmark and its disposable-PostgreSQL release profile are documented in the [performance runbook](docs/operations/performance.md). Connection, fan-out, reconnect, slow-consumer, Valkey, and soak workloads are documented in the [real-time capacity runbook](docs/operations/realtime-capacity.md).
 
 `npm run verify:clean-env` uses the isolated `nexa-chat-clean-verify` Compose project and PostgreSQL port 55432, then removes only that project's test volume. It verifies an empty database migration, readiness, dependency outage, and automatic recovery.
 

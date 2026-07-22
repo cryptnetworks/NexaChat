@@ -63,8 +63,16 @@ export interface WebsocketHub {
     accountId: string,
     message: Extract<WebsocketServerMessage, { type: 'notification_read' }>,
   ): void;
+  ready(): Promise<void>;
   close(): Promise<void>;
   snapshot?(): { connections: number; subscriptions: number };
+  capacitySnapshot?(): {
+    connections: number;
+    subscriptions: number;
+    queueDepth: number;
+    queueBytes: number;
+    fanout: 'disabled' | 'connecting' | 'ready' | 'degraded';
+  };
 }
 
 declare module 'fastify' {
@@ -130,6 +138,11 @@ export function attachWebsocketHub(
   let unsubscribePresence: (() => Promise<void>) | undefined;
   let unsubscribeMemberStatus: (() => Promise<void>) | undefined;
   let draining = false;
+  let queuedMessages = 0;
+  let queuedBytes = 0;
+  let fanoutState: 'disabled' | 'connecting' | 'ready' | 'degraded' =
+    options.coordination ? 'connecting' : 'disabled';
+  let fanoutSubscribed = false;
   const wss = new WebSocketServer({
     server,
     path: '/v1/realtime',
@@ -237,6 +250,11 @@ export function attachWebsocketHub(
         0,
       ),
     );
+  }
+
+  function reportQueue(): void {
+    metrics.gauge('realtime_queue_depth', queuedMessages);
+    metrics.gauge('realtime_queue_bytes', queuedBytes);
   }
 
   function consume(state: ConnectionState): boolean {
@@ -424,10 +442,25 @@ export function attachWebsocketHub(
       return false;
     }
     state.outboundBytes += bytes;
-    socket.send(payload, (error) => {
+    queuedMessages += 1;
+    queuedBytes += bytes;
+    reportQueue();
+    let settled = false;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
       state.outboundBytes = Math.max(0, state.outboundBytes - bytes);
+      queuedMessages = Math.max(0, queuedMessages - 1);
+      queuedBytes = Math.max(0, queuedBytes - bytes);
+      reportQueue();
       if (error) socket.terminate();
-    });
+    };
+    try {
+      socket.send(payload, settle);
+    } catch (error) {
+      settle(error instanceof Error ? error : new Error('send_failed'));
+      return false;
+    }
     return true;
   }
 
@@ -472,42 +505,75 @@ export function attachWebsocketHub(
   );
   authorizationCheck.unref();
 
-  if (options.coordination)
-    void options.coordination
-      .subscribe('realtime:events', (payload) => {
-        void receiveFanout(payload);
-      })
-      .then((unsubscribe) => {
+  async function startSubscription(
+    channel: string,
+    listener: (payload: string) => void,
+    degradedMetric: string,
+    assign: (unsubscribe: () => Promise<void>) => void,
+    fanout = false,
+  ): Promise<void> {
+    if (!options.coordination) return;
+    try {
+      const unsubscribe = await options.coordination.subscribe(
+        channel,
+        listener,
+      );
+      if (draining) await unsubscribe();
+      else {
+        assign(unsubscribe);
+        if (fanout) {
+          fanoutSubscribed = true;
+          fanoutState = 'ready';
+        }
+      }
+    } catch {
+      if (fanout) {
+        fanoutSubscribed = false;
+        fanoutState = 'degraded';
+      }
+      metrics.increment(degradedMetric);
+    }
+  }
+
+  const subscriptionsReady = Promise.all([
+    startSubscription(
+      'realtime:events',
+      (payload) => void receiveFanout(payload),
+      'realtime_fanout_degraded',
+      (unsubscribe) => {
         unsubscribeFanout = unsubscribe;
-      })
-      .catch(() => {
-        metrics.increment('realtime_fanout_degraded');
-      });
-  if (options.coordination && options.presence)
-    void options.coordination
-      .subscribe(PRESENCE_CHANNEL, (payload) => {
-        void receivePresence(payload);
-      })
-      .then((unsubscribe) => {
-        unsubscribePresence = unsubscribe;
-      })
-      .catch(() => {
-        metrics.increment('presence_fanout_degraded');
-      });
-  if (options.coordination && options.memberStatus)
-    void options.coordination
-      .subscribe(MEMBER_STATUS_CHANNEL, (payload) => {
-        void receiveMemberStatus(payload);
-      })
-      .then((unsubscribe) => {
-        unsubscribeMemberStatus = unsubscribe;
-      })
-      .catch(() => {
-        metrics.increment('member_status_fanout_degraded');
-      });
+      },
+      true,
+    ),
+    ...(options.presence
+      ? [
+          startSubscription(
+            PRESENCE_CHANNEL,
+            (payload) => void receivePresence(payload),
+            'presence_fanout_degraded',
+            (unsubscribe) => {
+              unsubscribePresence = unsubscribe;
+            },
+          ),
+        ]
+      : []),
+    ...(options.memberStatus
+      ? [
+          startSubscription(
+            MEMBER_STATUS_CHANNEL,
+            (payload) => void receiveMemberStatus(payload),
+            'member_status_fanout_degraded',
+            (unsubscribe) => {
+              unsubscribeMemberStatus = unsubscribe;
+            },
+          ),
+        ]
+      : []),
+  ]).then(() => undefined);
 
   async function receivePresence(payload: string): Promise<void> {
     try {
+      if (!options.presence) throw new Error('presence_unavailable');
       const presence = parsePresence(payload);
       for (const [socket, state] of connections) {
         if (!state.presenceSubscriptions.has(presence.accountId)) continue;
@@ -516,7 +582,7 @@ export function attachWebsocketHub(
           type: 'presence',
           presence: {
             accountId: presence.accountId,
-            state: await options.presence!.view(
+            state: await options.presence.view(
               state.actorId,
               presence.accountId,
               new Date(),
@@ -531,6 +597,7 @@ export function attachWebsocketHub(
 
   async function receiveMemberStatus(payload: string): Promise<void> {
     try {
+      if (!options.memberStatus) throw new Error('member_status_unavailable');
       const event = JSON.parse(payload) as Record<string, unknown>;
       if (
         typeof event.accountId !== 'string' ||
@@ -547,7 +614,7 @@ export function attachWebsocketHub(
           version: 1,
           type: 'member_status',
           accountId: event.accountId,
-          status: await options.memberStatus!.view(
+          status: await options.memberStatus.view(
             state.actorId,
             event.accountId,
             new Date(),
@@ -560,7 +627,10 @@ export function attachWebsocketHub(
   }
 
   function remember(eventId: string): boolean {
-    if (seenEvents.has(eventId)) return false;
+    if (seenEvents.has(eventId)) {
+      metrics.increment('realtime_event_duplicate');
+      return false;
+    }
     seenEvents.add(eventId);
     if (seenEvents.size > 10_000) {
       const oldest = seenEvents.values().next().value;
@@ -581,7 +651,8 @@ export function attachWebsocketHub(
       event,
     });
     for (const [socket, state] of connections)
-      if (state.subscriptions.has(spaceId)) safeSend(socket, state, delivery);
+      if (state.subscriptions.has(spaceId) && safeSend(socket, state, delivery))
+        metrics.increment('realtime_event_delivered');
   }
 
   async function receiveFanout(payload: string): Promise<void> {
@@ -630,19 +701,25 @@ export function attachWebsocketHub(
     }
   }
 
+  function publishFanout(payload: string): void {
+    if (!options.coordination) return;
+    void options.coordination.publish('realtime:events', payload).then(
+      () => {
+        fanoutState = fanoutSubscribed ? 'ready' : 'degraded';
+      },
+      () => {
+        fanoutState = 'degraded';
+        metrics.increment('realtime_fanout_degraded');
+      },
+    );
+  }
+
   return {
+    ready: () => subscriptionsReady,
     broadcast(spaceId, rawEvent) {
       const event = realtimeEnvelopeSchema.parse(rawEvent);
       deliver(spaceId, event);
-      if (options.coordination)
-        void options.coordination
-          .publish(
-            'realtime:events',
-            JSON.stringify({ instanceId, spaceId, event }),
-          )
-          .catch(() => {
-            metrics.increment('realtime_fanout_degraded');
-          });
+      publishFanout(JSON.stringify({ instanceId, spaceId, event }));
     },
     broadcastAccount(accountId, rawMessage) {
       const message = websocketServerMessageSchema.parse(rawMessage);
@@ -650,21 +727,14 @@ export function attachWebsocketHub(
       if (!remember(message.state.eventId)) return;
       for (const [socket, state] of connections)
         if (state.actorId === accountId) safeSend(socket, state, message);
-      if (options.coordination)
-        void options.coordination
-          .publish(
-            'realtime:events',
-            JSON.stringify({ instanceId, accountId, message }),
-          )
-          .catch(() => {
-            metrics.increment('realtime_fanout_degraded');
-          });
+      publishFanout(JSON.stringify({ instanceId, accountId, message }));
     },
     async close() {
       if (draining) return;
       draining = true;
       clearInterval(heartbeat);
       clearInterval(authorizationCheck);
+      await subscriptionsReady;
       await unsubscribeFanout?.();
       await unsubscribePresence?.();
       await unsubscribeMemberStatus?.();
@@ -697,6 +767,18 @@ export function attachWebsocketHub(
           (total, state) => total + state.subscriptions.size,
           0,
         ),
+      };
+    },
+    capacitySnapshot() {
+      return {
+        connections: connections.size,
+        subscriptions: [...connections.values()].reduce(
+          (total, state) => total + state.subscriptions.size,
+          0,
+        ),
+        queueDepth: queuedMessages,
+        queueBytes: queuedBytes,
+        fanout: fanoutState,
       };
     },
   };

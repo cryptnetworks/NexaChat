@@ -18,6 +18,7 @@ describe('message lifecycle HTTP boundary', () => {
     app.websocketHub = {
       broadcast,
       broadcastAccount: vi.fn(),
+      ready: () => Promise.resolve(),
       close: () => Promise.resolve(),
     };
 

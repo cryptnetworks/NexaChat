@@ -33,7 +33,6 @@ const app = buildApp(
   database.experience,
 );
 if (!database.auth) throw new Error('Authentication runtime is unavailable');
-await app.listen({ host: config.server.host, port: config.server.port });
 app.websocketHub = attachWebsocketHub(app.server, database.service, {
   auth: database.auth,
   trustedOrigin: config.authentication.trustedOrigin,
@@ -44,6 +43,8 @@ app.websocketHub = attachWebsocketHub(app.server, database.service, {
     : {}),
   memberStatus: database.experience.memberStatus,
 });
+await app.websocketHub.ready();
+await app.listen({ host: config.server.host, port: config.server.port });
 database.experience.notificationReadState.setPublisher({
   publish(state) {
     app.websocketHub?.broadcastAccount(state.accountId, {
