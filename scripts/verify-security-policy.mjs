@@ -31,13 +31,48 @@ if (policy.thresholds?.staticAnalysis !== 'error')
   fail('static analysis must block ERROR findings');
 
 for (const [index, suppression] of (policy.suppressions ?? []).entries()) {
-  if (!suppression.owner || !suppression.rationale)
+  if (!suppression.id || !suppression.owner || !suppression.rationale)
     fail(`suppression ${index} lacks an owner or rationale`);
+  if (!suppression.compensatingControl)
+    fail(`suppression ${index} lacks a compensating control`);
   if (!Number.isFinite(Date.parse(suppression.reviewAfter)))
     fail(`suppression ${index} lacks a review date`);
   if (Date.now() > Date.parse(suppression.reviewAfter))
     fail(`suppression ${index} is overdue for review`);
 }
+
+const gitleaksSuppressions = (policy.suppressions ?? []).filter(
+  (suppression) => suppression.scanner === 'gitleaks',
+);
+const expectedGitleaksSuppression = {
+  id: 'SEC-22',
+  rule: 'generic-api-key',
+  path: '.github/workflows/release-candidate.yml',
+};
+if (
+  gitleaksSuppressions.length !== 1 ||
+  Object.entries(expectedGitleaksSuppression).some(
+    ([field, value]) => gitleaksSuppressions[0]?.[field] !== value,
+  )
+)
+  fail('Gitleaks suppression differs from the reviewed policy');
+
+const gitleaksConfig = await readFile(join(root, '.gitleaks.toml'), 'utf8');
+const expectedGitleaksConfig = `title = "NexaChat Gitleaks policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SEC-22 public release-evidence service versions"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^\\.github/workflows/release-candidate\\.yml$''']
+regexes = ['''^\\s*services:\\s*\\{\\s*postgres:\\s*"17\\.10-alpine3\\.23",\\s*valkey:\\s*"8\\.1\\.9-alpine3\\.24"\\s*\\},\\s*$''']
+`;
+if (gitleaksConfig !== expectedGitleaksConfig)
+  fail('Gitleaks allowlist is broader than the reviewed policy');
 
 const lock = JSON.parse(
   await readFile(join(root, 'package-lock.json'), 'utf8'),

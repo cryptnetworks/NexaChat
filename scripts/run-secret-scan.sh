@@ -41,10 +41,10 @@ common=(
 )
 
 docker run "${common[@]}" --volume "$scan_repository:/repo:ro" "$scanner" git \
-  --redact=100 --no-banner --report-format=sarif \
+  --config=/repo/.gitleaks.toml --redact=100 --no-banner --report-format=sarif \
   --report-path=/output/gitleaks-history.sarif /repo
 docker run "${common[@]}" --volume "$root:/repo:ro" "$scanner" dir \
-  --redact=100 --no-banner --report-format=sarif \
+  --config=/repo/.gitleaks.toml --redact=100 --no-banner --report-format=sarif \
   --report-path=/output/gitleaks-worktree.sarif /repo
 
 node -e "const fs=require('node:fs');for(const file of process.argv.slice(1)){const value=JSON.parse(fs.readFileSync(file,'utf8'));if(value.version!=='2.1.0'||!Array.isArray(value.runs))process.exit(1)}" \
