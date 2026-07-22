@@ -14,6 +14,8 @@ import {
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
   'postgresql://nexa:local-development-password@127.0.0.1:5432/nexa';
+const databaseConfigured = Boolean(process.env.DATABASE_TEST_URL);
+const integration = databaseConfigured ? describe : describe.skip;
 const databaseName = `nexa_api_test_${randomUUID().replaceAll('-', '')}`;
 const databaseUrl = new URL(adminUrl);
 databaseUrl.pathname = `/${databaseName}`;
@@ -63,6 +65,7 @@ async function withAdminPool(
 }
 
 beforeAll(async () => {
+  if (!databaseConfigured) return;
   await withAdminPool(async (admin) => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
@@ -70,6 +73,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!databaseConfigured) return;
   if (databaseCreated) {
     await withAdminPool(async (admin) => {
       await admin.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
@@ -77,7 +81,7 @@ afterAll(async () => {
   }
 });
 
-describe('PostgreSQL-backed API', () => {
+integration('PostgreSQL-backed API', () => {
   it('persists the development flow across API restarts', async () => {
     const first = await initializeDatabase(
       config,

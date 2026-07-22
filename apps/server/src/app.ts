@@ -257,13 +257,14 @@ export function buildApp(
       );
     });
 
-  if (experience.notifications) {
+  const notificationService = experience.notifications;
+  if (notificationService) {
     app.get('/v1/notifications', async (request, reply) => {
       const input = notificationPageQuerySchema.parse(request.query);
       const actorId = await verifiedActor(request, auth, input.actorId);
       return reply.send(
         notificationPageSchema.parse(
-          await experience.notifications!.list(actorId, {
+          await notificationService.list(actorId, {
             limit: input.limit,
             ...(input.cursor ? { cursor: input.cursor } : {}),
           }),
@@ -278,7 +279,7 @@ export function buildApp(
         const actorId = await verifiedActor(request, auth, input.actorId, true);
         return reply.send(
           notificationSchema.parse(
-            await experience.notifications!.mark(
+            await notificationService.mark(
               actorId,
               request.params.notificationId,
               input.action,
@@ -367,7 +368,8 @@ export function buildApp(
     );
   }
 
-  if (experience.notificationPreferences) {
+  const notificationPreferenceService = experience.notificationPreferences;
+  if (notificationPreferenceService) {
     app.get(
       '/v1/notification-preferences/effective',
       async (request, reply) => {
@@ -377,7 +379,7 @@ export function buildApp(
         const actorId = await verifiedActor(request, auth, input.actorId);
         return reply.send(
           effectiveNotificationPreferenceSchema.parse(
-            await experience.notificationPreferences!.effective(
+            await notificationPreferenceService.effective(
               actorId,
               {
                 ...(input.communityId
@@ -398,7 +400,7 @@ export function buildApp(
       const actorId = await verifiedActor(request, auth, input.actorId, true);
       return reply.send(
         notificationPreferenceSchema.parse(
-          await experience.notificationPreferences!.update(
+          await notificationPreferenceService.update(
             actorId,
             {
               scopeType: input.scopeType,
@@ -416,11 +418,12 @@ export function buildApp(
     });
   }
 
-  if (experience.notificationReadState) {
+  const notificationReadStateService = experience.notificationReadState;
+  if (notificationReadStateService) {
     app.get('/v1/notification-read-state', async (request, reply) => {
       const input = notificationReadStateQuerySchema.parse(request.query);
       const actorId = await verifiedActor(request, auth, input.actorId);
-      const state = await experience.notificationReadState!.get(
+      const state = await notificationReadStateService.get(
         actorId,
         input.stream,
       );
@@ -433,7 +436,7 @@ export function buildApp(
       const actorId = await verifiedActor(request, auth, input.actorId, true);
       return reply.send(
         notificationReadStateSchema.parse(
-          await experience.notificationReadState!.advance({
+          await notificationReadStateService.advance({
             accountId: actorId,
             stream: input.stream,
             sequence: input.sequence,
@@ -453,7 +456,8 @@ export function buildApp(
       }),
     ),
   );
-  if (experience.webPush) {
+  const webPushService = experience.webPush;
+  if (webPushService) {
     app.post('/v1/web-push/subscriptions', async (request, reply) => {
       const input = registerWebPushSubscriptionSchema.parse(request.body);
       const actorId = await verifiedActor(request, auth, input.actorId, true);
@@ -461,7 +465,7 @@ export function buildApp(
         .code(201)
         .send(
           webPushSubscriptionSchema.parse(
-            await experience.webPush!.register(actorId, input.subscription),
+            await webPushService.register(actorId, input.subscription),
           ),
         );
     });
@@ -470,20 +474,18 @@ export function buildApp(
       async (request, reply) => {
         const input = revokeWebPushSubscriptionSchema.parse(request.body);
         const actorId = await verifiedActor(request, auth, input.actorId, true);
-        await experience.webPush!.revoke(
-          actorId,
-          request.params.subscriptionId,
-        );
+        await webPushService.revoke(actorId, request.params.subscriptionId);
         return reply.code(204).send();
       },
     );
   }
 
-  if (experience.presence) {
+  const presenceService = experience.presence;
+  if (presenceService) {
     app.post('/v1/presence/heartbeat', async (request, reply) => {
       const input = presenceHeartbeatSchema.parse(request.body);
       const actorId = await verifiedActor(request, auth, input.actorId, true);
-      const value = await experience.presence!.heartbeat(
+      const value = await presenceService.heartbeat(
         actorId,
         input.available,
         new Date(),
@@ -503,24 +505,21 @@ export function buildApp(
         return reply.send(
           presenceSchema.parse({
             accountId,
-            state: await experience.presence!.view(
-              actorId,
-              accountId,
-              new Date(),
-            ),
+            state: await presenceService.view(actorId, accountId, new Date()),
           }),
         );
       },
     );
   }
 
-  if (experience.memberStatus) {
+  const memberStatusService = experience.memberStatus;
+  if (memberStatusService) {
     app.put('/v1/member-status', async (request, reply) => {
       const input = updateMemberStatusSchema.parse(request.body);
       const actorId = await verifiedActor(request, auth, input.actorId, true);
       return reply.send(
         memberStatusSchema.parse(
-          await experience.memberStatus!.update(
+          await memberStatusService.update(
             actorId,
             input.text,
             input.expiresAt,
@@ -538,7 +537,7 @@ export function buildApp(
         const accountId = memberStatusSchema.shape.accountId.parse(
           request.params.accountId,
         );
-        const status = await experience.memberStatus!.view(
+        const status = await memberStatusService.view(
           actorId,
           accountId,
           new Date(),

@@ -136,8 +136,10 @@ export class WebPushRuntime
          )`,
         [accountId],
       );
+      const subscription = result.rows[0];
+      if (!subscription) throw new Error('web_push_registration_failed');
       await client.query('COMMIT');
-      return this.publicSubscription(result.rows[0]!);
+      return this.publicSubscription(subscription);
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;

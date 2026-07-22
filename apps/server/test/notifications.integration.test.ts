@@ -24,36 +24,39 @@ class MemoryNotifications implements NotificationStore {
     this.events.add(key);
     return Promise.resolve(true);
   }
-  async findDeduplicated(accountId: string, key: string) {
-    return [...this.values.values()].find(
-      (item) => item.accountId === accountId && item.deduplicationKey === key,
+  findDeduplicated(accountId: string, key: string) {
+    return Promise.resolve(
+      [...this.values.values()].find(
+        (item) => item.accountId === accountId && item.deduplicationKey === key,
+      ),
     );
   }
-  async create(value: NotificationRecord) {
+  create(value: NotificationRecord) {
     this.values.set(value.id, value);
-    return value;
+    return Promise.resolve(value);
   }
-  async update(
+  update(
     id: string,
     expectedVersion: number,
     patch: Partial<NotificationRecord>,
   ) {
     const value = this.values.get(id);
-    if (!value || value.version !== expectedVersion) return undefined;
+    if (!value || value.version !== expectedVersion)
+      return Promise.resolve(undefined);
     const updated = { ...value, ...patch, version: value.version + 1 };
     this.values.set(id, updated);
-    return updated;
+    return Promise.resolve(updated);
   }
-  async find(id: string) {
-    return this.values.get(id);
+  find(id: string) {
+    return Promise.resolve(this.values.get(id));
   }
-  async list(accountId: string, input: { limit: number }) {
-    return {
+  list(accountId: string, input: { limit: number }) {
+    return Promise.resolve({
       items: [...this.values.values()]
         .filter((item) => item.accountId === accountId)
         .slice(0, input.limit),
       nextCursor: null,
-    };
+    });
   }
   transaction<T>(work: (store: NotificationStore) => Promise<T>): Promise<T> {
     return work(this);
@@ -77,6 +80,7 @@ describe('notification HTTP integration', () => {
       kind: 'mention',
       now: new Date(),
     });
+    if (!created) throw new Error('notification test setup failed');
     const app = buildApp(
       undefined,
       undefined,
@@ -98,7 +102,7 @@ describe('notification HTTP integration', () => {
     visible = false;
     const hidden = await app.inject({
       method: 'PATCH',
-      url: `/v1/notifications/${created!.id}`,
+      url: `/v1/notifications/${created.id}`,
       payload: { actorId: accountId, action: 'read', expectedVersion: 1 },
     });
     expect(hidden.statusCode).toBe(404);

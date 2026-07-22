@@ -16,7 +16,7 @@ export class MentionRuntime {
 
   async process(message: Message): Promise<void> {
     const client = await this.pool.connect();
-    let recipients: string[] = [];
+    let recipients: string[];
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
       const context = await client.query<{ community_id: string }>(

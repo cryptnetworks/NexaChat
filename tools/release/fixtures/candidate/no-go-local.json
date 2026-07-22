@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "candidateId": "0.1.0-beta.1",
+  "version": "0.1.0",
+  "channel": "beta",
+  "commit": "8df6623867721bd1fd8d491fcfb463393ebc9dec",
+  "sourceDateEpoch": 1784678400,
+  "generatedAt": "2026-07-22T12:00:00.000Z",
+  "locks": [
+    {
+      "path": "apps/desktop/src-tauri/Cargo.lock",
+      "sha256": "f881dab0559b08e8bfa4c13f659cfae02bea868e01b23823c0ecf08a80319c7f"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a942861070db17d648589278ef70a68d7bcceef4294d78b6bd6c96ae61292104"
+    }
+  ],
+  "globalChecks": [
+    { "id": "accessibility", "status": "not-run", "evidenceSha256": null },
+    { "id": "authorization", "status": "not-run", "evidenceSha256": null },
+    { "id": "backup-restore", "status": "not-run", "evidenceSha256": null },
+    { "id": "clean-install", "status": "not-run", "evidenceSha256": null },
+    { "id": "dependency-audit", "status": "not-run", "evidenceSha256": null },
+    { "id": "failure-recovery", "status": "not-run", "evidenceSha256": null },
+    { "id": "format", "status": "not-run", "evidenceSha256": null },
+    { "id": "lint", "status": "not-run", "evidenceSha256": null },
+    { "id": "localization", "status": "not-run", "evidenceSha256": null },
+    { "id": "performance", "status": "not-run", "evidenceSha256": null },
+    { "id": "postgresql", "status": "not-run", "evidenceSha256": null },
+    { "id": "production-build", "status": "not-run", "evidenceSha256": null },
+    { "id": "provenance", "status": "not-run", "evidenceSha256": null },
+    { "id": "realtime-capacity", "status": "not-run", "evidenceSha256": null },
+    { "id": "rollback-rehearsal", "status": "not-run", "evidenceSha256": null },
+    { "id": "secret-scan", "status": "not-run", "evidenceSha256": null },
+    { "id": "unit-integration", "status": "not-run", "evidenceSha256": null },
+    { "id": "upgrade-rehearsal", "status": "not-run", "evidenceSha256": null }
+  ],
+  "targets": [
+    {
+      "platform": "macos",
+      "arch": "arm64",
+      "environment": {
+        "os": "macOS",
+        "osVersion": "27.0 (26A5378n)",
+        "runnerImage": "local-unmanaged",
+        "node": "24.18.0",
+        "npm": "11.16.0",
+        "rust": "1.97.1",
+        "tauri": "2.11.4"
+      },
+      "artifact": {
+        "name": "NexaChat-0.1.0-beta-macos-arm64.dmg",
+        "sha256": "77ad6dac0764a8cd386654df1c7a7c1e3b3f06f5227c7edf0670a4e3fe7fed8d",
+        "manifestSha256": "cb6b33397244e4380d50b77ca8ef57b63e838a625f6b1e4dad639b7f24d59cf0",
+        "sourceCommit": "80b16a2a1e043f650ebb643476af0954d34f3558",
+        "sboms": {
+          "cargo": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7",
+          "npm": "54a326837b135158e6f28cf389b6d86581b3ac0e4ba6891e7842636ef9b7c8b7"
+        },
+        "detachedSignature": {
+          "status": "passed",
+          "keyEnvironment": "test",
+          "keyId": "sha256:b9b4e9287c02eb74e8c00211df083af35fa6c0cfd2ab794271a5c7999adc11e7"
+        },
+        "nativeSignature": { "status": "not-run", "identity": null },
+        "attestation": { "status": "not-run", "digest": null }
+      },
+      "checks": [
+        { "id": "clean-install", "status": "not-run", "evidenceSha256": null },
+        {
+          "id": "credential-store",
+          "status": "not-run",
+          "evidenceSha256": null
+        },
+        {
+          "id": "desktop-security",
+          "status": "not-run",
+          "evidenceSha256": null
+        },
+        {
+          "id": "native-notifications",
+          "status": "not-run",
+          "evidenceSha256": null
+        },
+        { "id": "package", "status": "not-run", "evidenceSha256": null },
+        { "id": "reconnect", "status": "not-run", "evidenceSha256": null },
+        {
+          "id": "reproducible-build",
+          "status": "not-run",
+          "evidenceSha256": null
+        },
+        { "id": "smoke", "status": "not-run", "evidenceSha256": null },
+        { "id": "update-recovery", "status": "not-run", "evidenceSha256": null }
+      ]
+    }
+  ],
+  "residualRisks": [
+    {
+      "id": "missing-live-upgrade",
+      "severity": "high",
+      "status": "open",
+      "owner": "release-team",
+      "reviewBy": "2026-08-21",
+      "summary": "No live PostgreSQL backup, upgrade, rollback, and restoration rehearsal is retained.",
+      "mitigation": "Run the protected release-candidate database rehearsal and retain redacted logs."
+    },
+    {
+      "id": "missing-platform-matrix",
+      "severity": "high",
+      "status": "open",
+      "owner": "release-team",
+      "reviewBy": "2026-08-21",
+      "summary": "Linux, macOS Intel, and Windows candidate evidence is absent.",
+      "mitigation": "Execute the pinned release-candidate workflow on every required target."
+    },
+    {
+      "id": "missing-production-signing",
+      "severity": "critical",
+      "status": "open",
+      "owner": "release-team",
+      "reviewBy": "2026-08-21",
+      "summary": "The retained fixture has a test signature and no native signature or attestation.",
+      "mitigation": "Use protected production signing identities and verify every resulting artifact."
+    }
+  ],
+  "decision": {
+    "status": "no-go",
+    "decidedAt": "2026-07-22T12:05:00.000Z",
+    "decidedBy": null,
+    "rationale": "Local schema evidence only; required global, platform, upgrade, signing, and attestation gates are incomplete."
+  }
+}

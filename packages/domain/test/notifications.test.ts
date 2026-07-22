@@ -8,11 +8,11 @@ import {
 class Store implements NotificationStore {
   values = new Map<string, NotificationRecord>();
   events = new Set<string>();
-  claimSourceEvent = async (accountId: string, eventId: string) => {
+  claimSourceEvent = (accountId: string, eventId: string) => {
     const key = `${accountId}:${eventId}`;
-    if (this.events.has(key)) return false;
+    if (this.events.has(key)) return Promise.resolve(false);
     this.events.add(key);
-    return true;
+    return Promise.resolve(true);
   };
   /* eslint-disable @typescript-eslint/require-await -- port parity */
   findDeduplicated = async (a: string, k: string) =>

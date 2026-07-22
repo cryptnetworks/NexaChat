@@ -105,6 +105,10 @@ async function fixture(
     '{\n  "targetVersion": "0.1.0"\n}\n',
   );
   await writeFile(
+    resolve(root, 'release/candidate-policy.json'),
+    '{\n  "targetVersion": "0.1.0"\n}\n',
+  );
+  await writeFile(
     resolve(root, 'CHANGELOG.md'),
     '# Changelog\n\n## [Unreleased]\n\n<!-- release-notes -->\n',
   );
@@ -207,6 +211,11 @@ describe('release preparation', () => {
     expect(await readFile(resolve(root, 'CHANGELOG.md'), 'utf8')).toContain(
       '## [0.2.0] - 2026-07-22',
     );
+    expect(
+      JSON.parse(
+        await readFile(resolve(root, 'release/candidate-policy.json'), 'utf8'),
+      ),
+    ).toMatchObject({ targetVersion: '0.2.0' });
   });
 
   it('rejects regressions and invalid calendar dates', async () => {

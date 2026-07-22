@@ -25,6 +25,7 @@
     "lint": "eslint .",
     "migrate": "npm run migrate --workspace @nexa/server",
     "release:artifacts": "tsx tools/release/artifact-bundle.ts",
+    "release:candidate": "tsx tools/release/candidate.ts",
     "release:check": "tsx tools/release/versioning.ts check",
     "release:prepare": "tsx tools/release/versioning.ts prepare",
     "release:sbom": "tsx tools/release/sbom.ts",

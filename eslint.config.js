@@ -22,4 +22,10 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ['apps/web/public/service-worker.js'],
+    languageOptions: {
+      globals: { self: 'readonly' },
+    },
+  },
 );

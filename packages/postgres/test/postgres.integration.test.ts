@@ -24,6 +24,8 @@ import {
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
   'postgresql://nexa:local-development-password@127.0.0.1:5432/nexa';
+const databaseConfigured = Boolean(process.env.DATABASE_TEST_URL);
+const integration = databaseConfigured ? describe : describe.skip;
 const databaseName = `nexa_test_${randomUUID().replaceAll('-', '')}`;
 const databaseUrl = new URL(adminUrl);
 databaseUrl.pathname = `/${databaseName}`;
@@ -71,6 +73,7 @@ async function withAdminPool(
 }
 
 beforeAll(async () => {
+  if (!databaseConfigured) return;
   await withAdminPool(async (admin) => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
@@ -81,6 +84,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!databaseConfigured) return;
   const cleanupErrors: Error[] = [];
   if (poolInitialized) {
     try {
@@ -107,7 +111,7 @@ afterAll(async () => {
   }
 });
 
-describe('PostgreSQL persistence', () => {
+integration('PostgreSQL persistence', () => {
   it('stores, retrieves, updates, and deletes every aggregate', async () => {
     const store = new PostgresPersistence(pool);
     const now = new Date('2026-01-02T03:04:05.000Z').toISOString();
@@ -446,7 +450,7 @@ describe('PostgreSQL persistence', () => {
   });
 });
 
-describe('PostgreSQL authorization persistence', () => {
+integration('PostgreSQL authorization persistence', () => {
   it('stores roles, assignments and decisions idempotently and protects ownership from stale transfer', async () => {
     const persistence = new PostgresPersistence(pool);
     const authorization = new PostgresAuthorizationStore(pool);
@@ -525,7 +529,7 @@ describe('PostgreSQL authorization persistence', () => {
   });
 });
 
-describe('PostgreSQL migrations', () => {
+integration('PostgreSQL migrations', () => {
   it('migrates an empty database exactly once under concurrent startup', async () => {
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     const applied: number[] = [];

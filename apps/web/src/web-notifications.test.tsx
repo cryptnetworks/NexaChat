@@ -28,7 +28,7 @@ describe('web notification client', () => {
       'utf8',
     );
     expect(worker).toContain('Open NexaChat to view this update.');
-    expect(worker).toContain("payload.route !== '/notifications'");
+    expect(worker).toContain("candidate.route === '/notifications'");
     expect(worker).not.toContain('payload.body');
   });
 });
