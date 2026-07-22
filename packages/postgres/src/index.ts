@@ -40,7 +40,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 29;
+export const CURRENT_SCHEMA_VERSION = 30;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
