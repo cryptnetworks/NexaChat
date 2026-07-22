@@ -94,6 +94,7 @@ import {
 } from './auth-routes.js';
 import type { RuntimeConfig } from './config.js';
 import type { WebPushController } from './web-push.js';
+import type { MentionRuntime } from './mentions.js';
 import { CoordinationError } from '@nexa/coordination';
 
 export function buildApp(
@@ -724,6 +725,7 @@ export function buildApp(
         key,
         input.replyToId ?? null,
       );
+      await experience.mentions?.process(message);
       const event: RealtimeEnvelope = {
         version: 1,
         id: message.createdEventId,
@@ -1217,6 +1219,10 @@ export function buildApp(
       return sendApiError(reply, 400, 'invalid_request', request.id);
     if (error instanceof Error && error.message === 'stale_member_status')
       return sendApiError(reply, 409, 'stale_write', request.id);
+    if (error instanceof Error && error.message === 'mention_message_not_found')
+      return sendApiError(reply, 404, 'not_found', request.id);
+    if (error instanceof Error && error.message === 'mention_fanout_exceeded')
+      return sendApiError(reply, 409, 'conflict', request.id);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -1251,6 +1257,7 @@ export interface ExperienceRuntime {
   webPush?: WebPushController;
   presence?: PresenceService;
   memberStatus?: MemberStatusService;
+  mentions?: MentionRuntime;
 }
 
 function sendApiError(

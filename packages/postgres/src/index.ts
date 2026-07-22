@@ -52,7 +52,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 39;
+export const CURRENT_SCHEMA_VERSION = 40;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -246,6 +246,15 @@ export class PostgresNotificationStore implements NotificationStore {
     private readonly pool: Pool,
     private readonly db: Pool | PoolClient = pool,
   ) {}
+
+  async claimSourceEvent(accountId: string, eventId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `INSERT INTO notification_source_events(account_id,event_id)
+       VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [accountId, eventId],
+    );
+    return result.rowCount === 1;
+  }
 
   async findDeduplicated(accountId: string, key: string) {
     await this.db.query(

@@ -29,6 +29,7 @@ import {
 import { WebPushRuntime, type WebPushRuntimeConfig } from './web-push.js';
 import type { EphemeralCoordination } from '@nexa/coordination';
 import { CoordinatedPresence, MEMBER_STATUS_CHANNEL } from './presence.js';
+import { MentionRuntime } from './mentions.js';
 
 export async function initializeDatabase(
   config: PostgresConfig,
@@ -107,6 +108,7 @@ export async function initializeDatabase(
           }),
         ),
     });
+  const mentions = new MentionRuntime(pool, authorization, notifications);
   return {
     pool,
     service: new CommunityService(persistence, authorization),
@@ -119,6 +121,7 @@ export async function initializeDatabase(
       ...(webPush ? { webPush } : {}),
       ...(presence ? { presence } : {}),
       memberStatus,
+      mentions,
     },
     ...(authentication
       ? { auth: createAuthRuntime(pool, authentication) }

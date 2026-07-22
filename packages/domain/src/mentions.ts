@@ -16,6 +16,11 @@ export interface MentionDirectory {
     limit: number,
   ): Promise<string[]>;
   mayMentionEveryone(actorId: string, spaceId: string): Promise<boolean>;
+  spaceMembers(
+    actorId: string,
+    spaceId: string,
+    limit: number,
+  ): Promise<string[]>;
   blocked(actorId: string, targetId: string): Promise<boolean>;
 }
 
@@ -34,10 +39,20 @@ export async function resolveMentions(
     if (token[0].toLowerCase() === '@everyone') {
       if (!(await directory.mayMentionEveryone(input.actorId, input.spaceId)))
         continue;
+      const members = (
+        await directory.spaceMembers(input.actorId, input.spaceId, 101)
+      ).filter((id) => id !== input.actorId);
+      if (members.length > 100) throw new Error('mention_fanout_exceeded');
+      const allowed: string[] = [];
+      for (const id of members)
+        if (!(await directory.blocked(input.actorId, id))) {
+          recipients.add(id);
+          allowed.push(id);
+        }
       mentions.push({
         type: 'everyone',
         targetId: input.spaceId,
-        accountIds: [],
+        accountIds: allowed,
       });
       continue;
     }

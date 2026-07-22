@@ -7,6 +7,13 @@ import {
 
 class Store implements NotificationStore {
   values = new Map<string, NotificationRecord>();
+  events = new Set<string>();
+  claimSourceEvent = async (accountId: string, eventId: string) => {
+    const key = `${accountId}:${eventId}`;
+    if (this.events.has(key)) return false;
+    this.events.add(key);
+    return true;
+  };
   /* eslint-disable @typescript-eslint/require-await -- port parity */
   findDeduplicated = async (a: string, k: string) =>
     [...this.values.values()].find(
@@ -70,5 +77,24 @@ describe('persistent notifications', () => {
     await expect(
       service.mark('other', first.id, 'read', 2, now),
     ).rejects.toThrow('notification_not_found');
+  });
+
+  it('claims source events so transport retries do not aggregate twice', async () => {
+    const store = new Store();
+    const service = new NotificationService(store, {
+      mayNotify: () => Promise.resolve(true),
+      mayView: () => Promise.resolve(true),
+    });
+    const input = {
+      accountId: 'u',
+      kind: 'mention' as const,
+      resourceId: 'm',
+      actorId: 'a',
+      eventId: 'event',
+      now: new Date('2026-01-01'),
+    };
+    await service.create(input);
+    const retry = await service.create(input);
+    expect(retry?.count).toBe(1);
   });
 });

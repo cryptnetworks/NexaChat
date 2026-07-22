@@ -181,7 +181,7 @@ export class WebPushRuntime
       return false;
     const preference = await this.preferences.effective(
       accountId,
-      notification.scopeId ? { communityId: notification.scopeId } : {},
+      notification.scopeId ? { spaceId: notification.scopeId } : {},
       notification.kind,
       new Date(),
     );

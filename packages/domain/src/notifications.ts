@@ -51,6 +51,7 @@ export interface NotificationRecord {
   version: number;
 }
 export interface NotificationStore {
+  claimSourceEvent(accountId: string, eventId: string): Promise<boolean>;
   findDeduplicated(
     accountId: string,
     key: string,
@@ -113,6 +114,7 @@ export class NotificationService {
     resourceId: string;
     actorId: string;
     aggregationKey?: string;
+    eventId?: string;
     now: Date;
   }): Promise<NotificationRecord | null> {
     if (
@@ -134,6 +136,11 @@ export class NotificationService {
       )
         return null;
       const existing = await store.findDeduplicated(input.accountId, key);
+      if (
+        input.eventId &&
+        !(await store.claimSourceEvent(input.accountId, input.eventId))
+      )
+        return existing ?? null;
       if (
         existing &&
         !existing.archivedAt &&

@@ -8,6 +8,7 @@ describe('user and role mentions', () => {
       visibleUser: async () => true,
       roleMembers: async () => ['u1', 'blocked'],
       mayMentionEveryone: async () => false,
+      spaceMembers: async () => [],
       blocked: async (_a: string, t: string) => t === 'blocked',
     };
     /* eslint-enable @typescript-eslint/require-await */
@@ -22,5 +23,23 @@ describe('user and role mentions', () => {
     expect(result.mentions.some((value) => value.type === 'everyone')).toBe(
       false,
     );
+  });
+
+  it('expands authorized everyone mentions within the same fanout bound', async () => {
+    const directory = {
+      visibleUser: () => Promise.resolve(true),
+      roleMembers: () => Promise.resolve([]),
+      mayMentionEveryone: () => Promise.resolve(true),
+      spaceMembers: () => Promise.resolve(['author', 'one', 'two']),
+      blocked: (_actor: string, target: string) =>
+        Promise.resolve(target === 'two'),
+    };
+    const result = await resolveMentions(directory, {
+      actorId: 'author',
+      spaceId: 'space',
+      body: '@everyone',
+    });
+    expect(result.recipientIds).toEqual(['one']);
+    expect(result.mentions[0]?.accountIds).toEqual(['one']);
   });
 });

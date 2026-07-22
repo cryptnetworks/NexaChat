@@ -17,6 +17,13 @@ import { buildApp } from '../src/app.js';
 
 class MemoryNotifications implements NotificationStore {
   readonly values = new Map<string, NotificationRecord>();
+  readonly events = new Set<string>();
+  claimSourceEvent(accountId: string, eventId: string) {
+    const key = `${accountId}:${eventId}`;
+    if (this.events.has(key)) return Promise.resolve(false);
+    this.events.add(key);
+    return Promise.resolve(true);
+  }
   async findDeduplicated(accountId: string, key: string) {
     return [...this.values.values()].find(
       (item) => item.accountId === accountId && item.deduplicationKey === key,
