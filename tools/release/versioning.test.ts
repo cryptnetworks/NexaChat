@@ -24,6 +24,7 @@ async function fixture(
     'apps/desktop/src-tauri',
     'packages/domain',
     '.changes',
+    'release',
   ]) {
     await mkdir(resolve(root, directory), { recursive: true });
   }
@@ -98,6 +99,10 @@ async function fixture(
   await writeFile(
     resolve(root, 'apps/desktop/src-tauri/tauri.conf.json'),
     '{\n  "version": "0.1.0"\n}\n',
+  );
+  await writeFile(
+    resolve(root, 'release/upgrade-policy.json'),
+    '{\n  "targetVersion": "0.1.0"\n}\n',
   );
   await writeFile(
     resolve(root, 'CHANGELOG.md'),

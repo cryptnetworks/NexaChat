@@ -422,6 +422,14 @@ export async function checkReleaseState(
     version,
     'apps/desktop/src-tauri/tauri.conf.json',
   );
+  const upgradePolicy = await readJson(
+    resolve(root, 'release/upgrade-policy.json'),
+  );
+  assertVersion(
+    upgradePolicy.targetVersion,
+    version,
+    'release/upgrade-policy.json',
+  );
 
   const changelog = await readUtf8(resolve(root, 'CHANGELOG.md'));
   if ((changelog.match(new RegExp(RELEASE_MARKER, 'g')) ?? []).length !== 1) {
@@ -582,6 +590,10 @@ export async function prepareRelease(
   const tauri = await readJson(resolve(root, tauriPath));
   tauri.version = targetVersion;
   writes.set(tauriPath, stringifyJson(tauri));
+  const upgradePolicyPath = 'release/upgrade-policy.json';
+  const upgradePolicy = await readJson(resolve(root, upgradePolicyPath));
+  upgradePolicy.targetVersion = targetVersion;
+  writes.set(upgradePolicyPath, stringifyJson(upgradePolicy));
 
   const changelog = await readUtf8(resolve(root, 'CHANGELOG.md'));
   if (changelog.includes(`## [${targetVersion}]`))

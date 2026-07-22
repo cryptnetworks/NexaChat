@@ -35,6 +35,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run release:check
+      - run: npm run release:upgrade -- policy
       - run: npm run test:architecture
       - run: npm run test:contracts
       - run: npm test

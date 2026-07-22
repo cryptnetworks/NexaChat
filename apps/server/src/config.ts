@@ -5,8 +5,10 @@ import type { ObjectStorageConfig } from '@nexa/object-storage';
 import type { CoordinationConfig } from '@nexa/coordination';
 
 export type RuntimeMode = 'development' | 'test' | 'production';
+export const RUNTIME_CONFIGURATION_SCHEMA_VERSION = 1;
 export interface RuntimeConfig {
   mode: RuntimeMode;
+  configurationSchemaVersion: number;
   server: {
     host: string;
     port: number;
@@ -67,6 +69,7 @@ export class ConfigurationError extends Error {
 
 const keys = new Set([
   'NODE_ENV',
+  'NEXA_CONFIG_SCHEMA',
   'DATABASE_URL',
   'NEXA_SERVER_HOST',
   'NEXA_SERVER_PORT',
@@ -135,6 +138,13 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     'test',
     'production',
   ] as const);
+  const configurationSchemaVersion = int(
+    env.NEXA_CONFIG_SCHEMA,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    RUNTIME_CONFIGURATION_SCHEMA_VERSION,
+    'NEXA_CONFIG_SCHEMA',
+  );
   const connectionString = required(env, 'DATABASE_URL');
   const databaseUrl = url(connectionString, 'DATABASE_URL');
   if (
@@ -261,6 +271,7 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     fail('NEXA_WEB_PUSH_ALLOWED_HOSTS', 'must contain at most 32 DNS suffixes');
   return {
     mode,
+    configurationSchemaVersion,
     server: {
       host: env.NEXA_SERVER_HOST ?? '0.0.0.0',
       port: int(env.NEXA_SERVER_PORT, 3000, 1, 65_535, 'NEXA_SERVER_PORT'),

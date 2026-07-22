@@ -2846,14 +2846,65 @@ const mapContentLimits = (row: ContentLimitsRow): CommunityContentLimits => ({
   version: row.version,
 });
 
-interface Migration {
+export interface Migration {
   version: number;
   name: string;
   checksum: string;
   sql: string;
 }
 
+export interface PostgresUpgradePlan {
+  fromSchema: number;
+  toSchema: number;
+  pendingVersions: number[];
+  migrationSetSha256: string;
+}
+
+export interface AppliedMigrationRecord {
+  version: number;
+  name: string;
+  checksum: string;
+}
+
 export class MigrationError extends Error {}
+
+export function buildPostgresUpgradePlan(
+  migrations: readonly Migration[],
+  applied: readonly AppliedMigrationRecord[],
+): PostgresUpgradePlan {
+  for (const [index, existing] of applied.entries()) {
+    const migration = migrations[index];
+    if (
+      existing.version !== index + 1 ||
+      !migration ||
+      migration.version !== existing.version ||
+      migration.name !== existing.name ||
+      migration.checksum !== existing.checksum
+    ) {
+      throw new MigrationError(
+        'Applied migration history is incompatible with this build',
+      );
+    }
+  }
+  const fromSchema = applied.length;
+  return {
+    fromSchema,
+    toSchema: CURRENT_SCHEMA_VERSION,
+    pendingVersions: migrations
+      .slice(fromSchema)
+      .map((migration) => migration.version),
+    migrationSetSha256: createHash('sha256')
+      .update(
+        migrations
+          .map(
+            (migration) =>
+              `${String(migration.version)}:${migration.name}:${migration.checksum}\n`,
+          )
+          .join(''),
+      )
+      .digest('hex'),
+  };
+}
 
 export async function readMigrations(directory: string): Promise<Migration[]> {
   const names = (await readdir(directory))
@@ -2906,20 +2957,8 @@ export async function migratePostgres(
     }>(
       'SELECT version, name, checksum FROM nexa_schema_migrations ORDER BY version',
     );
-    for (const existing of applied.rows) {
-      const migration = migrations.find(
-        (candidate) => candidate.version === existing.version,
-      );
-      if (
-        !migration ||
-        migration.name !== existing.name ||
-        migration.checksum !== existing.checksum
-      )
-        throw new MigrationError(
-          `Applied migration ${String(existing.version)} is incompatible with this build`,
-        );
-    }
-    for (const migration of migrations.slice(applied.rows.length)) {
+    const plan = buildPostgresUpgradePlan(migrations, applied.rows);
+    for (const migration of migrations.slice(plan.fromSchema)) {
       await client.query(migration.sql);
       await client.query(
         `INSERT INTO nexa_schema_migrations (version, name, checksum)
@@ -2930,6 +2969,40 @@ export async function migratePostgres(
     }
     await client.query('COMMIT');
     return CURRENT_SCHEMA_VERSION;
+  } catch (error) {
+    await safeRollback(client);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function planPostgresUpgrade(
+  pool: Pool,
+  directory: string,
+): Promise<PostgresUpgradePlan> {
+  const migrations = await readMigrations(directory);
+  const client = await pool.connect();
+  try {
+    await client.query(
+      'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+    );
+    await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_ID]);
+    const relation = await client.query<{ relation: string | null }>(
+      "SELECT to_regclass('public.nexa_schema_migrations')::text AS relation",
+    );
+    const applied = relation.rows[0]?.relation
+      ? await client.query<{
+          version: number;
+          name: string;
+          checksum: string;
+        }>(
+          'SELECT version, name, checksum FROM nexa_schema_migrations ORDER BY version',
+        )
+      : { rows: [] };
+    const result = buildPostgresUpgradePlan(migrations, applied.rows);
+    await client.query('COMMIT');
+    return result;
   } catch (error) {
     await safeRollback(client);
     throw error;

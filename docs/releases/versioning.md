@@ -3,8 +3,9 @@
 Nexa Chat uses one repository-wide [Semantic Versioning](https://semver.org/)
 version. The root manifest is authoritative. Every app and package manifest,
 internal dependency pin, npm lockfile workspace entry, desktop Cargo manifest
-and lock entry, and Tauri configuration must carry that exact version. API and
-event schema versions remain independent compatibility contracts.
+and lock entry, Tauri configuration, and upgrade-policy target must carry that
+exact version. API and event schema versions remain independent compatibility
+contracts.
 
 ## Change metadata and review
 

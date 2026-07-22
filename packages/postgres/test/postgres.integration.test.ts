@@ -15,6 +15,7 @@ import {
   PostgresPersistence,
   createPostgresPool,
   migratePostgres,
+  planPostgresUpgrade,
   readMigrations,
   verifyPostgresSchema,
   type PostgresConfig,
@@ -536,7 +537,9 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(applied).toEqual(
+      Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, index) => index + 1),
+    );
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -563,9 +566,23 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(6);
-    expect(applied).toEqual([3, 4, 5, 6]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(6);
+    ).resolves.toBe(CURRENT_SCHEMA_VERSION);
+    expect(applied).toEqual(
+      Array.from(
+        { length: CURRENT_SCHEMA_VERSION - 2 },
+        (_, index) => index + 3,
+      ),
+    );
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    const plan = await planPostgresUpgrade(pool, migrationsDirectory);
+    expect(plan).toMatchObject({
+      fromSchema: CURRENT_SCHEMA_VERSION,
+      toSchema: CURRENT_SCHEMA_VERSION,
+      pendingVersions: [],
+    });
+    expect(plan.migrationSetSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects missing and incompatible migration history', async () => {

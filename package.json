@@ -28,6 +28,8 @@
     "release:check": "tsx tools/release/versioning.ts check",
     "release:prepare": "tsx tools/release/versioning.ts prepare",
     "release:sbom": "tsx tools/release/sbom.ts",
+    "release:upgrade": "tsx tools/release/upgrade.ts",
+    "release:upgrade:database": "npm run upgrade:database:plan --workspace @nexa/server",
     "test": "vitest run",
     "test:auth": "vitest run packages/auth/test apps/server/test/config.test.ts apps/server/test/auth.integration.test.ts",
     "test:authorization": "vitest run packages/authorization/test apps/server/test/authorization.integration.test.ts",

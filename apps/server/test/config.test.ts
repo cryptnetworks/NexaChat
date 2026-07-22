@@ -21,6 +21,7 @@ describe('runtime configuration', () => {
   it('parses valid development and production settings', () => {
     expect(parseRuntimeConfig(development).mode).toBe('development');
     const config = parseRuntimeConfig(production);
+    expect(config.configurationSchemaVersion).toBe(1);
     expect(config.authentication.secureCookies).toBe(true);
     expect(config.database.maxConnections).toBe(10);
     expect(config.websocket.maxSubscriptions).toBe(32);
@@ -119,6 +120,7 @@ describe('runtime configuration', () => {
       'NEXA_WS_MAX_PAYLOAD_BYTES',
     ],
     [{ ...development, NEXA_SERVER_RATE_LIMIT: '9' }, 'NEXA_SERVER_RATE_LIMIT'],
+    [{ ...development, NEXA_CONFIG_SCHEMA: '2' }, 'NEXA_CONFIG_SCHEMA'],
     [{ ...development, NEXA_OBJECT_STORAGE_ENABLED: 'true' }, 'S3_ENDPOINT'],
     [{ ...development, NEXA_COORDINATION_ENABLED: 'true' }, 'REDIS_URL'],
     [
