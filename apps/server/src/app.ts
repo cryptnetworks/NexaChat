@@ -47,11 +47,16 @@ import {
   moderationAppealSchema,
   updateContentLimitsSchema,
   contentLimitsSchema,
+  notificationPageQuerySchema,
+  notificationPageSchema,
+  notificationSchema,
+  updateNotificationSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
   DomainError,
   InMemoryCommunityService,
+  type NotificationService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
@@ -74,6 +79,7 @@ export function buildApp(
   auth?: AuthRuntime,
   authorization?: AuthorizationService,
   serverConfig?: RuntimeConfig['server'],
+  experience: ExperienceRuntime = {},
 ): FastifyInstance {
   const app = Fastify({
     bodyLimit: serverConfig?.bodyLimitBytes ?? 16_384,
@@ -162,6 +168,40 @@ export function buildApp(
         ),
       );
     });
+
+  if (experience.notifications) {
+    app.get('/v1/notifications', async (request, reply) => {
+      const input = notificationPageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        notificationPageSchema.parse(
+          await experience.notifications!.list(actorId, {
+            limit: input.limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          }),
+        ),
+      );
+    });
+
+    app.patch<{ Params: { notificationId: string } }>(
+      '/v1/notifications/:notificationId',
+      async (request, reply) => {
+        const input = updateNotificationSchema.parse(request.body);
+        const actorId = await verifiedActor(request, auth, input.actorId, true);
+        return reply.send(
+          notificationSchema.parse(
+            await experience.notifications!.mark(
+              actorId,
+              request.params.notificationId,
+              input.action,
+              input.expectedVersion,
+              new Date(),
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
@@ -913,6 +953,15 @@ export function buildApp(
     }
     if (error instanceof AuthorizationError)
       return sendApiError(reply, 404, 'not_found', request.id);
+    if (error instanceof Error && error.message === 'notification_not_found')
+      return sendApiError(reply, 404, 'not_found', request.id);
+    if (
+      error instanceof Error &&
+      ['stale_notification', 'invalid_notification_cursor'].includes(
+        error.message,
+      )
+    )
+      return sendApiError(reply, 409, 'stale_write', request.id);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -938,6 +987,10 @@ export function buildApp(
   );
 
   return app;
+}
+
+export interface ExperienceRuntime {
+  notifications?: NotificationService;
 }
 
 function sendApiError(

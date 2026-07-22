@@ -64,7 +64,12 @@ export interface NotificationAuthorization {
     resourceId: string,
     kind: NotificationKind,
   ): Promise<boolean>;
-  mayView(accountId: string, resourceId: string): Promise<boolean>;
+  mayView(
+    accountId: string,
+    resourceId: string,
+    kind?: NotificationKind,
+    scopeId?: string | null,
+  ): Promise<boolean>;
 }
 
 const dedupe = (input: {
@@ -159,7 +164,12 @@ export class NotificationService {
     for (const item of page.items)
       if (
         !item.archivedAt &&
-        (await this.authorization.mayView(accountId, item.resourceId))
+        (await this.authorization.mayView(
+          accountId,
+          item.resourceId,
+          item.kind,
+          item.scopeId,
+        ))
       )
         items.push(item);
     return { items, nextCursor: page.nextCursor };
@@ -171,19 +181,30 @@ export class NotificationService {
     expectedVersion: number,
     now: Date,
   ): Promise<NotificationRecord> {
-    const current = await this.store.find(id);
-    if (!current || current.accountId !== accountId)
-      throw new Error('notification_not_found');
-    const patch =
-      action === 'read'
-        ? { readAt: current.readAt ?? now.toISOString() }
-        : {
-            archivedAt: current.archivedAt ?? now.toISOString(),
-            readAt: current.readAt ?? now.toISOString(),
-          };
-    const updated = await this.store.update(id, expectedVersion, patch);
-    if (!updated) throw new Error('stale_notification');
-    return updated;
+    return this.store.transaction(async (store) => {
+      const current = await store.find(id);
+      if (
+        !current ||
+        current.accountId !== accountId ||
+        !(await this.authorization.mayView(
+          accountId,
+          current.resourceId,
+          current.kind,
+          current.scopeId,
+        ))
+      )
+        throw new Error('notification_not_found');
+      const patch =
+        action === 'read'
+          ? { readAt: current.readAt ?? now.toISOString() }
+          : {
+              archivedAt: current.archivedAt ?? now.toISOString(),
+              readAt: current.readAt ?? now.toISOString(),
+            };
+      const updated = await store.update(id, expectedVersion, patch);
+      if (!updated) throw new Error('stale_notification');
+      return updated;
+    });
   }
 }
 

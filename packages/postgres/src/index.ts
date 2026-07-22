@@ -27,6 +27,9 @@ import type {
   Persistence,
   SessionRecord,
   Space,
+  NotificationRecord,
+  NotificationStore,
+  NotificationAuthorization,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -148,6 +151,272 @@ export class PostgresPersistence implements Persistence {
     } finally {
       client.release();
     }
+  }
+}
+
+interface NotificationRow {
+  id: string;
+  account_id: string;
+  kind: NotificationRecord['kind'];
+  scope_id: string | null;
+  resource_id: string;
+  actor_ids: string[];
+  aggregate_count: number;
+  deduplication_key: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+  read_at: Date | string | null;
+  archived_at: Date | string | null;
+  expires_at: Date | string;
+  version: number;
+}
+
+const NOTIFICATION_FIELDS = `id, account_id, kind, scope_id, resource_id,
+  actor_ids, aggregate_count, deduplication_key, created_at, updated_at,
+  read_at, archived_at, expires_at, version`;
+
+function timestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function nullableTimestamp(value: Date | string | null): string | null {
+  return value === null ? null : timestamp(value);
+}
+
+function mapNotification(row: NotificationRow): NotificationRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    kind: row.kind,
+    scopeId: row.scope_id,
+    resourceId: row.resource_id,
+    actorIds: row.actor_ids,
+    count: row.aggregate_count,
+    deduplicationKey: row.deduplication_key,
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+    readAt: nullableTimestamp(row.read_at),
+    archivedAt: nullableTimestamp(row.archived_at),
+    expiresAt: timestamp(row.expires_at),
+    version: row.version,
+  };
+}
+
+function notificationCursor(value: NotificationRecord): string {
+  return Buffer.from(
+    JSON.stringify([value.updatedAt, value.id]),
+    'utf8',
+  ).toString('base64url');
+}
+
+function parseNotificationCursor(value: string): [string, string] {
+  try {
+    const parsed: unknown = JSON.parse(
+      Buffer.from(value, 'base64url').toString('utf8'),
+    );
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      !Number.isFinite(Date.parse(parsed[0])) ||
+      typeof parsed[1] !== 'string' ||
+      !/^[0-9a-f-]{36}$/i.test(parsed[1])
+    )
+      throw new Error('invalid');
+    return [parsed[0], parsed[1]];
+  } catch {
+    throw new Error('invalid_notification_cursor');
+  }
+}
+
+/** Durable notification adapter. Transactions use serializable isolation and a
+ * per-deduplication-key advisory lock so concurrent replicas cannot create the
+ * same logical notification twice. */
+export class PostgresNotificationStore implements NotificationStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async findDeduplicated(accountId: string, key: string) {
+    await this.db.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`${accountId}:${key}`],
+    );
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications
+       WHERE account_id = $1 AND deduplication_key = $2`,
+      [accountId, key],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async create(value: NotificationRecord): Promise<NotificationRecord> {
+    const result = await this.db.query<NotificationRow>(
+      `INSERT INTO notifications
+       (id, account_id, kind, scope_id, resource_id, actor_ids,
+        aggregate_count, deduplication_key, created_at, updated_at, read_at,
+        archived_at, expires_at, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       RETURNING ${NOTIFICATION_FIELDS}`,
+      [
+        value.id,
+        value.accountId,
+        value.kind,
+        value.scopeId,
+        value.resourceId,
+        value.actorIds,
+        value.count,
+        value.deduplicationKey,
+        value.createdAt,
+        value.updatedAt,
+        value.readAt,
+        value.archivedAt,
+        value.expiresAt,
+        value.version,
+      ],
+    );
+    return mapNotification(requiredRow(result.rows));
+  }
+
+  async update(
+    id: string,
+    expectedVersion: number,
+    patch: Partial<NotificationRecord>,
+  ) {
+    const current = await this.find(id);
+    if (!current) return undefined;
+    const next = { ...current, ...patch, version: current.version + 1 };
+    const result = await this.db.query<NotificationRow>(
+      `UPDATE notifications SET actor_ids=$3, aggregate_count=$4,
+       updated_at=$5, read_at=$6, archived_at=$7, expires_at=$8,
+       version=version+1 WHERE id=$1 AND version=$2
+       RETURNING ${NOTIFICATION_FIELDS}`,
+      [
+        id,
+        expectedVersion,
+        next.actorIds,
+        next.count,
+        next.updatedAt,
+        next.readAt,
+        next.archivedAt,
+        next.expiresAt,
+      ],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async find(id: string) {
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ? mapNotification(result.rows[0]) : undefined;
+  }
+
+  async list(
+    accountId: string,
+    input: { limit: number; cursor?: string },
+  ): Promise<{ items: NotificationRecord[]; nextCursor: string | null }> {
+    const cursor = input.cursor
+      ? parseNotificationCursor(input.cursor)
+      : undefined;
+    const result = await this.db.query<NotificationRow>(
+      `SELECT ${NOTIFICATION_FIELDS} FROM notifications
+       WHERE account_id=$1 AND expires_at > CURRENT_TIMESTAMP
+       AND ($2::timestamptz IS NULL OR (updated_at, id) < ($2, $3::uuid))
+       ORDER BY updated_at DESC, id DESC LIMIT $4`,
+      [accountId, cursor?.[0] ?? null, cursor?.[1] ?? null, input.limit + 1],
+    );
+    const mapped = result.rows.map(mapNotification);
+    const hasMore = mapped.length > input.limit;
+    const items = mapped.slice(0, input.limit);
+    return {
+      items,
+      nextCursor:
+        hasMore && items.length > 0
+          ? notificationCursor(items[items.length - 1]!)
+          : null,
+    };
+  }
+
+  async transaction<T>(
+    work: (store: NotificationStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/** Re-checks notification resource visibility against current durable state.
+ * The deliberately generic false result prevents callers from distinguishing a
+ * deleted resource from a blocked or unauthorized one. */
+export class PostgresNotificationAuthorization implements NotificationAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  mayNotify(
+    accountId: string,
+    resourceId: string,
+    kind: NotificationRecord['kind'],
+  ): Promise<boolean> {
+    return this.mayView(accountId, resourceId, kind);
+  }
+
+  async mayView(
+    accountId: string,
+    resourceId: string,
+    kind?: NotificationRecord['kind'],
+  ): Promise<boolean> {
+    if (kind === 'mention' || kind === 'reply') {
+      const result = await this.db.query(
+        `SELECT 1 FROM messages msg
+         JOIN spaces s ON s.id=msg.space_id AND s.archived_at IS NULL
+         JOIN memberships m ON m.community_id=s.community_id
+           AND m.account_id=$1 AND m.status='active'
+         WHERE msg.id=$2 AND msg.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM account_blocks b
+             WHERE (b.blocker_id=$1 AND b.blocked_id=msg.author_id)
+                OR (b.blocker_id=msg.author_id AND b.blocked_id=$1)
+           ) LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length === 1;
+    }
+    if (kind === 'invite') {
+      const result = await this.db.query(
+        `SELECT 1 FROM invitations i JOIN communities c ON c.id=i.community_id
+         WHERE i.id=$2 AND i.target_account_id=$1 AND i.revoked_at IS NULL
+           AND i.expires_at > CURRENT_TIMESTAMP AND c.archived_at IS NULL
+         LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length === 1;
+    }
+    if (kind === 'moderation_outcome') {
+      const result = await this.db.query(
+        `SELECT 1 FROM safety_reports r WHERE r.id=$2 AND r.reporter_id=$1
+         UNION ALL
+         SELECT 1 FROM moderation_restrictions mr
+         WHERE mr.id=$2 AND mr.target_account_id=$1 LIMIT 1`,
+        [accountId, resourceId],
+      );
+      return result.rows.length > 0;
+    }
+    return false;
   }
 }
 

@@ -400,6 +400,39 @@ export const contentLimitsSchema = z.object({
   updatedAt: z.string().datetime(),
   version: z.number().int().positive(),
 });
+export const notificationKindSchema = z.enum([
+  'mention',
+  'reply',
+  'invite',
+  'moderation_outcome',
+]);
+export const notificationSchema = z.object({
+  id,
+  accountId: id,
+  kind: notificationKindSchema,
+  scopeId: id.nullable(),
+  resourceId: id,
+  actorIds: z.array(id).min(1).max(20),
+  count: z.number().int().min(1).max(10_000),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  readAt: z.string().datetime().nullable(),
+  archivedAt: z.string().datetime().nullable(),
+  expiresAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
+export const notificationPageQuerySchema = pageQuerySchema;
+export const notificationPageSchema = z.object({
+  items: z.array(notificationSchema).max(100),
+  nextCursor: z.string().max(256).nullable(),
+});
+export const updateNotificationSchema = z
+  .object({
+    actorId: id,
+    action: z.enum(['read', 'archive']),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
@@ -535,6 +568,8 @@ export type MessageResponse = z.infer<typeof messageSchema>;
 export type InvitationResponse = z.infer<typeof invitationSchema>;
 export type CreatedInvitationResponse = z.infer<typeof createdInvitationSchema>;
 export type InvitationPreviewResponse = z.infer<typeof invitationPreviewSchema>;
+export type NotificationResponse = z.infer<typeof notificationSchema>;
+export type NotificationPageResponse = z.infer<typeof notificationPageSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type WebsocketClientMessage = z.infer<
   typeof websocketClientMessageSchema

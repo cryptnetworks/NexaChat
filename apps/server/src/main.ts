@@ -28,6 +28,7 @@ const app = buildApp(
   database.auth,
   database.authorization,
   config.server,
+  database.experience,
 );
 if (!database.auth) throw new Error('Authentication runtime is unavailable');
 await app.listen({ host: config.server.host, port: config.server.port });
