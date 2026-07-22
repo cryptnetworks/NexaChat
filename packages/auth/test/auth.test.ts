@@ -7,6 +7,7 @@ import {
   type AuthAccount,
   type AuthSession,
   type AuthStore,
+  type CredentialSecurityEvent,
   type PasswordHasher,
   type RateLimiter,
 } from '../src/index.js';
@@ -56,6 +57,50 @@ describe('AuthenticationService', () => {
     });
   });
 
+  it('normalizes profile updates and rejects collisions, stale writes, and suspended accounts', async () => {
+    const { service, store } = fixture();
+    const first = await service.register(input('ProfileOne'));
+    await service.register(input('ProfileTwo'));
+    const updated = await service.updateProfile(first.account.id, {
+      username: '  Profile_One  ',
+      displayName: '  Ada\t  Lovelace  ',
+      expectedVersion: 1,
+    });
+    expect(updated).toMatchObject({
+      username: 'Profile_One',
+      displayName: 'Ada Lovelace',
+      version: 2,
+    });
+    await expect(
+      service.updateProfile(first.account.id, {
+        username: 'profiletwo',
+        expectedVersion: 2,
+      }),
+    ).rejects.toMatchObject({ code: 'identifier_unavailable' });
+    const race = await Promise.allSettled([
+      service.updateProfile(first.account.id, {
+        displayName: 'First writer',
+        expectedVersion: 2,
+      }),
+      service.updateProfile(first.account.id, {
+        displayName: 'Second writer',
+        expectedVersion: 2,
+      }),
+    ]);
+    expect(race.filter((result) => result.status === 'fulfilled')).toHaveLength(
+      1,
+    );
+    expect(race.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'stale_write' },
+    });
+    const account = store.accounts.get(first.account.id);
+    if (!account) throw new Error('test account missing');
+    store.accounts.set(account.id, { ...account, status: 'suspended' });
+    await expect(service.getProfile(account.id)).rejects.toMatchObject({
+      code: 'unauthenticated',
+    });
+  });
+
   it('rotates tokens, lists sessions, and revokes immediately and concurrently', async () => {
     const { service } = fixture();
     const registered = await service.register(input('sessions'));
@@ -74,10 +119,149 @@ describe('AuthenticationService', () => {
     await expect(
       service.authenticate(loggedIn.session.token),
     ).rejects.toMatchObject({ code: 'unauthenticated' });
-    await service.logoutAll(registered.account.id);
+    await service.logoutAll(
+      registered.account.id,
+      '00000000-0000-4000-8000-000000000001',
+    );
     await expect(
       service.authenticate(registered.session.token),
     ).rejects.toMatchObject({ code: 'unauthenticated' });
+  });
+
+  it('bounds session inventory with deterministic newest-activity ordering', async () => {
+    const { service, store } = fixture();
+    const registered = await service.register(input('bounded-sessions'));
+    const template = registered.session.record;
+    for (let index = 0; index < 105; index += 1) {
+      const timestamp = new Date(
+        new Date(template.createdAt).getTime() + index + 1,
+      ).toISOString();
+      const id = `inventory-${String(index).padStart(3, '0')}`;
+      store.sessions.set(id, {
+        ...template,
+        id,
+        publicHandle: `sess_${String(index).padStart(16, '0')}`,
+        createdAt: timestamp,
+        lastSeenAt: timestamp,
+      });
+    }
+
+    const sessions = await service.listSessions(registered.account.id);
+    expect(sessions).toHaveLength(100);
+    expect(sessions[0]?.id).toBe('inventory-104');
+    expect(sessions.at(-1)?.id).toBe('inventory-005');
+  });
+
+  it('uses public handles for owned and all-other session revocation', async () => {
+    const { service, store } = fixture();
+    const first = await service.register(input('session-owner'));
+    const second = await service.login({
+      username: 'session-owner',
+      password,
+      source: 'two',
+    });
+    const third = await service.login({
+      username: 'session-owner',
+      password,
+      source: 'three',
+    });
+    expect(second.session.record.publicHandle).toMatch(/^sess_/u);
+    expect(second.session.record.publicHandle).not.toContain(
+      second.session.record.id,
+    );
+    await expect(
+      service.revokeOwnedSession(
+        first.account.id,
+        'sess_AAAAAAAAAAAAAAAA',
+        '00000000-0000-4000-8000-000000000010',
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      service.revokeOwnedSession(
+        first.account.id,
+        second.session.record.publicHandle,
+        '00000000-0000-4000-8000-000000000011',
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      service.authenticate(second.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    await service.logoutOthers(
+      first.account.id,
+      first.session.record.id,
+      '00000000-0000-4000-8000-000000000012',
+    );
+    await expect(
+      service.authenticate(first.session.token),
+    ).resolves.toBeDefined();
+    await expect(
+      service.authenticate(third.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(store.securityEvents.map((event) => event.action)).toEqual([
+      'account.session.revoke',
+      'account.sessions.revoke_others',
+    ]);
+    expect(JSON.stringify(store.securityEvents)).not.toContain(
+      second.session.record.publicHandle,
+    );
+  });
+
+  it('changes credentials once under races, rotates sessions, and emits safe evidence', async () => {
+    const { service, store } = fixture();
+    const registered = await service.register(input('credentials'));
+    const second = await service.login({
+      username: 'credentials',
+      password,
+      source: 'two',
+    });
+    await expect(
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: 'incorrect credential',
+        newPassword: 'a sufficiently long replacement',
+        correlationId: '00000000-0000-4000-8000-000000000002',
+      }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    await expect(
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: password,
+        correlationId: '00000000-0000-4000-8000-000000000003',
+      }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    const race = await Promise.allSettled([
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: 'first replacement password',
+        correlationId: '00000000-0000-4000-8000-000000000004',
+      }),
+      service.changePassword({
+        accountId: registered.account.id,
+        currentPassword: password,
+        newPassword: 'second replacement password',
+        correlationId: '00000000-0000-4000-8000-000000000005',
+      }),
+    ]);
+    const winners = race.filter((result) => result.status === 'fulfilled');
+    expect(winners).toHaveLength(1);
+    expect(race.filter((result) => result.status === 'rejected')).toHaveLength(
+      1,
+    );
+    const [winner] = winners;
+    if (!winner) throw new Error('credential race winner missing');
+    await expect(
+      service.authenticate(winner.value.token),
+    ).resolves.toMatchObject({ account: { id: registered.account.id } });
+    await expect(
+      service.authenticate(registered.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    await expect(
+      service.authenticate(second.session.token),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(store.securityEvents).toHaveLength(1);
+    expect(JSON.stringify(store.securityEvents)).not.toContain(password);
   });
 
   it('enforces malformed, absolute, idle, suspended, and credential-reset invalidation', async () => {
@@ -234,6 +418,8 @@ class TestClock {
 class MemoryAuthStore implements AuthStore {
   accounts = new Map<string, AuthAccount>();
   sessions = new Map<string, AuthSession>();
+  securityEvents: CredentialSecurityEvent[] = [];
+  private transactionTail = Promise.resolve();
   async createAccount(account: AuthAccount) {
     if (
       [...this.accounts.values()].some(
@@ -252,9 +438,53 @@ class MemoryAuthStore implements AuthStore {
   async findAccountById(id: string) {
     return this.accounts.get(id);
   }
+  async updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ) {
+    const account = this.accounts.get(id);
+    if (!account || account.profileVersion !== expectedVersion)
+      return undefined;
+    if (
+      [...this.accounts.values()].some(
+        (value) =>
+          value.id !== id &&
+          value.normalizedUsername === profile.normalizedUsername,
+      )
+    )
+      throw Object.assign(new Error('duplicate'), { code: '23505' });
+    const updated = {
+      ...account,
+      ...profile,
+      profileVersion: account.profileVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return updated;
+  }
   async updatePasswordHash(id: string, passwordHash: string) {
     const account = this.accounts.get(id);
     if (account) this.accounts.set(id, { ...account, passwordHash });
+  }
+  async changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ) {
+    const account = this.accounts.get(id);
+    if (!account || account.credentialVersion !== expectedCredentialVersion)
+      return undefined;
+    const updated = {
+      ...account,
+      passwordHash,
+      credentialVersion: account.credentialVersion + 1,
+    };
+    this.accounts.set(id, updated);
+    return updated;
   }
   async resetCredentials(id: string, passwordHash: string) {
     const account = this.accounts.get(id);
@@ -289,10 +519,43 @@ class MemoryAuthStore implements AuthStore {
     });
     return true;
   }
+  async revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ) {
+    const value = [...this.sessions.values()].find(
+      (session) =>
+        session.accountId === accountId &&
+        session.publicHandle === publicHandle &&
+        !session.revokedAt,
+    );
+    if (!value) return undefined;
+    const revoked = { ...value, revokedAt };
+    this.sessions.set(value.id, revoked);
+    return revoked;
+  }
   async revokeAllSessions(accountId: string, revokedAt: string) {
     let count = 0;
     for (const [id, value] of this.sessions)
       if (value.accountId === accountId && !value.revokedAt) {
+        this.sessions.set(id, { ...value, revokedAt });
+        count += 1;
+      }
+    return count;
+  }
+  async revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ) {
+    let count = 0;
+    for (const [id, value] of this.sessions)
+      if (
+        value.accountId === accountId &&
+        value.id !== currentSessionId &&
+        !value.revokedAt
+      ) {
         this.sessions.set(id, { ...value, revokedAt });
         count += 1;
       }
@@ -303,15 +566,29 @@ class MemoryAuthStore implements AuthStore {
       (value) => value.accountId === accountId,
     );
   }
+  async recordSecurityEvent(event: CredentialSecurityEvent) {
+    this.securityEvents.push(event);
+  }
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release: () => void = () => undefined;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.transactionTail = previous.then(() => turn);
+    await previous;
     const accounts = new Map(this.accounts);
     const sessions = new Map(this.sessions);
+    const securityEvents = [...this.securityEvents];
     try {
       return await work(this);
     } catch (error) {
       this.accounts = accounts;
       this.sessions = sessions;
+      this.securityEvents = securityEvents;
       throw error;
+    } finally {
+      release();
     }
   }
 }

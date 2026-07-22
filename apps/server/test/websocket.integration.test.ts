@@ -362,7 +362,11 @@ describe('secure real WebSocket integration', () => {
       error: 'unavailable',
     });
     const closeEvent = closed(ownerSocket);
-    await auth.service.logout(owner.session.record.id);
+    await auth.service.revokeOwnedSession(
+      owner.account.id,
+      owner.session.record.publicHandle,
+      randomUUID(),
+    );
     await expect(closeEvent).resolves.toBe(1008);
   });
 

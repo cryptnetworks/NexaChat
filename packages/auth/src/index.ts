@@ -14,12 +14,22 @@ export interface AuthAccount {
   passwordHash: string;
   status: 'active' | 'suspended';
   credentialVersion: number;
+  profileVersion: number;
+  avatar: AvatarMetadata | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface AvatarMetadata {
+  objectKey: string;
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteLength: number;
+  sha256: string;
+}
+
 export interface AuthSession {
   id: string;
+  publicHandle: string;
   accountId: string;
   tokenHash: string;
   credentialVersion: number;
@@ -37,7 +47,20 @@ export interface AuthStore {
     username: string,
   ): Promise<AuthAccount | undefined>;
   findAccountById(id: string): Promise<AuthAccount | undefined>;
+  updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ): Promise<AuthAccount | undefined>;
   updatePasswordHash(id: string, passwordHash: string): Promise<void>;
+  changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ): Promise<AuthAccount | undefined>;
   resetCredentials(id: string, passwordHash: string): Promise<void>;
   createSession(session: AuthSession): Promise<AuthSession>;
   findSessionByTokenHash(tokenHash: string): Promise<AuthSession | undefined>;
@@ -47,14 +70,41 @@ export interface AuthStore {
     idleExpiresAt: string,
   ): Promise<boolean>;
   revokeSession(id: string, revokedAt: string): Promise<boolean>;
+  revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ): Promise<AuthSession | undefined>;
   revokeAllSessions(accountId: string, revokedAt: string): Promise<number>;
+  revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ): Promise<number>;
   listSessions(accountId: string): Promise<AuthSession[]>;
+  recordSecurityEvent(event: CredentialSecurityEvent): Promise<void>;
   transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T>;
+}
+
+export interface CredentialSecurityEvent {
+  id: string;
+  accountId: string;
+  action:
+    | 'account.credentials.change'
+    | 'account.session.revoke'
+    | 'account.sessions.revoke_all'
+    | 'account.sessions.revoke_others';
+  notificationType: 'credentials_changed' | 'sessions_revoked';
+  correlationId: string;
+  occurredAt: string;
+  expiresAt: string;
 }
 
 export class InMemoryAuthStore implements AuthStore {
   readonly accounts = new Map<string, AuthAccount>();
   readonly sessions = new Map<string, AuthSession>();
+  readonly securityEvents: CredentialSecurityEvent[] = [];
+  private transactionTail = Promise.resolve();
   createAccount(account: AuthAccount): Promise<AuthAccount> {
     if (
       [...this.accounts.values()].some(
@@ -79,10 +129,57 @@ export class InMemoryAuthStore implements AuthStore {
   findAccountById(id: string): Promise<AuthAccount | undefined> {
     return Promise.resolve(this.accounts.get(id));
   }
+  updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ): Promise<AuthAccount | undefined> {
+    const account = this.accounts.get(id);
+    if (!account || account.profileVersion !== expectedVersion)
+      return Promise.resolve(undefined);
+    if (
+      [...this.accounts.values()].some(
+        (value) =>
+          value.id !== id &&
+          value.normalizedUsername === profile.normalizedUsername,
+      )
+    )
+      return Promise.reject(
+        Object.assign(new Error('duplicate'), { code: '23505' }),
+      );
+    const updated = {
+      ...account,
+      ...profile,
+      profileVersion: account.profileVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return Promise.resolve(updated);
+  }
   updatePasswordHash(id: string, passwordHash: string): Promise<void> {
     const account = this.accounts.get(id);
     if (account) this.accounts.set(id, { ...account, passwordHash });
     return Promise.resolve();
+  }
+  changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ): Promise<AuthAccount | undefined> {
+    const account = this.accounts.get(id);
+    if (!account || account.credentialVersion !== expectedCredentialVersion)
+      return Promise.resolve(undefined);
+    const updated = {
+      ...account,
+      passwordHash,
+      credentialVersion: account.credentialVersion + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.accounts.set(id, updated);
+    return Promise.resolve(updated);
   }
   resetCredentials(id: string, passwordHash: string): Promise<void> {
     const account = this.accounts.get(id);
@@ -122,10 +219,43 @@ export class InMemoryAuthStore implements AuthStore {
     });
     return Promise.resolve(true);
   }
+  revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ): Promise<AuthSession | undefined> {
+    const value = [...this.sessions.values()].find(
+      (session) =>
+        session.accountId === accountId &&
+        session.publicHandle === publicHandle &&
+        !session.revokedAt,
+    );
+    if (!value) return Promise.resolve(undefined);
+    const revoked = { ...value, revokedAt };
+    this.sessions.set(value.id, revoked);
+    return Promise.resolve(revoked);
+  }
   revokeAllSessions(accountId: string, revokedAt: string): Promise<number> {
     let count = 0;
     for (const [id, value] of this.sessions)
       if (value.accountId === accountId && !value.revokedAt) {
+        this.sessions.set(id, { ...value, revokedAt });
+        count += 1;
+      }
+    return Promise.resolve(count);
+  }
+  revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ): Promise<number> {
+    let count = 0;
+    for (const [id, value] of this.sessions)
+      if (
+        value.accountId === accountId &&
+        value.id !== currentSessionId &&
+        !value.revokedAt
+      ) {
         this.sessions.set(id, { ...value, revokedAt });
         count += 1;
       }
@@ -138,9 +268,21 @@ export class InMemoryAuthStore implements AuthStore {
       ),
     );
   }
+  recordSecurityEvent(event: CredentialSecurityEvent): Promise<void> {
+    this.securityEvents.push(event);
+    return Promise.resolve();
+  }
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release: () => void = () => undefined;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.transactionTail = previous.then(() => turn);
+    await previous;
     const accounts = new Map(this.accounts);
     const sessions = new Map(this.sessions);
+    const securityEvents = [...this.securityEvents];
     try {
       return await work(this);
     } catch (error) {
@@ -148,7 +290,14 @@ export class InMemoryAuthStore implements AuthStore {
       this.sessions.clear();
       for (const entry of accounts) this.accounts.set(...entry);
       for (const entry of sessions) this.sessions.set(...entry);
+      this.securityEvents.splice(
+        0,
+        this.securityEvents.length,
+        ...securityEvents,
+      );
       throw error;
+    } finally {
+      release();
     }
   }
 }
@@ -181,10 +330,14 @@ export interface AuthenticationConfig {
   idleSessionMs: number;
 }
 
+const sessionInventoryLimit = 100;
+
 export type AuthenticationErrorCode =
   | 'authentication_failed'
   | 'identifier_unavailable'
+  | 'invalid_profile'
   | 'rate_limited'
+  | 'stale_write'
   | 'unauthenticated';
 
 export class AuthenticationError extends Error {
@@ -212,16 +365,22 @@ export class AuthenticationService {
     const normalizedUsername = normalizeUsername(input.username);
     if (!validNormalizedUsername(normalizedUsername))
       throw new AuthenticationError('identifier_unavailable');
+    const username = canonicalUsername(input.username);
+    const displayName = normalizeDisplayName(input.displayName);
+    if (!validDisplayName(displayName))
+      throw new AuthenticationError('invalid_profile');
     await this.enforceRateLimit(input.source, normalizedUsername);
     const now = this.clock.now().toISOString();
     const account: AuthAccount = {
       id: randomUUID(),
-      username: input.username.trim(),
+      username,
       normalizedUsername,
-      displayName: input.displayName.trim(),
+      displayName,
       passwordHash: await this.hasher.hash(input.password),
       status: 'active',
       credentialVersion: 1,
+      profileVersion: 1,
+      avatar: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -314,11 +473,108 @@ export class AuthenticationService {
     await this.store.revokeSession(sessionId, this.clock.now().toISOString());
   }
 
-  async logoutAll(accountId: string): Promise<void> {
-    await this.store.revokeAllSessions(
-      accountId,
-      this.clock.now().toISOString(),
+  async logoutAll(accountId: string, correlationId: string): Promise<void> {
+    const now = this.clock.now();
+    await this.store.transaction(async (store) => {
+      await store.revokeAllSessions(accountId, now.toISOString());
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.sessions.revoke_all',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+    });
+  }
+
+  async logoutOthers(
+    accountId: string,
+    currentSessionId: string,
+    correlationId: string,
+  ): Promise<void> {
+    const now = this.clock.now();
+    await this.store.transaction(async (store) => {
+      await store.revokeOtherSessions(
+        accountId,
+        currentSessionId,
+        now.toISOString(),
+      );
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.sessions.revoke_others',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+    });
+  }
+
+  async revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    correlationId: string,
+  ): Promise<boolean> {
+    const now = this.clock.now();
+    return this.store.transaction(async (store) => {
+      const revoked = await store.revokeOwnedSession(
+        accountId,
+        publicHandle,
+        now.toISOString(),
+      );
+      if (!revoked) return false;
+      await store.recordSecurityEvent(
+        securityEvent(
+          accountId,
+          'account.session.revoke',
+          'sessions_revoked',
+          correlationId,
+          now,
+        ),
+      );
+      return true;
+    });
+  }
+
+  async changePassword(input: {
+    accountId: string;
+    currentPassword: string;
+    newPassword: string;
+    correlationId: string;
+  }): Promise<IssuedSession> {
+    const account = await this.store.findAccountById(input.accountId);
+    const currentValid = await this.hasher.verify(
+      input.currentPassword,
+      account?.passwordHash ?? this.hasher.dummyHash(),
     );
+    if (!account || account.status !== 'active' || !currentValid)
+      throw new AuthenticationError('authentication_failed');
+    if (await this.hasher.verify(input.newPassword, account.passwordHash))
+      throw new AuthenticationError('authentication_failed');
+    const passwordHash = await this.hasher.hash(input.newPassword);
+    const now = this.clock.now();
+    return this.store.transaction(async (store) => {
+      const updated = await store.changeCredentials(
+        account.id,
+        account.credentialVersion,
+        passwordHash,
+      );
+      if (!updated) throw new AuthenticationError('authentication_failed');
+      await store.revokeAllSessions(account.id, now.toISOString());
+      await store.recordSecurityEvent(
+        securityEvent(
+          account.id,
+          'account.credentials.change',
+          'credentials_changed',
+          input.correlationId,
+          now,
+        ),
+      );
+      return this.issueSession(updated, now, store);
+    });
   }
 
   async resetCredentials(accountId: string, password: string): Promise<void> {
@@ -330,8 +586,76 @@ export class AuthenticationService {
     });
   }
 
-  listSessions(accountId: string): Promise<AuthSession[]> {
-    return this.store.listSessions(accountId);
+  async listSessions(accountId: string): Promise<AuthSession[]> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    const now = this.clock.now();
+    return (await this.store.listSessions(accountId))
+      .filter(
+        (session) =>
+          session.credentialVersion === account.credentialVersion &&
+          session.revokedAt === null &&
+          now < new Date(session.expiresAt) &&
+          now < new Date(session.idleExpiresAt),
+      )
+      .sort(
+        (left, right) =>
+          right.lastSeenAt.localeCompare(left.lastSeenAt) ||
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.publicHandle.localeCompare(left.publicHandle),
+      )
+      .slice(0, sessionInventoryLimit);
+  }
+
+  async getProfile(accountId: string): Promise<PublicProfile> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    return publicProfile(account);
+  }
+
+  async updateProfile(
+    accountId: string,
+    input: {
+      username?: string;
+      displayName?: string;
+      avatar?: AvatarMetadata | null;
+      expectedVersion: number;
+    },
+  ): Promise<PublicProfile> {
+    const account = await this.store.findAccountById(accountId);
+    if (!account || account.status !== 'active')
+      throw new AuthenticationError('unauthenticated');
+    const username =
+      input.username === undefined
+        ? account.username
+        : canonicalUsername(input.username);
+    const normalizedUsername = normalizeUsername(username);
+    if (!validNormalizedUsername(normalizedUsername))
+      throw new AuthenticationError('identifier_unavailable');
+    const displayName =
+      input.displayName === undefined
+        ? account.displayName
+        : normalizeDisplayName(input.displayName);
+    if (!validDisplayName(displayName))
+      throw new AuthenticationError('invalid_profile');
+    const avatar = input.avatar === undefined ? account.avatar : input.avatar;
+    if (avatar && !avatar.objectKey.startsWith(`avatars/${accountId}/`))
+      throw new AuthenticationError('invalid_profile');
+    try {
+      const updated = await this.store.updateProfile(
+        accountId,
+        { username, normalizedUsername, displayName, avatar },
+        input.expectedVersion,
+      );
+      if (!updated) throw new AuthenticationError('stale_write');
+      return publicProfile(updated);
+    } catch (error) {
+      if (isUniqueViolation(error))
+        throw new AuthenticationError('identifier_unavailable');
+      throw error;
+    }
   }
 
   private async enforceRateLimit(source: string, identifier: string) {
@@ -355,6 +679,7 @@ export class AuthenticationService {
     const token = this.tokenBytes(32).toString('base64url');
     const session: AuthSession = {
       id: randomUUID(),
+      publicHandle: `sess_${randomBytes(12).toString('base64url')}`,
       accountId: account.id,
       tokenHash: protectSessionToken(token),
       credentialVersion: account.credentialVersion,
@@ -379,6 +704,12 @@ export interface PublicAccount {
   username: string;
   displayName: string;
 }
+export interface PublicProfile extends PublicAccount {
+  avatar: AvatarMetadata | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
 export interface IssuedSession {
   token: string;
   record: AuthSession;
@@ -389,7 +720,20 @@ export interface AuthenticatedSession {
 }
 
 export function normalizeUsername(username: string): string {
-  return username.trim().normalize('NFKC').toLowerCase();
+  return canonicalUsername(username).toLowerCase();
+}
+
+export function canonicalUsername(username: string): string {
+  return username.trim().normalize('NFKC');
+}
+
+export function normalizeDisplayName(displayName: string): string {
+  return displayName.trim().normalize('NFKC').replace(/\s+/gu, ' ');
+}
+
+function validDisplayName(displayName: string): boolean {
+  const length = Array.from(displayName).length;
+  return length >= 1 && length <= 80 && !/[\p{Cc}\p{Cf}]/u.test(displayName);
 }
 
 function validNormalizedUsername(username: string): boolean {
@@ -528,6 +872,16 @@ function publicAccount(account: AuthAccount): PublicAccount {
   };
 }
 
+function publicProfile(account: AuthAccount): PublicProfile {
+  return {
+    ...publicAccount(account),
+    avatar: account.avatar,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+    version: account.profileVersion,
+  };
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -535,6 +889,24 @@ function isUniqueViolation(error: unknown): boolean {
     'code' in error &&
     error.code === '23505'
   );
+}
+
+function securityEvent(
+  accountId: string,
+  action: CredentialSecurityEvent['action'],
+  notificationType: CredentialSecurityEvent['notificationType'],
+  correlationId: string,
+  now: Date,
+): CredentialSecurityEvent {
+  return {
+    id: randomUUID(),
+    accountId,
+    action,
+    notificationType,
+    correlationId,
+    occurredAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 90 * 86_400_000).toISOString(),
+  };
 }
 
 function encodeHash(
