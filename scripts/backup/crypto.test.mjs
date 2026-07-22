@@ -33,6 +33,18 @@ class SynchronousFinishDestination extends EventEmitter {
   }
 }
 
+class PrematureCloseDestination extends EventEmitter {
+  write() {
+    return true;
+  }
+
+  end() {
+    this.emit('close');
+  }
+
+  destroy() {}
+}
+
 async function transformWithSynchronousFinish(input, operation, key) {
   const output = new SynchronousFinishDestination();
   await operation(Readable.from([input]), output, key);
@@ -65,6 +77,28 @@ describe('backup component encryption', () => {
     await expect(
       transformWithSynchronousFinish(encrypted, decryptStream, key),
     ).resolves.toEqual(plaintext);
+  });
+
+  it('rejects when encryption or decryption destinations close prematurely', async () => {
+    const key = randomBytes(32);
+    const plaintext = Buffer.from('premature destination closure');
+
+    await expect(
+      encryptStream(
+        Readable.from([plaintext]),
+        new PrematureCloseDestination(),
+        key,
+      ),
+    ).rejects.toThrow('destination_closed_before_finish');
+
+    const encrypted = await transform(plaintext, encryptStream, key);
+    await expect(
+      decryptStream(
+        Readable.from([encrypted]),
+        new PrematureCloseDestination(),
+        key,
+      ),
+    ).rejects.toThrow('destination_closed_before_finish');
   });
 
   it('rejects altered ciphertext and the wrong key', async () => {
