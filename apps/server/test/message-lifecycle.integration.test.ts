@@ -15,7 +15,11 @@ describe('message lifecycle HTTP boundary', () => {
     );
     const app = buildApp(service);
     const broadcast = vi.fn();
-    app.websocketHub = { broadcast, close: () => Promise.resolve() };
+    app.websocketHub = {
+      broadcast,
+      broadcastAccount: vi.fn(),
+      close: () => Promise.resolve(),
+    };
 
     const payload = {
       authorId: owner.id,

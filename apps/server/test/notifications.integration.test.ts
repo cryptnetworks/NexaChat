@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   NotificationService,
   NotificationPreferenceService,
+  NotificationReadService,
   type NotificationPreference,
   type NotificationPreferenceStore,
+  type NotificationReadState,
+  type NotificationReadStore,
   type NotificationRecord,
   type NotificationStore,
 } from '@nexa/domain';
@@ -149,6 +152,50 @@ describe('notification HTTP integration', () => {
       },
     });
     expect(hidden.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('keeps read state monotonic across HTTP retries', async () => {
+    let current: NotificationReadState | undefined;
+    const store: NotificationReadStore = {
+      find: () => Promise.resolve(current),
+      advance: (value, expectedVersion) => {
+        if (current?.version !== expectedVersion)
+          return Promise.resolve(undefined);
+        current = value;
+        return Promise.resolve(value);
+      },
+      transaction: (work) => work(store),
+    };
+    const accountId = randomUUID();
+    const readState = new NotificationReadService(store, {
+      mayAccess: (actorId, stream) =>
+        Promise.resolve(actorId === accountId && stream === 'notifications'),
+    });
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        notificationReadState: readState,
+      },
+    );
+    for (const sequence of [12, 4]) {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v1/notification-read-state',
+        payload: {
+          actorId: accountId,
+          stream: 'notifications',
+          sequence,
+          eventId: randomUUID(),
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ sequence: 12 });
+    }
     await app.close();
   });
 });

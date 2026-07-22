@@ -6,6 +6,8 @@ import {
   PostgresNotificationStore,
   PostgresNotificationPreferenceAuthorization,
   PostgresNotificationPreferenceStore,
+  PostgresNotificationReadAuthorization,
+  PostgresNotificationReadStore,
   createPostgresPool,
   migratePostgres,
   verifyPostgresSchema,
@@ -17,6 +19,7 @@ import { AuthorizationService } from '@nexa/authorization';
 import type { RuntimeConfig } from './config.js';
 import {
   NotificationPreferenceService,
+  NotificationReadService,
   NotificationService,
 } from '@nexa/domain';
 
@@ -54,12 +57,20 @@ export async function initializeDatabase(
     new PostgresNotificationPreferenceStore(pool),
     new PostgresNotificationPreferenceAuthorization(pool),
   );
+  const notificationReadState = new NotificationReadService(
+    new PostgresNotificationReadStore(pool),
+    new PostgresNotificationReadAuthorization(pool),
+  );
   return {
     pool,
     service: new CommunityService(persistence, authorization),
     authorization,
     readiness,
-    experience: { notifications, notificationPreferences },
+    experience: {
+      notifications,
+      notificationPreferences,
+      notificationReadState,
+    },
     ...(authentication
       ? { auth: createAuthRuntime(pool, authentication) }
       : {}),

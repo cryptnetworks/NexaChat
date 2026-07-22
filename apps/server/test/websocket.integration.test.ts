@@ -182,6 +182,39 @@ describe('secure real WebSocket integration', () => {
     socket.close(1000);
   });
 
+  it('synchronizes compact account read state across active devices', async () => {
+    const owner = await identity('reader');
+    const first = connect(owner.session.token);
+    const second = connect(owner.session.token);
+    await Promise.all([opened(first), opened(second)]);
+    const firstDelivery = nextMessage(first);
+    const secondDelivery = nextMessage(second);
+    const state = {
+      stream: 'notifications',
+      sequence: 14,
+      eventId: randomUUID(),
+      updatedAt: new Date().toISOString(),
+      version: 3,
+    };
+    app.websocketHub?.broadcastAccount(owner.account.id, {
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    await expect(firstDelivery).resolves.toEqual({
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    await expect(secondDelivery).resolves.toEqual({
+      version: 1,
+      type: 'notification_read',
+      state,
+    });
+    first.close(1000);
+    second.close(1000);
+  });
+
   it('rejects anonymous, spoofed-origin, revoked, and suspended sessions during connection establishment', async () => {
     const issued = await identity('secure');
     await expectUpgradeRejected(new WebSocket(endpoint, { origin }), 401);

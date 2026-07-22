@@ -477,6 +477,29 @@ export const effectiveNotificationPreferenceSchema = z.object({
   mode: notificationPreferenceModeSchema,
   muted: z.boolean(),
 });
+const notificationStreamSchema = z
+  .string()
+  .max(64)
+  .regex(/^notifications$|^space:[0-9a-f-]{36}$/i);
+export const notificationReadStateSchema = z.object({
+  accountId: id,
+  stream: notificationStreamSchema,
+  sequence: z.number().int().nonnegative(),
+  eventId: id,
+  updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
+export const notificationReadStateQuerySchema = z
+  .object({ actorId: id, stream: notificationStreamSchema })
+  .strict();
+export const advanceNotificationReadStateSchema = z
+  .object({
+    actorId: id,
+    stream: notificationStreamSchema,
+    sequence: z.number().int().nonnegative(),
+    eventId: id,
+  })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
@@ -581,6 +604,11 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
       'subscription_limit',
       'server_draining',
     ]),
+  }),
+  z.object({
+    version: z.literal(1),
+    type: z.literal('notification_read'),
+    state: notificationReadStateSchema.omit({ accountId: true }),
   }),
 ]);
 

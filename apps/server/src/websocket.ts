@@ -48,6 +48,10 @@ export interface WebsocketHubOptions {
 
 export interface WebsocketHub {
   broadcast(spaceId: string, event: RealtimeEnvelope): void;
+  broadcastAccount(
+    accountId: string,
+    message: Extract<WebsocketServerMessage, { type: 'notification_read' }>,
+  ): void;
   close(): Promise<void>;
   snapshot?(): { connections: number; subscriptions: number };
 }
@@ -445,13 +449,27 @@ export function attachWebsocketHub(
       const parsed = JSON.parse(payload) as {
         instanceId?: unknown;
         spaceId?: unknown;
+        accountId?: unknown;
+        message?: unknown;
         event?: unknown;
       };
-      if (
-        parsed.instanceId === instanceId ||
-        typeof parsed.spaceId !== 'string'
-      )
+      if (parsed.instanceId === instanceId) return;
+      if (typeof parsed.accountId === 'string') {
+        const message = websocketServerMessageSchema.parse(parsed.message);
+        if (message.type !== 'notification_read') return;
+        if (!remember(message.state.eventId)) return;
+        for (const [socket, state] of connections) {
+          if (state.actorId !== parsed.accountId) continue;
+          try {
+            await options.auth.service.authenticate(state.token);
+            safeSend(socket, state, message);
+          } catch {
+            socket.close(1008, 'unauthenticated');
+          }
+        }
         return;
+      }
+      if (typeof parsed.spaceId !== 'string') return;
       const event = realtimeEnvelopeSchema.parse(parsed.event);
       if (seenEvents.has(event.id)) return;
       // Revalidate each local subscriber before cross-instance disclosure.
@@ -481,6 +499,22 @@ export function attachWebsocketHub(
           .publish(
             'realtime:events',
             JSON.stringify({ instanceId, spaceId, event }),
+          )
+          .catch(() => {
+            metrics.increment('realtime_fanout_degraded');
+          });
+    },
+    broadcastAccount(accountId, rawMessage) {
+      const message = websocketServerMessageSchema.parse(rawMessage);
+      if (message.type !== 'notification_read') return;
+      if (!remember(message.state.eventId)) return;
+      for (const [socket, state] of connections)
+        if (state.actorId === accountId) safeSend(socket, state, message);
+      if (options.coordination)
+        void options.coordination
+          .publish(
+            'realtime:events',
+            JSON.stringify({ instanceId, accountId, message }),
           )
           .catch(() => {
             metrics.increment('realtime_fanout_degraded');

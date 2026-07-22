@@ -55,6 +55,9 @@ import {
   effectiveNotificationPreferenceSchema,
   notificationPreferenceSchema,
   updateNotificationPreferenceSchema,
+  advanceNotificationReadStateSchema,
+  notificationReadStateQuerySchema,
+  notificationReadStateSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -62,6 +65,7 @@ import {
   InMemoryCommunityService,
   type NotificationService,
   type NotificationPreferenceService,
+  type NotificationReadService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
@@ -252,6 +256,35 @@ export function buildApp(
             },
             new Date(),
           ),
+        ),
+      );
+    });
+  }
+
+  if (experience.notificationReadState) {
+    app.get('/v1/notification-read-state', async (request, reply) => {
+      const input = notificationReadStateQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const state = await experience.notificationReadState!.get(
+        actorId,
+        input.stream,
+      );
+      return reply.send(
+        state ? notificationReadStateSchema.parse(state) : null,
+      );
+    });
+    app.put('/v1/notification-read-state', async (request, reply) => {
+      const input = advanceNotificationReadStateSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        notificationReadStateSchema.parse(
+          await experience.notificationReadState!.advance({
+            accountId: actorId,
+            stream: input.stream,
+            sequence: input.sequence,
+            eventId: input.eventId,
+            now: new Date(),
+          }),
         ),
       );
     });
@@ -1029,6 +1062,26 @@ export function buildApp(
       ].includes(error.message)
     )
       return sendApiError(reply, 409, 'stale_write', request.id);
+    if (
+      error instanceof Error &&
+      error.message === 'notification_read_state_not_found'
+    )
+      return sendApiError(reply, 404, 'not_found', request.id);
+    if (
+      error instanceof Error &&
+      [
+        'invalid_notification_read_state',
+        'stale_notification_read_state',
+      ].includes(error.message)
+    )
+      return sendApiError(
+        reply,
+        error.message === 'invalid_notification_read_state' ? 400 : 409,
+        error.message === 'invalid_notification_read_state'
+          ? 'invalid_request'
+          : 'stale_write',
+        request.id,
+      );
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -1059,6 +1112,7 @@ export function buildApp(
 export interface ExperienceRuntime {
   notifications?: NotificationService;
   notificationPreferences?: NotificationPreferenceService;
+  notificationReadState?: NotificationReadService;
 }
 
 function sendApiError(

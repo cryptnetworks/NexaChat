@@ -38,6 +38,22 @@ app.websocketHub = attachWebsocketHub(app.server, database.service, {
   limits: config.websocket,
   ...(coordination ? { coordination } : {}),
 });
+database.experience.notificationReadState.setPublisher({
+  publish(state) {
+    app.websocketHub?.broadcastAccount(state.accountId, {
+      version: 1,
+      type: 'notification_read',
+      state: {
+        stream: state.stream,
+        sequence: state.sequence,
+        eventId: state.eventId,
+        updatedAt: state.updatedAt,
+        version: state.version,
+      },
+    });
+    return Promise.resolve();
+  },
+});
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(

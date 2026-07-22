@@ -33,6 +33,9 @@ import type {
   NotificationPreference,
   NotificationPreferenceAuthorization,
   NotificationPreferenceStore,
+  NotificationReadAuthorization,
+  NotificationReadState,
+  NotificationReadStore,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -549,6 +552,113 @@ export class PostgresNotificationPreferenceAuthorization implements Notification
        JOIN memberships m ON m.community_id=scope.community_id
        WHERE m.account_id=$1 AND m.status='active' LIMIT 1`,
       [accountId, scopeId],
+    );
+    return result.rows.length === 1;
+  }
+}
+
+interface NotificationReadRow {
+  account_id: string;
+  stream: string;
+  sequence: string | number;
+  event_id: string;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapNotificationRead(row: NotificationReadRow): NotificationReadState {
+  return {
+    accountId: row.account_id,
+    stream: row.stream,
+    sequence: Number(row.sequence),
+    eventId: row.event_id,
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresNotificationReadStore implements NotificationReadStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async find(accountId: string, stream: string) {
+    const result = await this.db.query<NotificationReadRow>(
+      `SELECT account_id,stream,sequence,event_id,updated_at,version
+       FROM notification_read_state WHERE account_id=$1 AND stream=$2`,
+      [accountId, stream],
+    );
+    return result.rows[0] ? mapNotificationRead(result.rows[0]) : undefined;
+  }
+
+  async advance(value: NotificationReadState, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<NotificationReadRow>(
+            `INSERT INTO notification_read_state
+             (account_id,stream,sequence,event_id,updated_at,version)
+             VALUES ($1,$2,$3,$4,$5,1) ON CONFLICT DO NOTHING
+             RETURNING account_id,stream,sequence,event_id,updated_at,version`,
+            [
+              value.accountId,
+              value.stream,
+              value.sequence,
+              value.eventId,
+              value.updatedAt,
+            ],
+          )
+        : await this.db.query<NotificationReadRow>(
+            `UPDATE notification_read_state SET sequence=$4,event_id=$5,
+             updated_at=$6,version=version+1 WHERE account_id=$1 AND stream=$2
+             AND version=$3 AND sequence < $4
+             RETURNING account_id,stream,sequence,event_id,updated_at,version`,
+            [
+              value.accountId,
+              value.stream,
+              expectedVersion,
+              value.sequence,
+              value.eventId,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0] ? mapNotificationRead(result.rows[0]) : undefined;
+  }
+
+  async transaction<T>(
+    work: (store: NotificationReadStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationReadStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export class PostgresNotificationReadAuthorization implements NotificationReadAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayAccess(accountId: string, stream: string): Promise<boolean> {
+    const spaceId = stream.startsWith('space:') ? stream.slice(6) : undefined;
+    const result = await this.db.query(
+      spaceId
+        ? `SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id
+           JOIN spaces s ON s.community_id=m.community_id
+           WHERE a.id=$1 AND a.status='active' AND m.status='active'
+           AND s.id=$2 AND s.archived_at IS NULL LIMIT 1`
+        : `SELECT 1 FROM accounts WHERE id=$1 AND status='active' LIMIT 1`,
+      spaceId ? [accountId, spaceId] : [accountId],
     );
     return result.rows.length === 1;
   }

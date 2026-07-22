@@ -336,6 +336,15 @@ export interface NotificationReadStore {
     value: NotificationReadState,
     expectedVersion?: number,
   ): Promise<NotificationReadState | undefined>;
+  transaction<T>(
+    work: (store: NotificationReadStore) => Promise<T>,
+  ): Promise<T>;
+}
+export interface NotificationReadAuthorization {
+  mayAccess(accountId: string, stream: string): Promise<boolean>;
+}
+export interface NotificationReadPublisher {
+  publish(state: NotificationReadState): Promise<void>;
 }
 export async function advanceNotificationReadState(
   store: NotificationReadStore,
@@ -372,4 +381,52 @@ export async function advanceNotificationReadState(
     throw new Error('stale_notification_read_state');
   }
   return saved;
+}
+
+export class NotificationReadService {
+  constructor(
+    private readonly store: NotificationReadStore,
+    private readonly authorization: NotificationReadAuthorization,
+    private publisher?: NotificationReadPublisher,
+  ) {}
+
+  setPublisher(publisher: NotificationReadPublisher): void {
+    this.publisher = publisher;
+  }
+
+  async get(accountId: string, stream: string) {
+    this.validateStream(stream);
+    if (!(await this.authorization.mayAccess(accountId, stream)))
+      throw new Error('notification_read_state_not_found');
+    return this.store.find(accountId, stream);
+  }
+
+  async advance(input: {
+    accountId: string;
+    stream: string;
+    sequence: number;
+    eventId: string;
+    now: Date;
+  }): Promise<NotificationReadState> {
+    this.validateStream(input.stream);
+    const state = await this.store.transaction(async (store) => {
+      if (!(await this.authorization.mayAccess(input.accountId, input.stream)))
+        throw new Error('notification_read_state_not_found');
+      return advanceNotificationReadState(store, input);
+    });
+    // Durable state is authoritative. Fan-out is a latency optimization; a
+    // failed publisher is recovered by GET/reconnect without rolling state back.
+    await this.publisher?.publish(state).catch(() => undefined);
+    return state;
+  }
+
+  private validateStream(stream: string): void {
+    if (
+      stream !== 'notifications' &&
+      !/^space:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        stream,
+      )
+    )
+      throw new Error('invalid_notification_read_state');
+  }
 }
