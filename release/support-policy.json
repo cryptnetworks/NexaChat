@@ -56,9 +56,9 @@
   },
   "dependencies": {
     "postgresql": {
-      "minimum": "17.9.0",
+      "minimum": "17.10.0",
       "maximumExclusive": "18.0.0",
-      "validatedImage": "17.9-alpine",
+      "validatedImage": "17.10-alpine3.23",
       "role": "authoritative"
     },
     "valkey": {
