@@ -37,6 +37,8 @@ import {
   banMemberSchema,
   reverseRestrictionSchema,
   moderatorDeleteMessageSchema,
+  createSafetyReportSchema,
+  safetyReportReceiptSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -582,6 +584,50 @@ export function buildApp(
         request.id,
       );
       return reply.code(201).send(moderationRestrictionSchema.parse(ban));
+    },
+  );
+
+  app.post<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/reports',
+    async (request, reply) => {
+      const input = createSafetyReportSchema.parse(request.body);
+      const reporterId = await verifiedActor(
+        request,
+        auth,
+        input.reporterId,
+        true,
+      );
+      const report = await service.createSafetyReport(
+        reporterId,
+        request.params.communityId,
+        {
+          ...(input.targetAccountId
+            ? { targetAccountId: input.targetAccountId }
+            : {}),
+          ...(input.targetMessageId
+            ? { targetMessageId: input.targetMessageId }
+            : {}),
+          category: input.category,
+          description: input.description,
+          evidenceReferenceIds: input.evidenceReferenceIds,
+          idempotencyKey: input.idempotencyKey,
+          correlationId: request.id,
+        },
+      );
+      return reply.code(202).send(safetyReportReceiptSchema.parse(report));
+    },
+  );
+
+  app.get<{ Params: { reportId: string } }>(
+    '/v1/reports/:reportId',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const reporterId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        safetyReportReceiptSchema.parse(
+          await service.getOwnSafetyReport(reporterId, request.params.reportId),
+        ),
+      );
     },
   );
 

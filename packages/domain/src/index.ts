@@ -144,6 +144,25 @@ export interface ModerationMessageDeletion {
   eventId: string;
   createdAt: string;
 }
+export type SafetyReportCategory =
+  'spam' | 'harassment' | 'threat' | 'self_harm' | 'other';
+export interface SafetyReport {
+  id: string;
+  communityId: string;
+  reporterId: string;
+  targetAccountId: string | null;
+  targetMessageId: string | null;
+  category: SafetyReportCategory;
+  description: string;
+  evidenceReferenceIds: string[];
+  status: 'submitted' | 'triaged' | 'actioned' | 'dismissed';
+  requestFingerprint: string;
+  idempotencyKey: string;
+  correlationId: string;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -320,6 +339,15 @@ export interface Persistence {
       key: string,
     ): Promise<ModerationMessageDeletion | undefined>;
   };
+  safetyReports: {
+    create(value: SafetyReport): Promise<SafetyReport>;
+    findById(id: string): Promise<SafetyReport | undefined>;
+    findByIdempotencyKey(
+      reporterId: string,
+      communityId: string,
+      key: string,
+    ): Promise<SafetyReport | undefined>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -428,6 +456,12 @@ function moderationReason(value: string): string {
   if (!normalized || normalized.length > 500) throw new DomainError('conflict');
   return normalized;
 }
+function reportDescription(value: string): string {
+  const normalized = value.trim().replace(/\s+/g, ' ').normalize('NFC');
+  if (!normalized || normalized.length > 1000)
+    throw new DomainError('conflict');
+  return normalized;
+}
 
 export interface InvitationRateLimiter {
   consume(key: string, now: Date): Promise<boolean>;
@@ -471,6 +505,10 @@ export class CommunityService {
     ),
     private readonly issueInvitationToken: () => string = () =>
       randomBytes(32).toString('base64url'),
+    private readonly reportLimiter: InvitationRateLimiter = new FixedWindowInvitationRateLimiter(
+      10,
+      3_600_000,
+    ),
   ) {}
   createAccount(displayName: string): Promise<Account> {
     return this.persistence.accounts.create({
@@ -855,6 +893,137 @@ export class CommunityService {
       });
       return { message: tombstone, deletion };
     });
+  }
+
+  async createSafetyReport(
+    reporterId: string,
+    communityId: string,
+    input: {
+      targetAccountId?: string | null;
+      targetMessageId?: string | null;
+      category: SafetyReportCategory;
+      description: string;
+      evidenceReferenceIds?: string[];
+      idempotencyKey: string;
+      correlationId: string;
+    },
+  ): Promise<SafetyReport> {
+    const description = reportDescription(input.description);
+    const key = idempotencyKey(input.idempotencyKey);
+    const targetAccountId = input.targetAccountId ?? null;
+    const targetMessageId = input.targetMessageId ?? null;
+    if ((targetAccountId === null) === (targetMessageId === null))
+      throw new DomainError('conflict');
+    const evidenceReferenceIds = [...new Set(input.evidenceReferenceIds ?? [])];
+    if (
+      evidenceReferenceIds.length > 10 ||
+      evidenceReferenceIds.some(
+        (id) =>
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            id,
+          ),
+      )
+    )
+      throw new DomainError('conflict');
+    await this.enforce(reporterId, 'community.view', [
+      { type: 'community', id: communityId },
+    ]);
+    const existing = await this.persistence.safetyReports.findByIdempotencyKey(
+      reporterId,
+      communityId,
+      key,
+    );
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          targetAccountId,
+          targetMessageId,
+          category: input.category,
+          description,
+          evidenceReferenceIds,
+        }),
+      )
+      .digest('hex');
+    if (existing) {
+      if (existing.requestFingerprint !== fingerprint)
+        throw new DomainError('conflict');
+      return existing;
+    }
+    if (!(await this.reportLimiter.consume(`report:${reporterId}`, new Date())))
+      throw new DomainError('rate_limited', 3600);
+    return this.persistence.transaction(async (persistence) => {
+      await this.enforce(reporterId, 'community.view', [
+        { type: 'community', id: communityId },
+      ]);
+      const retried = await persistence.safetyReports.findByIdempotencyKey(
+        reporterId,
+        communityId,
+        key,
+      );
+      if (retried) {
+        if (retried.requestFingerprint !== fingerprint)
+          throw new DomainError('conflict');
+        return retried;
+      }
+      if (targetMessageId) {
+        const message = await persistence.messages.findById(targetMessageId);
+        const space = message
+          ? await persistence.spaces.findById(message.spaceId)
+          : undefined;
+        if (!message || !space || space.communityId !== communityId)
+          throw new DomainError('not_found');
+      } else if (
+        !targetAccountId ||
+        !(await persistence.memberships.findByCommunityAndAccount(
+          communityId,
+          targetAccountId,
+        ))
+      )
+        throw new DomainError('not_found');
+      const createdAt = new Date().toISOString();
+      const report = await persistence.safetyReports.create({
+        id: randomUUID(),
+        communityId,
+        reporterId,
+        targetAccountId,
+        targetMessageId,
+        category: input.category,
+        description,
+        evidenceReferenceIds,
+        status: 'submitted',
+        requestFingerprint: fingerprint,
+        idempotencyKey: key,
+        correlationId: input.correlationId,
+        createdAt,
+        updatedAt: createdAt,
+        version: 1,
+      });
+      await this.writeModerationAudit(persistence, {
+        communityId,
+        actorId: reporterId,
+        targetAccountId,
+        targetMessageId,
+        action: 'report.create',
+        outcome: 'succeeded',
+        reason: null,
+        correlationId: input.correlationId,
+        metadata: { reportId: report.id, category: report.category },
+      });
+      return report;
+    });
+  }
+
+  async getOwnSafetyReport(
+    reporterId: string,
+    reportId: string,
+  ): Promise<SafetyReport> {
+    const report = await this.persistence.safetyReports.findById(reportId);
+    if (!report || report.reporterId !== reporterId)
+      throw new DomainError('not_found');
+    await this.enforce(reporterId, 'community.view', [
+      { type: 'community', id: report.communityId },
+    ]);
+    return report;
   }
 
   async listCommunities(
@@ -1751,6 +1920,7 @@ type MemoryState = {
   moderationAuditEvents: Map<string, ModerationAuditEvent>;
   moderationMessageEvidence: Map<string, ModerationMessageEvidence>;
   moderationMessageDeletions: Map<string, ModerationMessageDeletion>;
+  safetyReports: Map<string, SafetyReport>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -1768,6 +1938,7 @@ const clone = (state: MemoryState): MemoryState => ({
   moderationAuditEvents: new Map(state.moderationAuditEvents),
   moderationMessageEvidence: new Map(state.moderationMessageEvidence),
   moderationMessageDeletions: new Map(state.moderationMessageDeletions),
+  safetyReports: new Map(state.safetyReports),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -1799,6 +1970,7 @@ export class InMemoryPersistence implements Persistence {
     moderationAuditEvents: new Map(),
     moderationMessageEvidence: new Map(),
     moderationMessageDeletions: new Map(),
+    safetyReports: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -2251,6 +2423,30 @@ export class InMemoryPersistence implements Persistence {
         (value) =>
           value.actorId === actorId &&
           value.messageId === messageId &&
+          value.idempotencyKey === key,
+      ),
+  };
+  readonly safetyReports = {
+    create: async (value: SafetyReport) => {
+      const existing = await this.safetyReports.findByIdempotencyKey(
+        value.reporterId,
+        value.communityId,
+        value.idempotencyKey,
+      );
+      if (existing) return existing;
+      this.state.safetyReports.set(value.id, value);
+      return value;
+    },
+    findById: async (id: string) => this.state.safetyReports.get(id),
+    findByIdempotencyKey: async (
+      reporterId: string,
+      communityId: string,
+      key: string,
+    ) =>
+      [...this.state.safetyReports.values()].find(
+        (value) =>
+          value.reporterId === reporterId &&
+          value.communityId === communityId &&
           value.idempotencyKey === key,
       ),
   };

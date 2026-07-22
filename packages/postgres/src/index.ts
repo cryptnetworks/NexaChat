@@ -14,6 +14,7 @@ import type {
   ModerationAuditEvent,
   ModerationMessageEvidence,
   ModerationMessageDeletion,
+  SafetyReport,
   Category,
   Community,
   Invitation,
@@ -93,6 +94,7 @@ export class PostgresPersistence implements Persistence {
   readonly moderationAuditEvents;
   readonly moderationMessageEvidence;
   readonly moderationMessageDeletions;
+  readonly safetyReports;
 
   constructor(
     private readonly pool: Pool,
@@ -115,6 +117,7 @@ export class PostgresPersistence implements Persistence {
       moderationMessageEvidenceRepository(queryable);
     this.moderationMessageDeletions =
       moderationMessageDeletionRepository(queryable);
+    this.safetyReports = safetyReportRepository(queryable);
   }
 
   async transaction<T>(
@@ -664,6 +667,23 @@ type ModerationMessageDeletionRow = {
   correlation_id: string;
   event_id: string;
   created_at: Date;
+};
+type SafetyReportRow = {
+  id: string;
+  community_id: string;
+  reporter_id: string;
+  target_account_id: string | null;
+  target_message_id: string | null;
+  category: SafetyReport['category'];
+  description: string;
+  evidence_reference_ids: string[];
+  status: SafetyReport['status'];
+  request_fingerprint: string;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  updated_at: Date;
+  version: number;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1413,6 +1433,57 @@ function moderationMessageDeletionRepository(
   };
 }
 
+function safetyReportRepository(db: Queryable): Persistence['safetyReports'] {
+  const fields =
+    'id,community_id,reporter_id,target_account_id,target_message_id,category,description,evidence_reference_ids,status,request_fingerprint,idempotency_key,correlation_id,created_at,updated_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<SafetyReportRow>(
+        `INSERT INTO safety_reports
+          (id,community_id,reporter_id,target_account_id,target_message_id,
+           category,description,evidence_reference_ids,status,request_fingerprint,
+           idempotency_key,correlation_id,created_at,updated_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT (reporter_id,community_id,idempotency_key) DO UPDATE
+           SET idempotency_key=EXCLUDED.idempotency_key RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.reporterId,
+          value.targetAccountId,
+          value.targetMessageId,
+          value.category,
+          value.description,
+          value.evidenceReferenceIds,
+          value.status,
+          value.requestFingerprint,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.updatedAt,
+          value.version,
+        ],
+      );
+      return mapSafetyReport(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<SafetyReportRow>(
+        `SELECT ${fields} FROM safety_reports WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapSafetyReport(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(reporterId, communityId, key) {
+      const result = await db.query<SafetyReportRow>(
+        `SELECT ${fields} FROM safety_reports
+         WHERE reporter_id=$1 AND community_id=$2 AND idempotency_key=$3`,
+        [reporterId, communityId, key],
+      );
+      return result.rows[0] ? mapSafetyReport(result.rows[0]) : undefined;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1593,6 +1664,23 @@ const mapModerationMessageDeletion = (
   correlationId: row.correlation_id,
   eventId: row.event_id,
   createdAt: row.created_at.toISOString(),
+});
+const mapSafetyReport = (row: SafetyReportRow): SafetyReport => ({
+  id: row.id,
+  communityId: row.community_id,
+  reporterId: row.reporter_id,
+  targetAccountId: row.target_account_id,
+  targetMessageId: row.target_message_id,
+  category: row.category,
+  description: row.description,
+  evidenceReferenceIds: row.evidence_reference_ids,
+  status: row.status,
+  requestFingerprint: row.request_fingerprint,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString(),
+  version: row.version,
 });
 
 interface Migration {

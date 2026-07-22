@@ -287,6 +287,41 @@ export const moderatorDeleteMessageSchema = z
     expectedVersion: z.number().int().positive(),
   })
   .strict();
+export const reportCategorySchema = z.enum([
+  'spam',
+  'harassment',
+  'threat',
+  'self_harm',
+  'other',
+]);
+export const createSafetyReportSchema = z
+  .object({
+    reporterId: id,
+    targetAccountId: id.nullable().optional(),
+    targetMessageId: id.nullable().optional(),
+    category: reportCategorySchema,
+    description: z.string().trim().min(1).max(1000),
+    evidenceReferenceIds: z.array(id).max(10).default([]),
+    idempotencyKey: z.string().min(8).max(128),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (value.targetAccountId == null) !== (value.targetMessageId == null),
+    { message: 'exactly one report target is required' },
+  );
+export const safetyReportReceiptSchema = z.object({
+  id,
+  communityId: id,
+  targetAccountId: id.nullable(),
+  targetMessageId: id.nullable(),
+  category: reportCategorySchema,
+  status: z.enum(['submitted', 'triaged', 'actioned', 'dismissed']),
+  correlationId: id,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
