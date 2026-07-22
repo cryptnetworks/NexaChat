@@ -5,9 +5,13 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DATABASE_TEST_URL: postgresql://nexa:ci-only-password@127.0.0.1:5432/nexa
     services:
@@ -25,23 +29,60 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 24, cache: npm }
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:architecture
       - run: npm run test:contracts
+      - run: npm run verify:security-policy
+      - run: npm run verify:backup-policy
+      - run: npm run verify:cloudflare-policy
       - run: npm test
+      - name: Install accessibility test browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser accessibility gate
+        run: npm run test:accessibility
       - run: npm run build
-      - run: npm audit --audit-level=high
       - run: docker compose config --quiet
+      - name: Validate production Compose model
+        env:
+          NEXA_SECRET_DIR: /tmp/nexa-chat-ci-secrets
+          NEXA_PUBLIC_ORIGIN: https://chat.example.test
+          NEXA_IMAGE_TAG: verify
+          NEXA_IMAGE_VERSION: verify
+          NEXA_IMAGE_REVISION: ${{ github.sha }}
+        run: docker compose -f compose.production.yml config --quiet
       - run: npm run verify:clean-env
-      - name: Generate software bill of materials
-        run: npm sbom --sbom-format cyclonedx > nexa-chat.cdx.json
-      - uses: actions/upload-artifact@v7
-        with: { name: sbom, path: nexa-chat.cdx.json }
+      - name: Generate and validate application SBOM
+        run: |
+          npm sbom --sbom-format cyclonedx > nexa-chat.cdx.json
+          npm run verify:sbom -- nexa-chat.cdx.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: application-sbom-${{ github.sha }}
+          path: nexa-chat.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development
+          license-check: true
+          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, GPL-3.0-only, ISC, MIT, MITNFA, MPL-2.0

@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 import {
   AuthenticationService,
@@ -15,6 +15,11 @@ import {
 } from '@nexa/realtime-contracts';
 import { buildApp } from '../src/app.js';
 import type { AuthRuntime } from '../src/auth-routes.js';
+import {
+  DistributedRequestRateLimiter,
+  type RequestRateLimiter,
+} from '../src/rate-limit.js';
+import { Telemetry } from '../src/telemetry.js';
 import { attachWebsocketHub, type WebsocketLimits } from '../src/websocket.js';
 
 const origin = 'http://web.test';
@@ -61,6 +66,9 @@ describe('secure real WebSocket integration', () => {
   let app: ReturnType<typeof buildApp>;
   let endpoint: string;
   let limits: Partial<WebsocketLimits>;
+  let telemetry: Telemetry;
+  let trustedProxyCidrs: string[];
+  let rateLimiter: RequestRateLimiter | undefined;
 
   beforeEach(async () => {
     service = new InMemoryCommunityService();
@@ -72,6 +80,9 @@ describe('secure real WebSocket integration', () => {
       revalidateMs: 20,
       drainMs: 100,
     };
+    telemetry = new Telemetry({ traceSampleRate: 0 });
+    trustedProxyCidrs = [];
+    rateLimiter = undefined;
     app = buildApp(service);
     await app.listen({ host: '127.0.0.1', port: 0 });
     attach();
@@ -88,7 +99,10 @@ describe('secure real WebSocket integration', () => {
     app.websocketHub = attachWebsocketHub(app.server, service, {
       auth,
       trustedOrigin: origin,
+      trustedProxyCidrs,
       limits,
+      metrics: telemetry.websocketMetrics(),
+      rateLimiter: rateLimiter ?? app.requestRateLimiter,
     });
   }
 
@@ -106,10 +120,17 @@ describe('secure real WebSocket integration', () => {
     return issued;
   }
 
-  function connect(cookie: string, selectedOrigin = origin): WebSocket {
+  function connect(
+    cookie: string,
+    selectedOrigin = origin,
+    forwardedFor?: string,
+  ): WebSocket {
     return new WebSocket(endpoint, {
       origin: selectedOrigin,
-      headers: { cookie: `nexa_session=${cookie}` },
+      headers: {
+        cookie: `nexa_session=${cookie}`,
+        ...(forwardedFor ? { 'x-forwarded-for': forwardedFor } : {}),
+      },
     });
   }
 
@@ -177,6 +198,51 @@ describe('secure real WebSocket integration', () => {
       subscriptions: 1,
     });
     socket.close(1000);
+  });
+
+  it('publishes bounded connection, subscription, delivery, queue, and close metrics', async () => {
+    const owner = await identity('metrics-owner');
+    const community = await service.createCommunity(
+      owner.account.id,
+      'Metrics',
+    );
+    const space = await service.createTextSpace(
+      community.id,
+      owner.account.id,
+      'metrics',
+    );
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    await subscribe(socket, space.id);
+
+    const delivery = nextMessage(socket);
+    app.websocketHub?.broadcast(
+      space.id,
+      envelope(space.id, owner.account.id, 'metrics'),
+    );
+    await delivery;
+    const closeEvent = closed(socket);
+    socket.close(1000);
+    await closeEvent;
+    await vi.waitFor(() => {
+      expect(telemetry.metrics.render()).toContain(
+        'event="realtime_connection_closed",outcome="normal"',
+      );
+    });
+
+    const metrics = telemetry.metrics.render();
+    expect(metrics).toContain('event="realtime_connection_opened"');
+    expect(metrics).toContain('event="realtime_subscription_changed"');
+    expect(metrics).toContain('event="realtime_delivery"');
+    expect(metrics).toContain(
+      'event="realtime_connection_closed",outcome="normal"',
+    );
+    expect(metrics).toContain('state="connections"');
+    expect(metrics).toContain('state="subscriptions"');
+    expect(metrics).toContain('state="queue"');
+    expect(metrics).toContain('nexa_websocket_delivery_duration_seconds_count');
+    expect(metrics).not.toContain(owner.account.id);
+    expect(metrics).not.toContain(space.id);
   });
 
   it('rejects anonymous, spoofed-origin, revoked, and suspended sessions during connection establishment', async () => {
@@ -394,6 +460,71 @@ describe('secure real WebSocket integration', () => {
       envelope(first.id, owner.account.id, 'x'.repeat(4_000)),
     );
     await expect(slowClose).resolves.toBe(1013);
+    await vi.waitFor(() => {
+      const metrics = telemetry.metrics.render();
+      expect(metrics).toContain(
+        'event="realtime_slow_consumer",outcome="observed"',
+      );
+      expect(metrics).toContain(
+        'event="realtime_connection_closed",outcome="policy"',
+      );
+    });
+  });
+
+  it('applies per-address limits to forwarded clients only from trusted proxies', async () => {
+    await app.websocketHub?.close();
+    limits = {
+      ...limits,
+      maxConnectionsPerAddress: 1,
+      maxConnectionsPerAccount: 4,
+    };
+    const issued = await identity('proxy-limits');
+    attach();
+
+    const direct = connect(issued.session.token, origin, '198.51.100.7');
+    await opened(direct);
+    await expectUpgradeRejected(
+      connect(issued.session.token, origin, '198.51.100.8'),
+      403,
+    );
+    const directClosed = closed(direct);
+    direct.close(1000);
+    await directClosed;
+
+    await app.websocketHub?.close();
+    trustedProxyCidrs = ['127.0.0.1/32'];
+    attach();
+    const first = connect(issued.session.token, origin, '198.51.100.7');
+    const second = connect(issued.session.token, origin, '198.51.100.8');
+    await Promise.all([opened(first), opened(second)]);
+    await expectUpgradeRejected(
+      connect(issued.session.token, origin, '198.51.100.7'),
+      403,
+    );
+    first.close(1000);
+    second.close(1000);
+  });
+
+  it('returns stable retry metadata when distributed upgrade admission is exhausted', async () => {
+    await app.websocketHub?.close();
+    rateLimiter = new DistributedRequestRateLimiter({
+      addressLimit: 1,
+      accountLimit: 10,
+      windowMs: 10_000,
+    });
+    attach();
+    const issued = await identity('distributed-admission');
+    const first = connect(issued.session.token);
+    await opened(first);
+    await expectUpgradeRejected(connect(issued.session.token), 429, {
+      'retry-after': '10',
+      'ratelimit-limit': '1',
+      'ratelimit-remaining': '0',
+      'ratelimit-reset': '10',
+    });
+    const firstClosed = closed(first);
+    first.close(1000);
+    await firstClosed;
   });
 
   it('drains on shutdown and releases state across repeated isolated connections', async () => {
@@ -419,14 +550,30 @@ describe('secure real WebSocket integration', () => {
       connections: 0,
       subscriptions: 0,
     });
+    await vi.waitFor(() => {
+      const metrics = telemetry.metrics.render();
+      expect(metrics).toContain(
+        'event="realtime_connection_closed",outcome="shutdown"',
+      );
+      expect(metrics).toContain('nexa_websocket_state{state="connections"} 0');
+      expect(metrics).toContain(
+        'nexa_websocket_state{state="subscriptions"} 0',
+      );
+    });
   });
 });
 
-async function expectUpgradeRejected(socket: WebSocket, status: number) {
+async function expectUpgradeRejected(
+  socket: WebSocket,
+  status: number,
+  headers: Record<string, string> = {},
+) {
   await new Promise<void>((resolve, reject) => {
     socket.once('unexpected-response', (_request, response) => {
       try {
         expect(response.statusCode).toBe(status);
+        for (const [name, value] of Object.entries(headers))
+          expect(response.headers[name]).toBe(value);
         response.resume();
         resolve();
       } catch (error) {

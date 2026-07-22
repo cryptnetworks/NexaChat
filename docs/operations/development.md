@@ -12,24 +12,33 @@ development processes in the foreground. Stop the processes with Ctrl-C;
 
 ## Local services
 
-Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and MinIO is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
+Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
-Run `npm ci` and `npm run dev`. `/health/live` reports process liveness. `/health/ready` returns `200` only when PostgreSQL is reachable and its schema matches this build; otherwise it returns `503` without exposing connection details.
+Run `npm ci` and `npm run dev`. `/health/live` reports process liveness,
+`/health/startup` reports completed initialization, and `/health/ready` returns
+`200` only when PostgreSQL is reachable and its schema matches this build.
+Enabled optional Valkey or object-storage failures report degraded readiness
+without taking authoritative PostgreSQL flows offline. `/metrics` is for an
+internal monitoring network only. See the [observability guide](observability.md)
+for probe semantics, telemetry privacy, alerts, and local smoke checks.
 
-For a destructive clean smoke test, run `npm run verify:clean-env`. It is bounded
-to Compose project `nexa-chat-clean-verify`, published PostgreSQL port 55432,
-server port 3100, and `/tmp/nexa-chat-clean-verify.log`. Cleanup deletes only
-that project's temporary volume. Do not reuse that project name for valuable
-data. The test proves empty-database migration, HTTP 200 readiness, HTTP 503
-during PostgreSQL loss, and return to 200 after recovery.
+For a destructive clean smoke test, run `npm run verify:clean-env`. Each run uses
+a uniquely named `nexa-chat-clean-verify-*` Compose project, per-run API and
+provider ports, a private temporary log, and project-scoped PostgreSQL, Valkey,
+and SeaweedFS volumes. The bounded cleanup trap removes only those disposable
+resources. The script verifies the toolchain, lockfile install, Compose
+configuration, empty-database migration, generic health and metrics,
+PostgreSQL-required outage/recovery, optional Valkey and object-storage
+degradation/recovery, telemetry privacy, and bounded SIGTERM shutdown. Do not
+point this test at shared or production providers.
 
 ## Troubleshooting
 
 - `toolchain_error`: activate Node 24.18.0 with the repository's version-manager
   file and install npm 11.16.0; do not bypass the check.
-- A published-port conflict: stop the process using 5432/6379/9000/9001, or set
+- A published-port conflict: stop the process using 5432/6379/8333, or set
   `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
-  `MINIO_API_PUBLISHED_PORT`, and `MINIO_CONSOLE_PUBLISHED_PORT` before startup
+  `S3_PUBLISHED_PORT` before startup
   and update matching application URLs in `.env`.
 - A service never becomes healthy: run `docker compose ps` and bounded
   `docker compose logs --tail=100 <service>`; logs must not be pasted publicly
@@ -48,7 +57,14 @@ install`, or replace pinned image digests as an outage workaround.
 
 The server reads the environment once at process startup and passes typed configuration into database, authentication, HTTP, and WebSocket composition. Unknown `NEXA_*` keys are rejected so misspellings and removed settings cannot silently weaken behavior. Required values are `DATABASE_URL` and `NEXA_WEB_ORIGIN`. Production additionally requires an exact HTTPS origin, secure cookies, and development identity disabled. Startup reports `invalid_configuration` with the affected key and a safe reason before opening a database connection or listening; configured values are never echoed.
 
-`.env.example` is the development inventory. It includes bounded server body size, request and shutdown timeouts; PostgreSQL pool and connection/query timeouts; session lifetimes and rate limits; and Argon2id cost parameters. Values at documented bounds are accepted and values outside them fail startup. There are no implicit retry queues: startup fails after the bounded PostgreSQL connection timeout, while an already-running process exposes dependency loss through `/health/ready` and automatically reports ready again after PostgreSQL recovers.
+`.env.example` is the development inventory. It includes bounded server body
+size, request and shutdown timeouts; structured log level and trace sample rate;
+PostgreSQL pool and connection/query timeouts; session lifetimes and rate limits;
+and Argon2id cost parameters. Values at documented bounds are accepted and
+values outside them fail startup. There are no implicit authoritative-work retry
+queues: startup fails after the bounded PostgreSQL connection timeout, while an
+already-running process exposes required dependency loss through
+`/health/ready` and automatically reports ready again after PostgreSQL recovers.
 
 For production, supply secrets through the deployment secret manager rather than committing an environment file. Rotate database credentials by creating a replacement credential, updating instances, confirming readiness, then revoking the old credential. If rotation fails, restore the prior secret while it remains valid. Recovery after an outage requires no configuration mutation; readiness is rechecked on every probe. Configuration rollback means restoring the previously reviewed key set and restarting. Retain a database backup before migrations as described below.
 
@@ -82,4 +98,7 @@ A production backup must consistently cover PostgreSQL and object storage, encry
 
 Run containers as non-root with read-only filesystems where possible, terminate TLS at a maintained proxy, restrict service ports to a private network, rotate secrets, set explicit quotas, collect OpenTelemetry logs/metrics/traces without message content, and handle `SIGTERM` gracefully. Kubernetes is not required.
 
-The initial Compose file is for development services only. Release images, migration automation, signing, scanning, and an update procedure remain planned production work.
+The initial Compose file is for development services only. The production
+profile, migration automation, image scanning, SBOMs, and provenance checks are
+documented separately. Artifact signing and release publication remain distinct,
+explicitly authorized operations.

@@ -216,7 +216,9 @@ describe('controlled invitation lifecycle', () => {
         maxUses: 1,
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
-    expect(await persistence.auditEvents.list(community.id)).toEqual(
+    expect(
+      (await persistence.auditEvents.list(community.id, { limit: 100 })).items,
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           action: 'invitation.create',

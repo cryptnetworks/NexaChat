@@ -14,7 +14,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present && npm run verify:production-artifacts",
+    "build:production": "npm run build",
     "dev": "npm run dev --workspace @nexa/server & npm run dev --workspace @nexa/web",
     "dev:up": "bash scripts/dev-up.sh",
     "format": "prettier --write .",
@@ -25,6 +26,7 @@
     "test:auth": "vitest run packages/auth/test apps/server/test/config.test.ts apps/server/test/auth.integration.test.ts",
     "test:authorization": "vitest run packages/authorization/test apps/server/test/authorization.integration.test.ts",
     "test:architecture": "tsc -p tools/architecture/tsconfig.json && vitest run tools/architecture/check.test.ts",
+    "test:accessibility": "playwright test --config apps/web/playwright.config.ts",
     "test:config": "vitest run apps/server/test/config.test.ts",
     "test:contracts": "vitest run packages/api-contracts/src/error-contract.test.ts packages/realtime-contracts/src/contracts.test.ts packages/realtime-contracts/src/compatibility-fixtures.test.ts",
     "test:coordination": "vitest run packages/coordination/test",
@@ -34,12 +36,23 @@
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "verify:clean-env": "bash scripts/verify-clean-environment.sh"
+    "verify:production-artifacts": "node scripts/verify-production-artifacts.mjs",
+    "verify:clean-env": "bash scripts/verify-clean-environment.sh",
+    "verify:backup-policy": "node scripts/verify-backup-policy.mjs",
+    "verify:backup-restore": "bash scripts/verify-backup-restore.sh",
+    "verify:cloudflare-policy": "node scripts/verify-cloudflare-policy.mjs",
+    "verify:cloudflare-tunnel": "bash scripts/verify-cloudflare-tunnel.sh",
+    "verify:security-policy": "node scripts/verify-security-policy.mjs",
+    "verify:sbom": "node scripts/verify-sbom.mjs",
+    "test:security-tools": "bash scripts/test-security-tools.sh"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
     "@types/node": "26.1.1",
     "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
     "eslint": "10.7.0",
     "prettier": "3.9.5",
     "typescript": "5.8.3",

@@ -2,7 +2,7 @@
 
 ## Status and security objective
 
-Attachment upload, processing, and download are not implemented. MinIO in the
+Attachment upload, processing, and download are not implemented. SeaweedFS in the
 development Compose file is an unconnected adapter target, not a supported file
 service. This document is the minimum security contract for future work. A
 partial path that stores, previews, or serves unscanned user bytes is forbidden.

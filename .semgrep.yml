@@ -1,0 +1,30 @@
+rules:
+  - id: nexa-javascript-eval
+    message: Dynamic evaluation can execute attacker-controlled code.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  - id: nexa-disabled-tls-verification
+    message: TLS certificate verification must not be disabled in code.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern: '{..., rejectUnauthorized: false, ...}'
+
+  - id: nexa-dangerous-html-injection
+    message: Raw HTML injection requires a separately reviewed sanitizer boundary.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern: '<$ELEMENT dangerouslySetInnerHTML={...} ... />'
+
+  - id: nexa-shell-command-execution
+    message: Shell command execution requires a separately reviewed fixed-command boundary.
+    severity: ERROR
+    languages: [javascript, typescript]
+    patterns:
+      - pattern-inside: |
+          import { exec as $EXEC } from 'node:child_process';
+          ...
+      - pattern: $EXEC(...)

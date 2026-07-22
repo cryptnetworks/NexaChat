@@ -24,7 +24,7 @@ The command verifies the pinned toolchain, installs exactly the lockfile,
 creates `.env` only when absent, waits for all Compose dependencies, and starts
 the API and web processes. It never replaces an existing `.env` or volume.
 
-Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`.
+Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`. The API exposes separate liveness, startup, and readiness probes plus internal Prometheus-compatible metrics; see the [observability guide](docs/operations/observability.md).
 
 ## Verification
 
@@ -43,6 +43,7 @@ npm run test:authorization
 npm run test:config
 npm run test:architecture
 npm run test:contracts
+npm run verify:security-policy
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
@@ -53,7 +54,35 @@ npm run verify:clean-env
 
 `npm test` runs the complete test suite. `npm run test:postgres` requires the Compose PostgreSQL service and exercises repositories, constraints, transactions, migrations, readiness, and persistence across API restarts.
 
-`npm run verify:clean-env` uses the isolated `nexa-chat-clean-verify` Compose project and PostgreSQL port 55432, then removes only that project's test volume. It verifies an empty database migration, readiness, dependency outage, and automatic recovery.
+Pull requests also run immutable dependency review, full-history and proposed-tree secret scanning, pinned static analysis, license/migration/workflow checks, validated CycloneDX output, and a disposable encrypted backup/restore cycle. Scheduled default-branch verification adds production image scans and BuildKit provenance validation. See the [supply-chain security guide](docs/operations/supply-chain-security.md) for trust boundaries, thresholds, triage, suppressions, and local reproduction, and the [backup and restore runbook](docs/operations/backup-and-restore.md) for recovery.
+
+`npm run verify:clean-env` uses a uniquely named `nexa-chat-clean-verify-*`
+Compose project and per-run API, PostgreSQL, Valkey, and SeaweedFS ports, then
+removes only that project's containers, network, and volumes. It verifies empty-database
+migration, generic health semantics, metrics, required and optional dependency
+outage/recovery, private-value exclusion, and bounded shutdown.
+
+## Production deployment
+
+The hardened single-host profile builds pinned, non-root server and HTTPS edge
+images, publishes only the edge, keeps providers on an internal network, injects
+credentials as file-backed secrets, gates startup on private-bucket creation and
+forward-only migration, and bounds runtime resources and shutdown. Follow the
+[production deployment runbook](docs/operations/production-deployment.md) before
+using `compose.production.yml`; the development Compose file is not a production
+configuration.
+
+Use the isolated end-to-end check before an installation or upgrade:
+
+```sh
+bash scripts/verify-production.sh
+```
+
+An optional, pinned Cloudflare Tunnel overlay removes the host edge port and
+uses two hardened outbound connectors with a file-backed token and verified
+origin TLS. Follow the [Cloudflare Tunnel runbook](docs/operations/cloudflare-tunnel.md)
+and run `npm run verify:cloudflare-tunnel`; the verification uses only synthetic
+local credentials and never creates a real tunnel.
 
 ## Architecture
 
@@ -94,7 +123,7 @@ Before adding `apps/desktop`, install the stable Rust toolchain (including `rust
 - There is no desktop application scaffold until the documented toolchain is available.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
-Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).
+Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [observability guide](docs/operations/observability.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).
 
 ## License
 

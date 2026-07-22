@@ -13,6 +13,7 @@ import {
   ObjectStorageError,
   S3PrivateObjectStore,
   type ObjectStorageConfig,
+  type ObjectStorageObserver,
 } from '../src/index.js';
 
 const integrationEndpoint = process.env.OBJECT_STORAGE_TEST_URL;
@@ -118,6 +119,157 @@ describe('private object storage bounds', () => {
     expect(command).toBeInstanceOf(ListObjectsV2Command);
     expect(command.input.MaxKeys).toBe(2);
   });
+});
+
+describe('object-storage observer', () => {
+  it('cannot change a successful write or close when the observer throws', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const destroy = vi.fn();
+    const observer = {
+      event: vi.fn<ObjectStorageObserver['event']>(() => {
+        throw new Error('telemetry unavailable');
+      }),
+    };
+    const store = new S3PrivateObjectStore(
+      config,
+      { send, destroy } as unknown as S3Client,
+      observer,
+    );
+    const bytes = new TextEncoder().encode('private');
+
+    await expect(store.put('private/key', bytes)).resolves.toEqual({
+      byteLength: bytes.byteLength,
+      sha256:
+        '715dc8493c36579a5b116995100f635e3572fdf8703e708ef1a08d943b36774e',
+    });
+    expect(() => {
+      store.close();
+    }).not.toThrow();
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(observer.event).toHaveBeenCalledTimes(2);
+  });
+
+  it('emits safe success and failure outcomes without private operation data', async () => {
+    const key = 'private/key';
+    const content = 'private attachment content';
+    const providerMessage = 'private provider response detail';
+    const privateConfig: ObjectStorageConfig = {
+      ...config,
+      endpoint: 'https://private-storage.example.test',
+      accessKeyId: 'private-access-key',
+      secretAccessKey: 'private-secret-key',
+      bucket: 'private-bucket',
+      maxObjectBytes: 128,
+    };
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error(providerMessage));
+    const observer = { event: vi.fn<ObjectStorageObserver['event']>() };
+    const store = new S3PrivateObjectStore(
+      privateConfig,
+      { send, destroy: vi.fn() } as unknown as S3Client,
+      observer,
+    );
+
+    await expect(
+      store.put(key, new TextEncoder().encode(content)),
+    ).resolves.toMatchObject({ byteLength: content.length });
+    await expect(store.get(key)).rejects.toMatchObject({
+      code: 'object_unavailable',
+    });
+
+    expect(
+      observer.event.mock.calls.map(([operation, outcome]) => [
+        operation,
+        outcome,
+      ]),
+    ).toEqual([
+      ['put', 'success'],
+      ['get', 'failure'],
+    ]);
+    for (const call of observer.event.mock.calls) {
+      expect(call[2]).toBeTypeOf('number');
+      expect(call[2]).toBeGreaterThanOrEqual(0);
+    }
+    const payload = JSON.stringify(observer.event.mock.calls);
+    for (const secret of [
+      key,
+      content,
+      providerMessage,
+      privateConfig.endpoint,
+      privateConfig.accessKeyId,
+      privateConfig.secretAccessKey,
+      privateConfig.bucket,
+    ])
+      expect(payload).not.toContain(secret);
+  });
+
+  it('reports failed verification and write outcomes with durations', async () => {
+    const providerMessage = 'private failed provider operation';
+    const send = vi.fn().mockRejectedValue(new Error(providerMessage));
+    const observer = { event: vi.fn<ObjectStorageObserver['event']>() };
+    const store = new S3PrivateObjectStore(
+      config,
+      { send, destroy: vi.fn() } as unknown as S3Client,
+      observer,
+    );
+
+    await expect(store.verify()).rejects.toMatchObject({
+      code: 'object_unavailable',
+    });
+    await expect(
+      store.put('private/key', new TextEncoder().encode('private')),
+    ).rejects.toMatchObject({ code: 'object_unavailable' });
+
+    expect(observer.event).toHaveBeenNthCalledWith(
+      1,
+      'connect',
+      'failure',
+      expect.any(Number),
+    );
+    expect(observer.event).toHaveBeenNthCalledWith(
+      2,
+      'put',
+      'failure',
+      expect.any(Number),
+    );
+    for (const call of observer.event.mock.calls)
+      expect(call[2]).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(observer.event.mock.calls)).not.toContain(
+      providerMessage,
+    );
+  });
+
+  it.each(['AbortError', 'TimeoutError'])(
+    'classifies an S3 %s as a bounded timeout',
+    async (name) => {
+      const providerMessage = 'private timeout provider detail';
+      const error = Object.assign(new Error(providerMessage), { name });
+      const send = vi.fn().mockRejectedValue(error);
+      const observer = { event: vi.fn<ObjectStorageObserver['event']>() };
+      const store = new S3PrivateObjectStore(
+        config,
+        { send, destroy: vi.fn() } as unknown as S3Client,
+        observer,
+      );
+
+      await expect(
+        store.put('private/key', new TextEncoder().encode('private')),
+      ).rejects.toMatchObject({ code: 'object_unavailable' });
+
+      expect(observer.event).toHaveBeenCalledWith(
+        'timeout',
+        'failure',
+        expect.any(Number),
+      );
+      expect(JSON.stringify(observer.event.mock.calls)).not.toContain(
+        providerMessage,
+      );
+    },
+  );
 });
 
 integration('S3-compatible private object storage', () => {

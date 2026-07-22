@@ -1,6 +1,9 @@
 node_modules/
 dist/
+dist-production/
 coverage/
+playwright-report/
+test-results/
 build/
 out/
 target/

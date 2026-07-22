@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AuthorizationError,
   AuthorizationService,
@@ -207,6 +207,36 @@ describe('authorization mutations', () => {
     await expect(
       service.enforce('actor', 'space.view', [community]),
     ).resolves.toEqual(preview);
+  });
+
+  it('observes bounded decisions without changing authorization behavior', async () => {
+    const observer = {
+      decision: vi.fn(() => {
+        throw new Error('telemetry unavailable');
+      }),
+    };
+    const store = allowedStore();
+    store.assignments = store.assignments.map((assignment) => ({
+      ...assignment,
+      actorId: 'private-actor',
+    }));
+    const allowed = new AuthorizationService(store, observer);
+    await expect(
+      allowed.enforce('private-actor', 'space.view', [community]),
+    ).resolves.toMatchObject({ allowed: true });
+    expect(observer.decision).toHaveBeenLastCalledWith('space.view', 'allow');
+
+    store.decisions = [];
+    await expect(
+      allowed.enforce('private-actor', 'space.view', [community]),
+    ).rejects.toMatchObject({ observed: true });
+    expect(observer.decision).toHaveBeenLastCalledWith('space.view', 'deny');
+    expect(JSON.stringify(observer.decision.mock.calls)).not.toContain(
+      'private-actor',
+    );
+    expect(JSON.stringify(observer.decision.mock.calls)).not.toContain(
+      community.id,
+    );
   });
 
   it('prevents unauthorized grants and rolls back', async () => {

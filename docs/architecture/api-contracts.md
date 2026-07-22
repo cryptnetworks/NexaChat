@@ -22,17 +22,29 @@ authorization control. Sensitive missing and unauthorized resources deliberately
 share `not_found` or their feature-specific non-disclosing code.
 
 Clients may automatically retry only when `retryable` is true. HTTP 429 includes
-an integer `Retry-After` header and uses bounded server windows. Readiness 503
-includes `Retry-After: 5`; callers should use bounded exponential backoff. Other
-4xx responses require user or request correction. A generic 500 is not declared
-safe to retry because command completion can be uncertain; idempotency keys must
-be used where the command contract provides them.
+integer `Retry-After`, `RateLimit-Limit`, `RateLimit-Remaining`, and
+`RateLimit-Reset` headers from the server-owned fixed window. A 503 caused by an
+unavailable limiter includes the same bounded metadata and
+`dependency_unavailable`; readiness 503 includes `Retry-After: 5`. Callers
+should use bounded exponential backoff and must not treat a retry as evidence
+that an earlier command failed. Other 4xx responses require user or request
+correction. A generic 500 is not declared safe to retry because command
+completion can be uncertain; idempotency keys must be used where the command
+contract provides them.
 
 JSON request bodies default to 16 KiB and return `payload_too_large` with 413.
-Requests have a 15-second default timeout. The instance-level address limiter
-defaults to 1,000 requests per 60 seconds, caps its in-memory key set at 10,000,
-and is configured independently from stricter authentication, invitation, and
-WebSocket limits. Configuration is range-validated before binding sockets.
+Requests have a 15-second default timeout. HTTP request admission defaults to
+1,000 requests per 60 seconds and applies independent bounded route-class,
+address, community, and verified-account counters. Enabled Valkey coordination
+makes these atomic and shared across replicas. Authentication, account, session,
+API-token, invitation, WebSocket, webhook, administration, mutation, and read
+groups have bounded policy caps. A disabled coordination adapter uses a
+10,000-key local store for single-process operation. If an enabled adapter
+fails, credential, token, invitation, WebSocket, webhook, and administrative
+traffic fails closed; ordinary traffic uses the bounded local store and reports
+degradation.
+Configuration is range-validated before binding sockets. The complete policy is
+in `docs/operations/rate-limiting.md`.
 
 Collections use a maximum page size of 100 and opaque cursors no longer than 256
 characters. Cursors encode server-owned stable ordering tuples and are never
@@ -40,12 +52,23 @@ accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
 `invalid_request`.
 
+Administrative audit query, integrity, checkpoint, retention, legal-hold, and
+NDJSON export endpoints require the community-scoped `moderation.audit`
+permission. Query and export use the same ascending community sequence, maximum
+page size of 100, and opaque next cursor. Version-1 responses expose only typed
+actor, scope, target, action, outcome, reason, correlation, retention, and
+integrity fields in `docs/operations/audit-events.md`; credentials, content,
+network addresses, and provider details are not contract fields. Integrity and
+checkpoint failure are returned as data so an authorized operator can preserve
+evidence and escalate without an automatic retry loop.
+
 Optimistic versions return `stale_write` for losing mutations. Scoped unique
 conflicts return `conflict`. Message creation and invitation acceptance document
 their own idempotency behavior. PostgreSQL constraints and transactional
 conditional updates are authoritative under concurrency.
 
 Operational recovery is forward-only: restore the required dependency, confirm
-`/health/ready`, and retry only according to the metadata above. This issue adds
-no migration and can be rolled back at the application layer, but clients that
-depend on version-1 metadata should be treated as part of compatibility review.
+`/health/ready`, and retry only according to the metadata above. Audit migration
+0007 is forward-only; older applications must explicitly support schema version
+7 before rollback. Clients that depend on version-1 audit records are part of
+compatibility review.

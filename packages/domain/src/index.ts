@@ -67,13 +67,56 @@ export interface Invitation {
   version: number;
 }
 export interface AuditEvent {
+  version: 1;
+  actorType: 'account' | 'service';
   id: string;
   actorId: string;
-  communityId: string | null;
-  invitationId: string | null;
-  action: 'invitation.create' | 'invitation.revoke' | 'invitation.accept';
+  scopeType: 'community' | 'instance';
+  scopeId: string | null;
+  targetType: 'audit_chain' | 'community' | 'invitation' | 'none';
+  targetId: string | null;
+  action:
+    | 'invitation.create'
+    | 'invitation.revoke'
+    | 'invitation.accept'
+    | 'audit.checkpoint'
+    | 'audit.legal_hold.apply'
+    | 'audit.legal_hold.release';
   outcome: 'succeeded' | 'rejected';
+  reasonCode: string | null;
+  correlationId: string;
   occurredAt: string;
+  retentionUntil: string;
+  sequence: number;
+  previousHash: string;
+  eventHash: string;
+}
+export type AuditEventInput = Omit<
+  AuditEvent,
+  'eventHash' | 'previousHash' | 'sequence'
+>;
+export interface AuditIntegrity {
+  valid: boolean;
+  count: number;
+  headHash: string | null;
+  checkpointSequence: number | null;
+  checkpointHash: string | null;
+  checkpointValid: boolean;
+}
+export interface AuditCheckpoint {
+  id: string;
+  communityId: string;
+  sequence: number;
+  headHash: string;
+  actorType: 'account' | 'service';
+  actorId: string;
+  correlationId: string;
+  createdAt: string;
+}
+export interface AuditRetention {
+  policy: 'security_7y';
+  legalHold: boolean;
+  eligibleThroughSequence: number;
 }
 export interface SessionRecord {
   id: string;
@@ -194,8 +237,11 @@ export interface Persistence {
     ): Promise<Invitation | undefined>;
   };
   auditEvents: {
-    create(event: AuditEvent): Promise<AuditEvent>;
-    list(communityId: string): Promise<AuditEvent[]>;
+    create(event: AuditEventInput): Promise<AuditEvent>;
+    list(communityId: string, page: ListPage): Promise<Page<AuditEvent>>;
+    verify(communityId: string): Promise<AuditIntegrity>;
+    checkpoint(checkpoint: AuditCheckpoint): Promise<AuditCheckpoint>;
+    retention(communityId: string, now: string): Promise<AuditRetention>;
   };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
@@ -234,7 +280,8 @@ export interface AuthorizationGateway {
       | 'message.manage'
       | 'space.view'
       | 'invitation.create'
-      | 'invitation.manage',
+      | 'invitation.manage'
+      | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
 }
@@ -298,6 +345,35 @@ export function protectInvitationToken(token: string): string {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token))
     throw new DomainError('invitation_unavailable');
   return createHash('sha256').update(token).digest('hex');
+}
+
+export const zeroAuditHash = '0'.repeat(64);
+
+export function auditEventHash(
+  previousHash: string,
+  event: AuditEventInput,
+): string {
+  return createHash('sha256')
+    .update(
+      [
+        previousHash,
+        event.version,
+        event.id,
+        event.actorType,
+        event.actorId,
+        event.scopeType,
+        event.scopeId ?? '',
+        event.targetType,
+        event.targetId ?? '',
+        event.action,
+        event.outcome,
+        event.reasonCode ?? '',
+        event.correlationId,
+        event.retentionUntil,
+        event.occurredAt,
+      ].join('|'),
+    )
+    .digest('hex');
 }
 
 export class CommunityService {
@@ -714,6 +790,7 @@ export class CommunityService {
       maxUses: number;
       targetAccountId?: string | null;
     },
+    correlationId: string = randomUUID(),
   ): Promise<{ invitation: Invitation; token: string }> {
     await this.limitInvitation(`create:${actorId}`);
     try {
@@ -756,12 +833,27 @@ export class CommunityService {
       await this.persistence.transaction(async (persistence) => {
         await persistence.invitations.create(invitation);
         await persistence.auditEvents.create(
-          this.audit(actorId, communityId, invitation.id, 'invitation.create'),
+          this.audit(
+            actorId,
+            communityId,
+            'invitation',
+            invitation.id,
+            'invitation.create',
+            'succeeded',
+            null,
+            correlationId,
+          ),
         );
       });
       return { invitation, token };
     } catch (error) {
-      await this.rejectedAudit(actorId, communityId, 'invitation.create');
+      await this.rejectedAudit(
+        actorId,
+        communityId,
+        'invitation.create',
+        error,
+        correlationId,
+      );
       throw error;
     }
   }
@@ -775,10 +867,105 @@ export class CommunityService {
     ]);
     return this.persistence.invitations.list(communityId);
   }
+  async listAuditEvents(
+    actorId: string,
+    communityId: string,
+    page: ListPage,
+  ): Promise<Page<AuditEvent>> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.auditEvents.list(communityId, page);
+  }
+  async verifyAuditEvents(
+    actorId: string,
+    communityId: string,
+  ): Promise<AuditIntegrity> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.auditEvents.verify(communityId);
+  }
+  async checkpointAuditEvents(
+    actorId: string,
+    communityId: string,
+    correlationId: string = randomUUID(),
+  ): Promise<AuditCheckpoint> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.transaction(async (persistence) => {
+      const now = new Date().toISOString();
+      const event = await persistence.auditEvents.create(
+        this.audit(
+          actorId,
+          communityId,
+          'audit_chain',
+          communityId,
+          'audit.checkpoint',
+          'succeeded',
+          null,
+          correlationId,
+          now,
+        ),
+      );
+      return persistence.auditEvents.checkpoint({
+        id: randomUUID(),
+        communityId,
+        sequence: event.sequence,
+        headHash: event.eventHash,
+        actorType: 'account',
+        actorId,
+        correlationId,
+        createdAt: now,
+      });
+    });
+  }
+  async setAuditLegalHold(
+    actorId: string,
+    communityId: string,
+    held: boolean,
+    reasonCode: string,
+    correlationId: string = randomUUID(),
+  ): Promise<AuditEvent> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    if (!/^[a-z][a-z0-9_]{1,63}$/.test(reasonCode))
+      throw new DomainError('conflict');
+    return this.persistence.auditEvents.create(
+      this.audit(
+        actorId,
+        communityId,
+        'community',
+        communityId,
+        held ? 'audit.legal_hold.apply' : 'audit.legal_hold.release',
+        'succeeded',
+        reasonCode,
+        correlationId,
+      ),
+    );
+  }
+  async auditRetention(
+    actorId: string,
+    communityId: string,
+    now = new Date().toISOString(),
+  ): Promise<AuditRetention> {
+    await this.community(communityId);
+    await this.enforce(actorId, 'moderation.audit', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.auditEvents.retention(communityId, now);
+  }
   async revokeInvitation(
     actorId: string,
     invitationId: string,
     expectedVersion: number,
+    correlationId: string = randomUUID(),
   ): Promise<Invitation> {
     await this.limitInvitation(`admin:${actorId}`);
     const invitation =
@@ -800,14 +987,24 @@ export class CommunityService {
           this.audit(
             actorId,
             invitation.communityId,
+            'invitation',
             invitation.id,
             'invitation.revoke',
+            'succeeded',
+            null,
+            correlationId,
           ),
         );
         return revoked;
       });
     } catch (error) {
-      await this.rejectedAudit(actorId, communityId, 'invitation.revoke');
+      await this.rejectedAudit(
+        actorId,
+        communityId,
+        'invitation.revoke',
+        error,
+        correlationId,
+      );
       throw error;
     }
   }
@@ -832,71 +1029,85 @@ export class CommunityService {
     actorId: string,
     token: string,
     source = actorId,
+    correlationId: string = randomUUID(),
   ): Promise<Membership> {
     await this.limitInvitation(`accept:${source}`);
-    let tokenHash: string;
+    let communityId: string | null = null;
     try {
-      tokenHash = protectInvitationToken(token);
-    } catch {
-      throw new DomainError('invitation_unavailable');
-    }
-    return this.persistence.transaction(async (persistence) => {
-      const invitation =
-        await persistence.invitations.findByTokenHash(tokenHash);
-      if (
-        !invitation ||
-        (invitation.targetAccountId && invitation.targetAccountId !== actorId)
-      )
-        throw new DomainError('invitation_unavailable');
-      const existing = await persistence.memberships.findByCommunityAndAccount(
-        invitation.communityId,
-        actorId,
-      );
-      if (existing?.status === 'active') return existing;
-      if (existing && ['removed', 'suspended'].includes(existing.status))
-        throw new DomainError('invitation_unavailable');
-      this.ensureInvitationUsable(invitation, new Date());
-      const community = await persistence.communities.findById(
-        invitation.communityId,
-      );
-      if (!community || community.archivedAt)
-        throw new DomainError('invitation_unavailable');
-      if (!(await persistence.accounts.findById(actorId)))
-        throw new DomainError('invitation_unavailable');
-      const now = new Date().toISOString();
-      const claimed = await persistence.invitations.claim(
-        invitation.id,
-        invitation.version,
-        now,
-      );
-      if (!claimed) throw new DomainError('invitation_unavailable');
-      const membership = existing
-        ? await persistence.memberships.updateStatus(
-            existing.id,
-            'active',
-            existing.version,
-            now,
-          )
-        : await persistence.memberships.create({
-            id: randomUUID(),
-            communityId: invitation.communityId,
-            accountId: actorId,
-            status: 'active',
-            createdAt: now,
-            updatedAt: now,
-            version: 1,
-          });
-      if (!membership) throw new DomainError('invitation_unavailable');
-      await persistence.auditEvents.create(
-        this.audit(
-          actorId,
+      const tokenHash = protectInvitationToken(token);
+      return await this.persistence.transaction(async (persistence) => {
+        const invitation =
+          await persistence.invitations.findByTokenHash(tokenHash);
+        if (
+          !invitation ||
+          (invitation.targetAccountId && invitation.targetAccountId !== actorId)
+        )
+          throw new DomainError('invitation_unavailable');
+        communityId = invitation.communityId;
+        const existing =
+          await persistence.memberships.findByCommunityAndAccount(
+            invitation.communityId,
+            actorId,
+          );
+        if (existing?.status === 'active') return existing;
+        if (existing && ['removed', 'suspended'].includes(existing.status))
+          throw new DomainError('invitation_unavailable');
+        this.ensureInvitationUsable(invitation, new Date());
+        const community = await persistence.communities.findById(
           invitation.communityId,
+        );
+        if (!community || community.archivedAt)
+          throw new DomainError('invitation_unavailable');
+        if (!(await persistence.accounts.findById(actorId)))
+          throw new DomainError('invitation_unavailable');
+        const now = new Date().toISOString();
+        const claimed = await persistence.invitations.claim(
           invitation.id,
-          'invitation.accept',
-        ),
+          invitation.version,
+          now,
+        );
+        if (!claimed) throw new DomainError('invitation_unavailable');
+        const membership = existing
+          ? await persistence.memberships.updateStatus(
+              existing.id,
+              'active',
+              existing.version,
+              now,
+            )
+          : await persistence.memberships.create({
+              id: randomUUID(),
+              communityId: invitation.communityId,
+              accountId: actorId,
+              status: 'active',
+              createdAt: now,
+              updatedAt: now,
+              version: 1,
+            });
+        if (!membership) throw new DomainError('invitation_unavailable');
+        await persistence.auditEvents.create(
+          this.audit(
+            actorId,
+            invitation.communityId,
+            'invitation',
+            invitation.id,
+            'invitation.accept',
+            'succeeded',
+            null,
+            correlationId,
+          ),
+        );
+        return membership;
+      });
+    } catch (error) {
+      await this.rejectedAudit(
+        actorId,
+        communityId,
+        'invitation.accept',
+        error,
+        correlationId,
       );
-      return membership;
-    });
+      throw error;
+    }
   }
   private async validInvitation(
     actorId: string,
@@ -933,28 +1144,52 @@ export class CommunityService {
   private audit(
     actorId: string,
     communityId: string | null,
-    invitationId: string | null,
+    targetType: AuditEvent['targetType'],
+    targetId: string | null,
     action: AuditEvent['action'],
     outcome: AuditEvent['outcome'] = 'succeeded',
-  ): AuditEvent {
+    reasonCode: string | null = null,
+    correlationId: string = randomUUID(),
+    occurredAt = new Date().toISOString(),
+  ): AuditEventInput {
+    const retention = new Date(occurredAt);
+    retention.setUTCFullYear(retention.getUTCFullYear() + 7);
     return {
+      version: 1,
       id: randomUUID(),
+      actorType: 'account',
       actorId,
-      communityId,
-      invitationId,
+      scopeType: communityId ? 'community' : 'instance',
+      scopeId: communityId,
+      targetType,
+      targetId,
       action,
       outcome,
-      occurredAt: new Date().toISOString(),
+      reasonCode,
+      correlationId,
+      occurredAt,
+      retentionUntil: retention.toISOString(),
     };
   }
   private async rejectedAudit(
     actorId: string,
     communityId: string | null,
-    action: 'invitation.create' | 'invitation.revoke',
+    action: 'invitation.accept' | 'invitation.create' | 'invitation.revoke',
+    error: unknown,
+    correlationId: string,
   ): Promise<void> {
     try {
       await this.persistence.auditEvents.create(
-        this.audit(actorId, communityId, null, action, 'rejected'),
+        this.audit(
+          actorId,
+          communityId,
+          'none',
+          null,
+          action,
+          'rejected',
+          error instanceof DomainError ? error.code : 'operation_failed',
+          correlationId,
+        ),
       );
     } catch {
       // Audit storage failures must not expose or replace the original denial.
@@ -1051,6 +1286,7 @@ type MemoryState = {
   sessions: Map<string, SessionRecord>;
   invitations: Map<string, Invitation>;
   auditEvents: Map<string, AuditEvent>;
+  auditCheckpoints: Map<string, AuditCheckpoint>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -1062,6 +1298,7 @@ const clone = (state: MemoryState): MemoryState => ({
   sessions: new Map(state.sessions),
   invitations: new Map(state.invitations),
   auditEvents: new Map(state.auditEvents),
+  auditCheckpoints: new Map(state.auditCheckpoints),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -1087,6 +1324,7 @@ export class InMemoryPersistence implements Persistence {
     sessions: new Map(),
     invitations: new Map(),
     auditEvents: new Map(),
+    auditCheckpoints: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -1388,11 +1626,111 @@ export class InMemoryPersistence implements Persistence {
     },
   };
   readonly auditEvents = {
-    create: async (v: AuditEvent) => (this.state.auditEvents.set(v.id, v), v),
-    list: async (communityId: string) =>
-      [...this.state.auditEvents.values()].filter(
-        (event) => event.communityId === communityId,
-      ),
+    create: async (v: AuditEventInput) => {
+      if (this.state.auditEvents.has(v.id)) throw new DomainError('conflict');
+      const events = [...this.state.auditEvents.values()]
+        .filter(
+          (event) =>
+            event.scopeType === v.scopeType && event.scopeId === v.scopeId,
+        )
+        .sort((a, b) => a.sequence - b.sequence);
+      const previousHash = events.at(-1)?.eventHash ?? zeroAuditHash;
+      const event: AuditEvent = {
+        ...v,
+        sequence: events.length + 1,
+        previousHash,
+        eventHash: auditEventHash(previousHash, v),
+      };
+      this.state.auditEvents.set(event.id, event);
+      return event;
+    },
+    list: async (communityId: string, page: ListPage) => {
+      const values = [...this.state.auditEvents.values()]
+        .filter(
+          (event) =>
+            event.scopeType === 'community' && event.scopeId === communityId,
+        )
+        .sort((a, b) => a.sequence - b.sequence);
+      const offset = page.cursor ? Number(after(page.cursor)) : 0;
+      const items = values.slice(offset, offset + page.limit);
+      const next = offset + items.length;
+      return {
+        items,
+        nextCursor: next < values.length ? cursor(String(next)) : null,
+      };
+    },
+    verify: async (communityId: string) => {
+      const events = [...this.state.auditEvents.values()]
+        .filter(
+          (event) =>
+            event.scopeType === 'community' && event.scopeId === communityId,
+        )
+        .sort((a, b) => a.sequence - b.sequence);
+      const checkpoint = [...this.state.auditCheckpoints.values()]
+        .filter((value) => value.communityId === communityId)
+        .sort((a, b) => b.sequence - a.sequence)[0];
+      let previousHash = zeroAuditHash;
+      let valid = true;
+      for (const [index, event] of events.entries()) {
+        valid &&=
+          event.sequence === index + 1 &&
+          event.previousHash === previousHash &&
+          event.eventHash === auditEventHash(previousHash, event);
+        previousHash = event.eventHash;
+      }
+      return {
+        valid,
+        count: events.length,
+        headHash: events.at(-1)?.eventHash ?? null,
+        checkpointSequence: checkpoint?.sequence ?? null,
+        checkpointHash: checkpoint?.headHash ?? null,
+        checkpointValid: checkpoint
+          ? events[checkpoint.sequence - 1]?.eventHash === checkpoint.headHash
+          : true,
+      };
+    },
+    checkpoint: async (checkpoint: AuditCheckpoint) => {
+      const head = [...this.state.auditEvents.values()]
+        .filter(
+          (event) =>
+            event.scopeType === 'community' &&
+            event.scopeId === checkpoint.communityId,
+        )
+        .sort((a, b) => b.sequence - a.sequence)[0];
+      if (
+        !head ||
+        head.sequence !== checkpoint.sequence ||
+        head.eventHash !== checkpoint.headHash ||
+        [...this.state.auditCheckpoints.values()].some(
+          (value) =>
+            value.communityId === checkpoint.communityId &&
+            value.sequence === checkpoint.sequence,
+        )
+      )
+        throw new DomainError('conflict');
+      this.state.auditCheckpoints.set(checkpoint.id, checkpoint);
+      return checkpoint;
+    },
+    retention: async (communityId: string, now: string) => {
+      const events = [...this.state.auditEvents.values()]
+        .filter(
+          (event) =>
+            event.scopeType === 'community' && event.scopeId === communityId,
+        )
+        .sort((a, b) => a.sequence - b.sequence);
+      const directive = events
+        .filter((event) => event.action.startsWith('audit.legal_hold.'))
+        .at(-1);
+      const legalHold = directive?.action === 'audit.legal_hold.apply';
+      return {
+        policy: 'security_7y' as const,
+        legalHold,
+        eligibleThroughSequence: legalHold
+          ? 0
+          : (events.filter((event) => event.retentionUntil <= now).at(-1)
+              ?.sequence ?? 0),
+      };
+    },
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

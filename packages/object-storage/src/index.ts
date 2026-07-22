@@ -44,6 +44,15 @@ export interface PrivateObjectStore {
   close(): void;
 }
 
+export interface ObjectStorageObserver {
+  event(
+    operation:
+      'connect' | 'put' | 'get' | 'delete' | 'list' | 'timeout' | 'close',
+    outcome: 'success' | 'failure' | 'degraded',
+    durationMs: number,
+  ): void;
+}
+
 export class ObjectStorageError extends Error {
   constructor(
     readonly code:
@@ -62,6 +71,7 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
   constructor(
     private readonly config: ObjectStorageConfig,
     client?: S3Client,
+    private readonly observer?: ObjectStorageObserver,
   ) {
     validateConfig(config);
     const clientConfig: S3ClientConfig = {
@@ -78,27 +88,31 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
   }
 
   async verify(): Promise<void> {
-    try {
-      await this.client.send(
-        new HeadBucketCommand({ Bucket: this.config.bucket }),
-        this.options(),
-      );
-    } catch (error) {
-      if (!this.config.createBucket || !missing(error)) throw unavailable();
-      await this.execute(
-        new CreateBucketCommand({ Bucket: this.config.bucket }),
-      );
-    }
-    try {
-      const result = await this.client.send(
-        new GetBucketPolicyCommand({ Bucket: this.config.bucket }),
-        this.options(),
-      );
-      if (result.Policy) throw new ObjectStorageError('bucket_not_private');
-    } catch (error) {
-      if (error instanceof ObjectStorageError) throw error;
-      if (!missingPolicy(error) && !unsupported(error)) throw unavailable();
-    }
+    const startedAt = Date.now();
+    await this.observed('connect', startedAt, async () => {
+      try {
+        await this.client.send(
+          new HeadBucketCommand({ Bucket: this.config.bucket }),
+          this.options(),
+        );
+      } catch (error) {
+        if (!this.config.createBucket || !missing(error)) throw error;
+        await this.client.send(
+          new CreateBucketCommand({ Bucket: this.config.bucket }),
+          this.options(),
+        );
+      }
+      try {
+        const result = await this.client.send(
+          new GetBucketPolicyCommand({ Bucket: this.config.bucket }),
+          this.options(),
+        );
+        if (result.Policy) throw new ObjectStorageError('bucket_not_private');
+      } catch (error) {
+        if (error instanceof ObjectStorageError) throw error;
+        if (!missingPolicy(error) && !unsupported(error)) throw error;
+      }
+    });
   }
 
   async put(
@@ -109,23 +123,28 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
     validKey(key);
     if (bytes.byteLength > this.config.maxObjectBytes)
       throw new ObjectStorageError('invalid_object');
-    const sha256 = digest(bytes);
-    await this.execute(
-      new PutObjectCommand({
-        Bucket: this.config.bucket,
-        Key: key,
-        Body: bytes,
-        ContentLength: bytes.byteLength,
-        ContentType: contentType,
-        Metadata: { 'nexa-sha256': sha256 },
-      }),
-    );
-    return { byteLength: bytes.byteLength, sha256 };
+    const startedAt = Date.now();
+    return this.observed('put', startedAt, async () => {
+      const sha256 = digest(bytes);
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          Key: key,
+          Body: bytes,
+          ContentLength: bytes.byteLength,
+          ContentType: contentType,
+          Metadata: { 'nexa-sha256': sha256 },
+        }),
+        this.options(),
+      );
+      return { byteLength: bytes.byteLength, sha256 };
+    });
   }
 
   async get(key: string): Promise<StoredObject> {
     validKey(key);
-    try {
+    const startedAt = Date.now();
+    return this.observed('get', startedAt, async () => {
       const result = await this.client.send(
         new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
         this.options(),
@@ -147,17 +166,18 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
         sha256,
         contentType: result.ContentType ?? 'application/octet-stream',
       };
-    } catch (error) {
-      if (error instanceof ObjectStorageError) throw error;
-      throw unavailable();
-    }
+    });
   }
 
   async delete(key: string): Promise<void> {
     validKey(key);
-    await this.execute(
-      new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }),
-    );
+    const startedAt = Date.now();
+    await this.observed('delete', startedAt, async () => {
+      await this.client.send(
+        new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        this.options(),
+      );
+    });
   }
 
   async deletePrefix(prefix: string, maximum: number): Promise<number> {
@@ -166,22 +186,19 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
       !Number.isInteger(maximum) ||
       maximum < 1 ||
       maximum > this.config.cleanupPageSize
-    ) {
+    )
       throw new ObjectStorageError('invalid_object');
-    }
-    let listed;
-    try {
-      listed = await this.client.send(
+    const startedAt = Date.now();
+    const listed = await this.observed('list', startedAt, () =>
+      this.client.send(
         new ListObjectsV2Command({
           Bucket: this.config.bucket,
           Prefix: prefix,
           MaxKeys: maximum,
         }),
         this.options(),
-      );
-    } catch {
-      throw unavailable();
-    }
+      ),
+    );
     const keys = (listed.Contents ?? []).flatMap((object) =>
       object.Key ? [object.Key] : [],
     );
@@ -190,27 +207,48 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
   }
 
   close(): void {
+    const startedAt = Date.now();
     this.client.destroy();
+    this.report('close', 'success', startedAt);
   }
 
-  private async execute(
-    command: CreateBucketCommand | PutObjectCommand | DeleteObjectCommand,
-  ): Promise<void> {
+  private async observed<T>(
+    operation: Exclude<
+      Parameters<ObjectStorageObserver['event']>[0],
+      'timeout' | 'close'
+    >,
+    startedAt: number,
+    work: () => Promise<T>,
+  ): Promise<T> {
     try {
-      if (command instanceof CreateBucketCommand) {
-        await this.client.send(command, this.options());
-      } else if (command instanceof PutObjectCommand) {
-        await this.client.send(command, this.options());
-      } else {
-        await this.client.send(command, this.options());
-      }
-    } catch {
+      const result = await work();
+      this.report(operation, 'success', startedAt);
+      return result;
+    } catch (error) {
+      this.report(
+        timedOut(error) ? 'timeout' : operation,
+        'failure',
+        startedAt,
+      );
+      if (error instanceof ObjectStorageError) throw error;
       throw unavailable();
     }
   }
 
   private options(): { abortSignal: AbortSignal } {
     return { abortSignal: AbortSignal.timeout(this.config.operationTimeoutMs) };
+  }
+
+  private report(
+    operation: Parameters<ObjectStorageObserver['event']>[0],
+    outcome: Parameters<ObjectStorageObserver['event']>[1],
+    startedAt: number,
+  ): void {
+    try {
+      this.observer?.event(operation, outcome, Date.now() - startedAt);
+    } catch {
+      // Observability cannot change object-storage behavior.
+    }
   }
 }
 
@@ -270,4 +308,9 @@ function missingPolicy(error: unknown): boolean {
 
 function unsupported(error: unknown): boolean {
   return ['NotImplemented', 'MethodNotAllowed'].includes(name(error));
+}
+
+function timedOut(error: unknown): boolean {
+  const errorName = name(error);
+  return errorName === 'TimeoutError' || errorName === 'AbortError';
 }
