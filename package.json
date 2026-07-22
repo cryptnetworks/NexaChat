@@ -24,6 +24,8 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "migrate": "npm run migrate --workspace @nexa/server",
+    "release:check": "tsx tools/release/versioning.ts check",
+    "release:prepare": "tsx tools/release/versioning.ts prepare",
     "test": "vitest run",
     "test:auth": "vitest run packages/auth/test apps/server/test/config.test.ts apps/server/test/auth.integration.test.ts",
     "test:authorization": "vitest run packages/authorization/test apps/server/test/authorization.integration.test.ts",
@@ -45,7 +47,7 @@
     "test:resilience:integration": "vitest run packages/postgres/test/postgres.integration.test.ts packages/object-storage/test/object-storage.test.ts",
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tools/performance/tsconfig.json",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tools/performance/tsconfig.json && tsc --noEmit -p tools/release/tsconfig.json",
     "verify:clean-env": "bash scripts/verify-clean-environment.sh"
   },
   "devDependencies": {
