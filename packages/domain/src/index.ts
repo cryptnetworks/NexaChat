@@ -10,6 +10,7 @@ export * from './search.js';
 export * from './discovery.js';
 export * from './notifications.js';
 export * from './web-notifications.js';
+export * from './presence.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';
