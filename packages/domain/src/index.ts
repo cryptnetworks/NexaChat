@@ -2691,10 +2691,6 @@ export class CommunityService {
     scopes: Parameters<AuthorizationGateway['enforce']>[2],
     persistence: Persistence = this.persistence,
   ): Promise<void> {
-    if (this.authorization) {
-      await this.authorization.enforce(actorId, permission, scopes);
-      return;
-    }
     const communityId = scopes.find((scope) => scope.type === 'community')?.id;
     if (
       communityId &&
@@ -2706,6 +2702,10 @@ export class CommunityService {
       ))
     )
       throw new DomainError('forbidden');
+    if (this.authorization) {
+      await this.authorization.enforce(actorId, permission, scopes);
+      return;
+    }
     const community = communityId
       ? await persistence.communities.findById(communityId)
       : undefined;
