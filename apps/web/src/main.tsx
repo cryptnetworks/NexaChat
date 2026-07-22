@@ -439,7 +439,7 @@ function App() {
     }
   }
 
-  async function send(form: React.FormEvent<HTMLFormElement>) {
+  async function send(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     const formElement = form.currentTarget;
     const data = new FormData(formElement);
@@ -459,7 +459,7 @@ function App() {
     }
   }
 
-  async function createInvite(form: React.FormEvent<HTMLFormElement>) {
+  async function createInvite(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     if (!account || !community) return;
     setInviteStatus('Creating invitation…');
@@ -493,7 +493,7 @@ function App() {
     }
   }
 
-  async function saveProfile(event: React.FormEvent<HTMLFormElement>) {
+  async function saveProfile(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile) return;
     const data = new FormData(event.currentTarget);
@@ -522,7 +522,7 @@ function App() {
     }
   }
 
-  async function changePassword(event: React.FormEvent<HTMLFormElement>) {
+  async function changePassword(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -556,7 +556,7 @@ function App() {
     }
   }
 
-  async function registerAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function registerAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setAuthBusy(true);
@@ -579,7 +579,7 @@ function App() {
     }
   }
 
-  async function loginAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function loginAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
