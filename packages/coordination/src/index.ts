@@ -64,7 +64,13 @@ interface Client {
   ): Promise<unknown>;
   del(key: string): Promise<number>;
   publish?(channel: string, value: string): Promise<number>;
-  duplicate?(): Client;
+  duplicate?(options?: {
+    disableOfflineQueue?: boolean;
+    socket?: {
+      connectTimeout?: number;
+      reconnectStrategy?: (retries: number) => number;
+    };
+  }): Client;
   subscribe?(
     channel: string,
     listener: (value: string) => void,
@@ -91,6 +97,7 @@ export class ValkeyCoordination implements EphemeralCoordination {
       client ??
       createClient({
         url: config.url,
+        disableOfflineQueue: true,
         socket: {
           connectTimeout: config.connectTimeoutMs,
           reconnectStrategy: false,
@@ -201,11 +208,27 @@ export class ValkeyCoordination implements EphemeralCoordination {
     channel: string,
     listener: (value: string) => void,
   ): Promise<() => Promise<void>> {
-    const subscriber = this.client.duplicate?.();
+    const subscriber = this.client.duplicate?.({
+      disableOfflineQueue: true,
+      socket: {
+        connectTimeout: this.config.connectTimeoutMs,
+        reconnectStrategy: (retries) => {
+          const backoff = Math.min(
+            50 * 2 ** Math.min(retries, 8),
+            this.config.circuitResetMs,
+          );
+          const jitter = Math.floor(Math.random() * Math.min(100, backoff));
+          return Math.min(backoff + jitter, this.config.circuitResetMs);
+        },
+      },
+    });
     const subscribe = subscriber?.subscribe?.bind(subscriber);
     const unsubscribe = subscriber?.unsubscribe?.bind(subscriber);
     if (!subscriber || !subscribe || !unsubscribe) throw unavailable();
     const namespaced = this.key(channel);
+    subscriber.on('error', () => {
+      this.report('degradation', 'degraded', Date.now());
+    });
     try {
       await bounded(subscriber.connect(), this.config.connectTimeoutMs);
       await bounded(
