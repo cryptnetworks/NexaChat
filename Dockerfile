@@ -106,7 +106,33 @@ USER node
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["node", "/app/backup/command.mjs"]
 
-FROM chrislusf/seaweedfs:4.39@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6 AS object-storage-runtime
+FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine3.23@sha256:cc985ef6f9c3bf9ece7488129c9abe0a150388ccdfa428d886fc709dca0b230a AS object-storage-build
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+ENV GOTOOLCHAIN=local
+ADD --checksum=sha256:2e37f5d8980256e490324e3759d38437ecfee734f60aa3e75528b05f7d19460e \
+  https://codeload.github.com/seaweedfs/seaweedfs/tar.gz/875cd1f67ea25e8965a4f5ba1e6aaf501ba6b6fa \
+  /tmp/seaweedfs.tar.gz
+WORKDIR /src
+RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
+  && rm /tmp/seaweedfs.tar.gz \
+  && go mod edit -require=google.golang.org/grpc@v1.82.1 \
+  && go mod download -json google.golang.org/grpc@v1.82.1 > /tmp/grpc-module.json \
+  && grep -F '"Sum": "h1:NnAxzGRA0677vCa4BUkOAnO5+FfQqVl9iUXeD0IqcGE="' /tmp/grpc-module.json \
+  && grep -F '"GoModSum": "h1:yzTZ1TB1Z3SG+LIYaI+WiE8D5+PZ3ArnrSp8zF3+/ZA="' /tmp/grpc-module.json \
+  && rm /tmp/grpc-module.json
+WORKDIR /src/weed
+RUN case "$TARGETARCH" in arm) export GOARM="${TARGETVARIANT#v}" ;; esac \
+  && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -buildvcs=false -mod=mod -tags 5BytesOffset -trimpath \
+      -ldflags '-s -w -extldflags -static -X github.com/seaweedfs/seaweedfs/weed/util/version.COMMIT=875cd1f67ea2-grpc.1.82.1' \
+      -o /out/weed . \
+  && go version -m /out/weed | grep -F 'google.golang.org/grpc' \
+    | grep -F 'v1.82.1' \
+    | grep -F 'h1:NnAxzGRA0677vCa4BUkOAnO5+FfQqVl9iUXeD0IqcGE='
+
+FROM chrislusf/seaweedfs:4.40@sha256:52194fba4fecd0083c842158b3a902ba6e04a63619b2b0efcd08007bdb6a4602 AS object-storage-runtime
 ARG NEXA_IMAGE_SOURCE
 ARG NEXA_IMAGE_REVISION
 ARG NEXA_IMAGE_VERSION
@@ -115,6 +141,7 @@ LABEL org.opencontainers.image.title="NexaChat object storage" \
   org.opencontainers.image.revision="${NEXA_IMAGE_REVISION}" \
   org.opencontainers.image.version="${NEXA_IMAGE_VERSION}" \
   org.opencontainers.image.licenses="Apache-2.0"
+COPY --from=object-storage-build /out/weed /usr/bin/weed
 ENV HOME=/tmp
 RUN mkdir -p /data \
   && chown 1000:1000 /data \

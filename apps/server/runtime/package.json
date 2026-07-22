@@ -18,7 +18,7 @@
   },
   "overrides": {
     "fast-json-stringify": {
-      "fast-uri@^4.0.0": "4.1.0"
+      "fast-uri@^4.0.0": "4.1.1"
     }
   }
 }

@@ -13,7 +13,7 @@ output_directory="$(cd "$output_directory" && pwd)"
 work_directory="$(mktemp -d "${TMPDIR:-/tmp}/nexa-chat-image-scan.XXXXXX")"
 cache_directory="$work_directory/cache"
 mkdir -m 0700 "$cache_directory"
-scanner='aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
+scanner='aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f'
 runtime_user="$(id -u):$(id -g)"
 scan_failed=0
 

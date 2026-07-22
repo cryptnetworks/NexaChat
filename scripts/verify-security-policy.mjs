@@ -69,6 +69,55 @@ for (const [path, entry] of Object.entries(lock.packages ?? {})) {
 }
 
 const workflowDirectory = join(root, '.github', 'workflows');
+const permissionExceptions = policy.workflowPermissionExceptions ?? {};
+const observedPermissionExceptions = new Set();
+const validWorkflowPermissions = new Set([
+  'actions',
+  'attestations',
+  'checks',
+  'contents',
+  'deployments',
+  'discussions',
+  'id-token',
+  'issues',
+  'packages',
+  'pages',
+  'pull-requests',
+  'security-events',
+  'statuses',
+]);
+for (const [file, exception] of Object.entries(permissionExceptions)) {
+  if (!/^[a-zA-Z0-9_.-]+\.ya?ml$/u.test(file))
+    fail(`invalid workflow permission exception name ${file}`);
+  if (!exception || typeof exception !== 'object' || Array.isArray(exception)) {
+    fail(`${file}: workflow permission exception is invalid`);
+    continue;
+  }
+  if (!exception.owner?.startsWith('@') || !exception.rationale)
+    fail(`${file}: workflow permission exception lacks an owner or rationale`);
+  if (!Number.isFinite(Date.parse(exception.reviewAfter)))
+    fail(`${file}: workflow permission exception lacks a review date`);
+  if (Date.now() > Date.parse(exception.reviewAfter))
+    fail(`${file}: workflow permission exception is overdue for review`);
+  const permissions = exception.permissions ?? {};
+  if (
+    !permissions ||
+    typeof permissions !== 'object' ||
+    Array.isArray(permissions)
+  ) {
+    fail(`${file}: workflow permission exception map is invalid`);
+    continue;
+  }
+  if (!Object.keys(permissions).length)
+    fail(`${file}: workflow permission exception is empty`);
+  for (const [permission, access] of Object.entries(permissions)) {
+    if (!validWorkflowPermissions.has(permission))
+      fail(`${file}: workflow permission ${permission} is invalid`);
+    if (!['read', 'write', 'none'].includes(access))
+      fail(`${file}: workflow permission ${permission} has invalid access`);
+  }
+}
+
 for (const file of await readdir(workflowDirectory)) {
   if (!/\.ya?ml$/u.test(file)) continue;
   const text = await readFile(join(workflowDirectory, file), 'utf8');
@@ -88,12 +137,30 @@ for (const file of await readdir(workflowDirectory)) {
         `${file}: pull-request workflow grants a privileged token permission`,
       );
   }
-  if (!/^permissions:\n {2}contents: read$/mu.test(text))
-    fail(`${file}: workflow default permissions are not contents: read`);
+  const permissionException = permissionExceptions[file];
+  const expectedPermissions = permissionException?.permissions ?? {
+    contents: 'read',
+  };
+  const workflowPermissions = extractWorkflowPermissions(text);
+  if (!samePermissions(workflowPermissions, expectedPermissions))
+    fail(`${file}: workflow default permissions differ from reviewed policy`);
+  if (permissionException) observedPermissionExceptions.add(file);
 
   const uses = [
     ...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#\s*(\S+))?/gmu),
   ];
+  if (
+    uses.some(([, reference]) =>
+      reference.startsWith('actions/dependency-review-action@'),
+    )
+  ) {
+    const configuredLicenses = /^\s*allow-licenses:\s*(.+)$/mu.exec(text)?.[1];
+    const workflowLicenses = configuredLicenses
+      ?.split(',')
+      .map((license) => license.trim());
+    if (!sameStringSet(workflowLicenses, policy.allowedLicenses))
+      fail(`${file}: dependency-review licenses differ from reviewed policy`);
+  }
   for (const [, reference, comment] of uses) {
     if (reference.startsWith('./')) continue;
     const match = /^([^@]+)@([0-9a-f]{40})$/u.exec(reference);
@@ -122,6 +189,11 @@ for (const file of await readdir(workflowDirectory)) {
   }
 }
 
+for (const file of Object.keys(permissionExceptions)) {
+  if (!observedPermissionExceptions.has(file))
+    fail(`${file}: workflow permission exception does not match a workflow`);
+}
+
 for (const [action, revision] of Object.entries(policy.actions ?? {})) {
   if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/u.test(action))
     fail(`invalid action name ${action}`);
@@ -134,7 +206,7 @@ for (const [scanner, image] of Object.entries(policy.scannerImages ?? {})) {
 }
 
 const pinnedImageSources = [
-  ['Dockerfile', /^FROM\s+([^\s]+).*$/gmu],
+  ['Dockerfile', /^FROM\s+(?:--platform=[^\s]+\s+)?([^\s]+).*$/gmu],
   ['docker-compose.yml', /^\s*image:\s*([^\s]+).*$/gmu],
   ['compose.production.yml', /^\s*image:\s*([^\s]+).*$/gmu],
 ];
@@ -154,6 +226,69 @@ for (const [file, expression] of pinnedImageSources) {
 const dockerfile = await readFile(join(root, 'Dockerfile'), 'utf8');
 if (!/^# syntax=[^\s]+@sha256:[0-9a-f]{64}$/mu.test(dockerfile))
   fail('Dockerfile frontend is not digest-pinned');
+
+const objectStorageBuild = policy.sourceBuilds?.objectStorage;
+if (!objectStorageBuild) {
+  fail('object-storage source-build policy is missing');
+} else {
+  const {
+    archiveSha256,
+    builderImage,
+    dependencyOverrides,
+    repository,
+    revision,
+    runtimeImage,
+  } = objectStorageBuild;
+  if (
+    !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(
+      repository,
+    )
+  )
+    fail('object-storage source repository is invalid');
+  if (!/^[0-9a-f]{40}$/u.test(revision))
+    fail('object-storage source revision is not immutable');
+  if (!/^[0-9a-f]{64}$/u.test(archiveSha256))
+    fail('object-storage source checksum is invalid');
+  if (!/@sha256:[0-9a-f]{64}$/u.test(builderImage))
+    fail('object-storage builder image is not immutable');
+  if (!/@sha256:[0-9a-f]{64}$/u.test(runtimeImage))
+    fail('object-storage runtime image is not immutable');
+
+  const [owner, repositoryName] = repository.split('/').slice(-2);
+  const archiveUrl = `https://codeload.github.com/${owner}/${repositoryName}/tar.gz/${revision}`;
+  if (
+    !dockerfile.includes(
+      `FROM --platform=$BUILDPLATFORM ${builderImage} AS object-storage-build`,
+    ) ||
+    !dockerfile.includes(`ADD --checksum=sha256:${archiveSha256}`) ||
+    !dockerfile.includes(archiveUrl) ||
+    !dockerfile.includes(`FROM ${runtimeImage} AS object-storage-runtime`)
+  )
+    fail('object-storage source-build inputs differ from reviewed policy');
+
+  for (const [dependency, override] of Object.entries(
+    dependencyOverrides ?? {},
+  )) {
+    const { goModSum, sum, version } = override ?? {};
+    if (
+      !/^[A-Za-z0-9_.~/-]+$/u.test(dependency) ||
+      !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version) ||
+      !/^h1:[A-Za-z0-9+/]{43}=$/u.test(sum) ||
+      !/^h1:[A-Za-z0-9+/]{43}=$/u.test(goModSum)
+    )
+      fail(`object-storage dependency override ${dependency} is invalid`);
+    if (!dockerfile.includes(`go mod edit -require=${dependency}@${version}`))
+      fail(`object-storage dependency override ${dependency} is not enforced`);
+    if (!dockerfile.includes(`"Sum": "${sum}"`))
+      fail(
+        `object-storage dependency override ${dependency} sum is not pinned`,
+      );
+    if (!dockerfile.includes(`"GoModSum": "${goModSum}"`))
+      fail(
+        `object-storage dependency override ${dependency} go.mod sum is not pinned`,
+      );
+  }
+}
 
 const scannerSources = [
   ['scripts/run-secret-scan.sh', policy.scannerImages.gitleaks],
@@ -217,4 +352,43 @@ function extractRunBlocks(text) {
     blocks.push(body.join('\n'));
   }
   return blocks.join('\n');
+}
+
+function extractWorkflowPermissions(text) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => /^permissions:\s*$/u.test(line));
+  if (start < 0) return null;
+  const permissions = {};
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    if (!/^\s/u.test(line)) break;
+    const match = /^ {2}([a-z][a-z-]*):\s*(read|write|none)\s*$/u.exec(line);
+    if (!match || Object.hasOwn(permissions, match[1])) return null;
+    permissions[match[1]] = match[2];
+  }
+  return permissions;
+}
+
+function samePermissions(actual, expected) {
+  if (!actual) return false;
+  const actualEntries = Object.entries(actual).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const expectedEntries = Object.entries(expected).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
+}
+
+function sameStringSet(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
+  const sortedActual = [...new Set(actual)].sort();
+  const sortedExpected = [...new Set(expected)].sort();
+  if (
+    sortedActual.length !== actual.length ||
+    sortedExpected.length !== expected.length
+  )
+    return false;
+  return JSON.stringify(sortedActual) === JSON.stringify(sortedExpected);
 }
