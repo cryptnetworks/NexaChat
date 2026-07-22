@@ -230,6 +230,17 @@ for (const [file, expression] of pinnedImageSources) {
 const dockerfile = await readFile(join(root, 'Dockerfile'), 'utf8');
 if (!/^# syntax=[^\s]+@sha256:[0-9a-f]{64}$/mu.test(dockerfile))
   fail('Dockerfile frontend is not digest-pinned');
+const developmentCompose = await readFile(
+  join(root, 'docker-compose.yml'),
+  'utf8',
+);
+const loopbackBindings = [
+  ...developmentCompose.matchAll(
+    /^\s*host_ip:\s*'\$\{NEXA_DEVELOPMENT_BIND_ADDRESS:-127\.0\.0\.1\}'$/gmu,
+  ),
+];
+if (loopbackBindings.length !== 3)
+  fail('development provider ports must default to loopback');
 
 const objectStorageBuild = policy.sourceBuilds?.objectStorage;
 if (!objectStorageBuild) {
