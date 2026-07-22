@@ -185,6 +185,21 @@ export interface ModerationCaseActivity {
   linkedActionId: string | null;
   occurredAt: string;
 }
+export interface ModerationAppeal {
+  id: string;
+  communityId: string;
+  appellantId: string;
+  restrictionId: string;
+  statement: string;
+  status: 'submitted' | 'upheld' | 'overturned';
+  reviewerId: string | null;
+  decisionReason: string | null;
+  idempotencyKey: string;
+  correlationId: string;
+  createdAt: string;
+  decidedAt: string | null;
+  version: number;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -391,6 +406,25 @@ export interface Persistence {
     create(value: ModerationCaseActivity): Promise<ModerationCaseActivity>;
     list(caseId: string): Promise<ModerationCaseActivity[]>;
   };
+  moderationAppeals: {
+    create(value: ModerationAppeal): Promise<ModerationAppeal>;
+    findById(id: string): Promise<ModerationAppeal | undefined>;
+    findByRestrictionId(
+      restrictionId: string,
+    ): Promise<ModerationAppeal | undefined>;
+    findByIdempotencyKey(
+      appellantId: string,
+      key: string,
+    ): Promise<ModerationAppeal | undefined>;
+    decide(
+      id: string,
+      status: 'upheld' | 'overturned',
+      reviewerId: string,
+      reason: string,
+      decidedAt: string,
+      expectedVersion: number,
+    ): Promise<ModerationAppeal | undefined>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -434,6 +468,7 @@ export interface AuthorizationGateway {
       | 'moderation.ban'
       | 'moderation.message.delete'
       | 'moderation.case'
+      | 'moderation.appeal'
       | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
@@ -559,6 +594,7 @@ export class CommunityService {
       10,
       3_600_000,
     ),
+    private readonly appealReviewerSeparation = true,
   ) {}
   createAccount(displayName: string): Promise<Account> {
     return this.persistence.accounts.create({
@@ -1248,6 +1284,120 @@ export class CommunityService {
       { type: 'community', id: communityId },
     ]);
     return this.persistence.moderationCases.list(communityId, page(input));
+  }
+
+  async submitModerationAppeal(
+    appellantId: string,
+    restrictionId: string,
+    statementValue: string,
+    keyValue: string,
+    correlationId: string,
+  ): Promise<ModerationAppeal> {
+    const statement = caseNote(statementValue);
+    const key = idempotencyKey(keyValue);
+    return this.persistence.transaction(async (persistence) => {
+      const retried = await persistence.moderationAppeals.findByIdempotencyKey(
+        appellantId,
+        key,
+      );
+      if (retried) {
+        if (
+          retried.restrictionId !== restrictionId ||
+          retried.statement !== statement
+        )
+          throw new DomainError('conflict');
+        return retried;
+      }
+      const restriction =
+        await persistence.moderationRestrictions.findById(restrictionId);
+      if (!restriction || restriction.targetAccountId !== appellantId)
+        throw new DomainError('not_found');
+      if (
+        new Date().getTime() - new Date(restriction.createdAt).getTime() >
+        30 * 86_400_000
+      )
+        throw new DomainError('conflict');
+      const existing =
+        await persistence.moderationAppeals.findByRestrictionId(restrictionId);
+      if (existing) throw new DomainError('conflict');
+      const now = new Date().toISOString();
+      return persistence.moderationAppeals.create({
+        id: randomUUID(),
+        communityId: restriction.communityId,
+        appellantId,
+        restrictionId,
+        statement,
+        status: 'submitted',
+        reviewerId: null,
+        decisionReason: null,
+        idempotencyKey: key,
+        correlationId,
+        createdAt: now,
+        decidedAt: null,
+        version: 1,
+      });
+    });
+  }
+
+  async decideModerationAppeal(
+    reviewerId: string,
+    appealId: string,
+    decision: 'upheld' | 'overturned',
+    reasonValue: string,
+    expectedVersion: number,
+    correlationId: string,
+  ): Promise<ModerationAppeal> {
+    const reason = caseNote(reasonValue);
+    return this.persistence.transaction(async (persistence) => {
+      const appeal = await persistence.moderationAppeals.findById(appealId);
+      if (!appeal) throw new DomainError('not_found');
+      await this.enforce(reviewerId, 'moderation.appeal', [
+        { type: 'community', id: appeal.communityId },
+      ]);
+      if (appeal.status !== 'submitted') return appeal;
+      const restriction = await persistence.moderationRestrictions.findById(
+        appeal.restrictionId,
+      );
+      if (!restriction) throw new DomainError('not_found');
+      if (this.appealReviewerSeparation && restriction.actorId === reviewerId)
+        throw new DomainError('forbidden');
+      const now = new Date().toISOString();
+      if (decision === 'overturned' && !restriction.revokedAt) {
+        const restored = await persistence.moderationRestrictions.revoke(
+          restriction.id,
+          restriction.version,
+          now,
+        );
+        if (!restored) throw new DomainError('stale_write');
+      }
+      const decided = await persistence.moderationAppeals.decide(
+        appeal.id,
+        decision,
+        reviewerId,
+        reason,
+        now,
+        expectedVersion,
+      );
+      if (!decided) throw new DomainError('stale_write');
+      await this.writeModerationAudit(persistence, {
+        communityId: appeal.communityId,
+        actorId: reviewerId,
+        targetAccountId: appeal.appellantId,
+        action: `appeal.${decision}`,
+        outcome: 'succeeded',
+        reason,
+        correlationId,
+        metadata: { appealId, restrictionId: restriction.id },
+      });
+      return decided;
+    });
+  }
+
+  async getOwnModerationAppeal(appellantId: string, appealId: string) {
+    const appeal = await this.persistence.moderationAppeals.findById(appealId);
+    if (!appeal || appeal.appellantId !== appellantId)
+      throw new DomainError('not_found');
+    return appeal;
   }
 
   async listCommunities(
@@ -2154,6 +2304,7 @@ type MemoryState = {
   safetyReports: Map<string, SafetyReport>;
   moderationCases: Map<string, ModerationCase>;
   moderationCaseActivity: Map<string, ModerationCaseActivity>;
+  moderationAppeals: Map<string, ModerationAppeal>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -2174,6 +2325,7 @@ const clone = (state: MemoryState): MemoryState => ({
   safetyReports: new Map(state.safetyReports),
   moderationCases: new Map(state.moderationCases),
   moderationCaseActivity: new Map(state.moderationCaseActivity),
+  moderationAppeals: new Map(state.moderationAppeals),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -2208,6 +2360,7 @@ export class InMemoryPersistence implements Persistence {
     safetyReports: new Map(),
     moderationCases: new Map(),
     moderationCaseActivity: new Map(),
+    moderationAppeals: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -2745,6 +2898,41 @@ export class InMemoryPersistence implements Persistence {
             left.occurredAt.localeCompare(right.occurredAt) ||
             left.id.localeCompare(right.id),
         ),
+  };
+  readonly moderationAppeals = {
+    create: async (value: ModerationAppeal) => {
+      const existing = [...this.state.moderationAppeals.values()].find(
+        (candidate) => candidate.restrictionId === value.restrictionId,
+      );
+      if (existing) return existing;
+      this.state.moderationAppeals.set(value.id, value);
+      return value;
+    },
+    findById: async (id: string) => this.state.moderationAppeals.get(id),
+    findByRestrictionId: async (restrictionId: string) =>
+      [...this.state.moderationAppeals.values()].find(
+        (value) => value.restrictionId === restrictionId,
+      ),
+    findByIdempotencyKey: async (appellantId: string, key: string) =>
+      [...this.state.moderationAppeals.values()].find(
+        (value) =>
+          value.appellantId === appellantId && value.idempotencyKey === key,
+      ),
+    decide: async (
+      id: string,
+      status: 'upheld' | 'overturned',
+      reviewerId: string,
+      reason: string,
+      decidedAt: string,
+      version: number,
+    ) =>
+      this.updateMap(this.state.moderationAppeals, id, version, (value) => ({
+        ...value,
+        status,
+        reviewerId,
+        decisionReason: reason,
+        decidedAt,
+      })),
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

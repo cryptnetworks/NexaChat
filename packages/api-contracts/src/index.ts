@@ -148,6 +148,7 @@ export const permissionSchema = z.enum([
   'moderation.timeout',
   'moderation.message.delete',
   'moderation.case',
+  'moderation.appeal',
   'moderation.audit',
 ]);
 export const permissionScopeSchema = z.object({
@@ -350,6 +351,36 @@ export const moderationCaseSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   closedAt: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+});
+export const submitAppealSchema = z
+  .object({
+    appellantId: id,
+    restrictionId: id,
+    statement: z.string().trim().min(1).max(2000),
+    idempotencyKey: z.string().min(8).max(128),
+  })
+  .strict();
+export const decideAppealSchema = z
+  .object({
+    reviewerId: id,
+    decision: z.enum(['upheld', 'overturned']),
+    reason: z.string().trim().min(1).max(2000),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export const moderationAppealSchema = z.object({
+  id,
+  communityId: id,
+  appellantId: id,
+  restrictionId: id,
+  statement: z.string().min(1).max(2000),
+  status: z.enum(['submitted', 'upheld', 'overturned']),
+  reviewerId: id.nullable(),
+  decisionReason: z.string().max(2000).nullable(),
+  correlationId: id,
+  createdAt: z.string().datetime(),
+  decidedAt: z.string().datetime().nullable(),
   version: z.number().int().positive(),
 });
 export const moderationRestrictionSchema = z.object({

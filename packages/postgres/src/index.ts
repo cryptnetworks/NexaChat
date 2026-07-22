@@ -17,6 +17,7 @@ import type {
   SafetyReport,
   ModerationCase,
   ModerationCaseActivity,
+  ModerationAppeal,
   Category,
   Community,
   Invitation,
@@ -99,6 +100,7 @@ export class PostgresPersistence implements Persistence {
   readonly safetyReports;
   readonly moderationCases;
   readonly moderationCaseActivity;
+  readonly moderationAppeals;
 
   constructor(
     private readonly pool: Pool,
@@ -124,6 +126,7 @@ export class PostgresPersistence implements Persistence {
     this.safetyReports = safetyReportRepository(queryable);
     this.moderationCases = moderationCaseRepository(queryable);
     this.moderationCaseActivity = moderationCaseActivityRepository(queryable);
+    this.moderationAppeals = moderationAppealRepository(queryable);
   }
 
   async transaction<T>(
@@ -712,6 +715,21 @@ type ModerationCaseActivityRow = {
   note: string | null;
   linked_action_id: string | null;
   occurred_at: Date;
+};
+type ModerationAppealRow = {
+  id: string;
+  community_id: string;
+  appellant_id: string;
+  restriction_id: string;
+  statement: string;
+  status: ModerationAppeal['status'];
+  reviewer_id: string | null;
+  decision_reason: string | null;
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  decided_at: Date | null;
+  version: number;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1636,6 +1654,71 @@ function moderationCaseActivityRepository(
   };
 }
 
+function moderationAppealRepository(
+  db: Queryable,
+): Persistence['moderationAppeals'] {
+  const fields =
+    'id,community_id,appellant_id,restriction_id,statement,status,reviewer_id,decision_reason,idempotency_key,correlation_id,created_at,decided_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationAppealRow>(
+        `INSERT INTO moderation_appeals
+          (id,community_id,appellant_id,restriction_id,statement,status,
+           reviewer_id,decision_reason,idempotency_key,correlation_id,created_at,decided_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (restriction_id) DO UPDATE SET restriction_id=EXCLUDED.restriction_id
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.appellantId,
+          value.restrictionId,
+          value.statement,
+          value.status,
+          value.reviewerId,
+          value.decisionReason,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.decidedAt,
+          value.version,
+        ],
+      );
+      return mapModerationAppeal(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async findByRestrictionId(restrictionId) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE restriction_id=$1`,
+        [restrictionId],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(appellantId, key) {
+      const result = await db.query<ModerationAppealRow>(
+        `SELECT ${fields} FROM moderation_appeals WHERE appellant_id=$1 AND idempotency_key=$2`,
+        [appellantId, key],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+    async decide(id, status, reviewerId, reason, decidedAt, expectedVersion) {
+      const result = await db.query<ModerationAppealRow>(
+        `UPDATE moderation_appeals SET status=$2,reviewer_id=$3,decision_reason=$4,
+           decided_at=$5,version=version+1
+         WHERE id=$1 AND version=$6 AND status='submitted' RETURNING ${fields}`,
+        [id, status, reviewerId, reason, decidedAt, expectedVersion],
+      );
+      return result.rows[0] ? mapModerationAppeal(result.rows[0]) : undefined;
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1857,6 +1940,21 @@ const mapModerationCaseActivity = (
   note: row.note,
   linkedActionId: row.linked_action_id,
   occurredAt: row.occurred_at.toISOString(),
+});
+const mapModerationAppeal = (row: ModerationAppealRow): ModerationAppeal => ({
+  id: row.id,
+  communityId: row.community_id,
+  appellantId: row.appellant_id,
+  restrictionId: row.restriction_id,
+  statement: row.statement,
+  status: row.status,
+  reviewerId: row.reviewer_id,
+  decisionReason: row.decision_reason,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  decidedAt: row.decided_at?.toISOString() ?? null,
+  version: row.version,
 });
 
 interface Migration {

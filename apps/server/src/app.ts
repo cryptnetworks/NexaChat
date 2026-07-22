@@ -42,6 +42,9 @@ import {
   openModerationCaseSchema,
   updateModerationCaseSchema,
   moderationCaseSchema,
+  submitAppealSchema,
+  decideAppealSchema,
+  moderationAppealSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -194,6 +197,54 @@ export function buildApp(
       return reply.send(
         communitySchema.parse(
           await service.getCommunity(actorId, request.params.communityId),
+        ),
+      );
+    },
+  );
+
+  app.post('/v1/moderation/appeals', async (request, reply) => {
+    const input = submitAppealSchema.parse(request.body);
+    const appellantId = await verifiedActor(
+      request,
+      auth,
+      input.appellantId,
+      true,
+    );
+    return reply
+      .code(201)
+      .send(
+        moderationAppealSchema.parse(
+          await service.submitModerationAppeal(
+            appellantId,
+            input.restrictionId,
+            input.statement,
+            input.idempotencyKey,
+            request.id,
+          ),
+        ),
+      );
+  });
+
+  app.post<{ Params: { appealId: string } }>(
+    '/v1/moderation/appeals/:appealId/decision',
+    async (request, reply) => {
+      const input = decideAppealSchema.parse(request.body);
+      const reviewerId = await verifiedActor(
+        request,
+        auth,
+        input.reviewerId,
+        true,
+      );
+      return reply.send(
+        moderationAppealSchema.parse(
+          await service.decideModerationAppeal(
+            reviewerId,
+            request.params.appealId,
+            input.decision,
+            input.reason,
+            input.expectedVersion,
+            request.id,
+          ),
         ),
       );
     },
