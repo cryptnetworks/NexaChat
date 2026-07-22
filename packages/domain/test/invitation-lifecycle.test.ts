@@ -9,6 +9,16 @@ import {
 const token = 'A'.repeat(43);
 
 describe('controlled invitation lifecycle', () => {
+  it('bounds limiter state and recovers expired buckets', async () => {
+    const limiter = new FixedWindowInvitationRateLimiter(2, 1_000, 1);
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    expect(await limiter.consume('one', start)).toBe(true);
+    expect(await limiter.consume('two', start)).toBe(false);
+    expect(
+      await limiter.consume('two', new Date('2026-01-01T00:00:01.000Z')),
+    ).toBe(true);
+  });
+
   it('stores only a protected token and returns minimal targeted previews', async () => {
     const fixture = await setup();
     const created = await fixture.service.createInvitation(

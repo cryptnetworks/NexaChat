@@ -12,3 +12,10 @@ export function publicRequestError(
       : '';
   return new Error(`Request failed (${String(status)}).${retry}`);
 }
+
+export function jsonMutationHeaders(): Readonly<Record<string, string>> {
+  return {
+    'content-type': 'application/json',
+    'x-nexa-csrf': '1',
+  };
+}

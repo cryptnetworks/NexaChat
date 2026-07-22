@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { publicRequestError } from './http.js';
+import { jsonMutationHeaders, publicRequestError } from './http.js';
 
 describe('public HTTP retry errors', () => {
+  it('marks every JSON mutation for same-origin CSRF enforcement', () => {
+    expect(jsonMutationHeaders()).toEqual({
+      'content-type': 'application/json',
+      'x-nexa-csrf': '1',
+    });
+  });
+
   it('presents bounded server retry timing', () => {
     expect(publicRequestError(429, '12').message).toBe(
       'Request failed (429). Try again in 12 seconds.',

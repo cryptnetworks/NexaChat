@@ -4,6 +4,7 @@ import {
   InMemoryAuthorizationStore,
 } from '@nexa/authorization';
 import { CommunityService, InMemoryPersistence } from '@nexa/domain';
+import type { AuthRuntime } from '../src/auth-routes.js';
 import { buildApp } from '../src/app.js';
 
 const ids = {
@@ -14,6 +15,91 @@ const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
 describe('authorization service boundaries', () => {
+  it('authenticates actor claims even when no authorization evaluator is configured', async () => {
+    const persistence = new InMemoryPersistence();
+    await persistence.accounts.create({ id: ids.owner, displayName: 'Owner' });
+    await persistence.accounts.create({
+      id: ids.member,
+      displayName: 'Member',
+    });
+    const bootstrap = new CommunityService(persistence);
+    const community = await bootstrap.createCommunity(ids.owner, 'Community');
+    const space = await bootstrap.createTextSpace(
+      community.id,
+      ids.owner,
+      'General',
+    );
+    const timestamp = new Date(0).toISOString();
+    const auth: AuthRuntime = {
+      service: {
+        authenticate: () =>
+          Promise.resolve({
+            account: {
+              id: ids.member,
+              username: 'member',
+              displayName: 'Member',
+            },
+            session: {
+              id: ids.member,
+              publicHandle: 'sess_AAAAAAAAAAAAAAAA',
+              accountId: ids.member,
+              tokenHash: 'a'.repeat(64),
+              credentialVersion: 1,
+              createdAt: timestamp,
+              lastSeenAt: timestamp,
+              recentAuthAt: timestamp,
+              expiresAt: new Date(86_400_000).toISOString(),
+              idleExpiresAt: new Date(86_400_000).toISOString(),
+              revokedAt: null,
+            },
+          }),
+      } as never,
+      config: {
+        trustedOrigin: 'https://chat.example.test',
+        secureCookies: false,
+        cookieMaxAgeSeconds: 60,
+      },
+    };
+    const app = buildApp(
+      new CommunityService(persistence),
+      undefined,
+      auth,
+      undefined,
+    );
+    apps.push(app);
+    const headers = {
+      cookie: 'nexa_session=test-session',
+      origin: auth.config.trustedOrigin,
+      'x-nexa-csrf': '1',
+    };
+
+    const communityResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/communities',
+      headers,
+      payload: { ownerId: ids.owner, name: 'Claimed community' },
+    });
+    const spaceResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/communities/${community.id}/spaces`,
+      headers,
+      payload: { actorId: ids.owner, name: 'Claimed space' },
+    });
+    const messageResponse = await app.inject({
+      method: 'POST',
+      url: `/v1/spaces/${space.id}/messages`,
+      headers,
+      payload: { authorId: ids.owner, body: 'Claimed message' },
+    });
+
+    expect(communityResponse.statusCode).toBe(404);
+    expect(communityResponse.json<{ error: string }>().error).toBe('not_found');
+    expect(spaceResponse.statusCode).toBe(404);
+    expect(spaceResponse.json<{ error: string }>().error).toBe('not_found');
+    expect(messageResponse.statusCode).toBe(404);
+    expect(messageResponse.json<{ error: string }>().error).toBe('not_found');
+  });
+
   it('enforces space creation, message creation, and preview through one evaluator', async () => {
     const persistence = new InMemoryPersistence();
     await persistence.accounts.create({ id: ids.owner, displayName: 'Owner' });

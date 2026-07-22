@@ -113,6 +113,12 @@ interface ConnectionState {
   outboundBytes: number;
 }
 
+type PendingConnection = AuthenticatedSession & {
+  token: string;
+  address: string;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
 class AdmissionError extends Error {
   constructor(
     readonly reason:
@@ -149,12 +155,13 @@ export function attachWebsocketHub(
     options.trustedProxyCidrs,
   );
   const metrics = options.metrics ?? noopMetrics;
-  const pending = new Map<
-    IncomingMessage,
-    AuthenticatedSession & { token: string; address: string }
-  >();
+  const pending = new Map<IncomingMessage, PendingConnection>();
   const connections = new Map<WebSocket, ConnectionState>();
   const sequences = new Map<string, number>();
+  const maxSequenceStates = Math.min(
+    100_000,
+    Math.max(1, limits.maxConnections * limits.maxSubscriptions),
+  );
   let outboundQueueBytes = 0;
   const seenEvents = new Set<string>();
   const instanceId = options.instanceId ?? randomUUID();
@@ -236,8 +243,9 @@ export function attachWebsocketHub(
       );
     }
     if (
-      connections.size >= limits.maxConnections ||
-      countConnections((state) => state.address === address) >=
+      connections.size + pending.size >= limits.maxConnections ||
+      countConnections((state) => state.address === address) +
+        countPending((state) => state.address === address) >=
         limits.maxConnectionsPerAddress
     )
       throw new AdmissionError('capacity');
@@ -256,17 +264,39 @@ export function attachWebsocketHub(
           trust: 'authenticated',
         }),
       );
+    // Authentication and distributed rate limiting can overlap with shutdown.
+    // Read through a function so this check observes the current state.
+    if (isDraining()) throw new AdmissionError('server_draining');
     if (
-      countConnections((state) => state.actorId === authenticated.account.id) >=
-      limits.maxConnectionsPerAccount
+      connections.size + pending.size >= limits.maxConnections ||
+      countConnections((state) => state.address === address) +
+        countPending((state) => state.address === address) >=
+        limits.maxConnectionsPerAddress ||
+      countConnections((state) => state.actorId === authenticated.account.id) +
+        countPending(
+          (state) => state.account.id === authenticated.account.id,
+        ) >=
+        limits.maxConnectionsPerAccount
     )
       throw new AdmissionError('capacity');
-    pending.set(request, { ...authenticated, token, address });
+    const timeout = setTimeout(() => pending.delete(request), 10_000);
+    timeout.unref();
+    pending.set(request, { ...authenticated, token, address, timeout });
   }
 
   function countConnections(predicate: (state: ConnectionState) => boolean) {
     let count = 0;
     for (const state of connections.values()) if (predicate(state)) count += 1;
+    return count;
+  }
+
+  function isDraining(): boolean {
+    return draining;
+  }
+
+  function countPending(predicate: (state: PendingConnection) => boolean) {
+    let count = 0;
+    for (const state of pending.values()) if (predicate(state)) count += 1;
     return count;
   }
 
@@ -277,6 +307,7 @@ export function attachWebsocketHub(
       socket.close(1008, 'unauthenticated');
       return;
     }
+    clearTimeout(authenticated.timeout);
     const now = Date.now();
     const state: ConnectionState = {
       actorId: authenticated.account.id,
@@ -767,7 +798,25 @@ export function attachWebsocketHub(
     if (!remember(event.id)) return;
     const startedAt = Date.now();
     const sequence = (sequences.get(spaceId) ?? 0) + 1;
+    sequences.delete(spaceId);
     sequences.set(spaceId, sequence);
+    if (sequences.size > maxSequenceStates) {
+      const activeSpaces = new Set<string>();
+      for (const state of connections.values())
+        for (const subscription of state.subscriptions)
+          activeSpaces.add(subscription);
+      let removed = false;
+      for (const candidate of sequences.keys()) {
+        if (activeSpaces.has(candidate)) continue;
+        sequences.delete(candidate);
+        removed = true;
+        break;
+      }
+      if (!removed) {
+        const oldest = sequences.keys().next().value;
+        if (oldest !== undefined) sequences.delete(oldest);
+      }
+    }
     const delivery = realtimeDeliverySchema.parse({
       version: 1,
       type: 'event',
@@ -868,6 +917,8 @@ export function attachWebsocketHub(
       draining = true;
       clearInterval(heartbeat);
       clearInterval(authorizationCheck);
+      for (const state of pending.values()) clearTimeout(state.timeout);
+      pending.clear();
       await subscriptionsReady;
       await unsubscribeFanout?.();
       await unsubscribePresence?.();

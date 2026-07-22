@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_LINKS_PER_MESSAGE, safeLinkSegments } from './links.js';
+import {
+  MAX_LINKS_PER_MESSAGE,
+  safeInternalHref,
+  safeLinkSegments,
+} from './links.js';
 
 describe('safe rich links', () => {
+  it('accepts only normalized same-application navigation targets', () => {
+    expect(safeInternalHref('/spaces/one?q=test#message')).toBe(
+      '/spaces/one?q=test#message',
+    );
+    for (const value of [
+      'https://example.test/path',
+      '//example.test/path',
+      '/\\example.test/path',
+      'javascript:alert(1)',
+    ])
+      expect(safeInternalHref(value)).toBeUndefined();
+  });
+
   it('allows only explicit http links and leaves unsafe schemes inert', () => {
     expect(
       safeLinkSegments('see https://example.com and javascript:alert(1)'),

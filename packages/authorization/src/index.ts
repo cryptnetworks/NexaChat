@@ -98,9 +98,24 @@ export function evaluatePermission(input: EvaluationInput): DecisionMetadata {
       scope: community,
     };
   const scopeKeys = new Set(input.scopes.map(scopeKey));
+  const applicableRoles = new Set(
+    input.roles
+      .filter(
+        (role) =>
+          community !== undefined &&
+          (role.communityId === null || role.communityId === community.id),
+      )
+      .map((role) => role.id),
+  );
   const assigned = new Set(
     input.assignments
-      .filter((assignment) => assignment.actorId === input.actor.actorId)
+      .filter(
+        (assignment) =>
+          assignment.actorId === input.actor.actorId &&
+          community !== undefined &&
+          assignment.communityId === community.id &&
+          applicableRoles.has(assignment.roleId),
+      )
       .map((assignment) => assignment.roleId),
   );
   const applicable = input.decisions

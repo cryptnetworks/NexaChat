@@ -70,6 +70,19 @@ function opened(socket: WebSocket): Promise<void> {
   });
 }
 
+function admission(socket: WebSocket): Promise<'opened' | 'rejected'> {
+  return new Promise((resolve) => {
+    socket.once('open', () => {
+      resolve('opened');
+    });
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume();
+      resolve('rejected');
+    });
+    socket.once('error', () => {});
+  });
+}
+
 function closed(socket: WebSocket): Promise<number> {
   return new Promise((resolve) => socket.once('close', resolve));
 }
@@ -525,9 +538,14 @@ describe('secure real WebSocket integration', () => {
       owner.account.id,
       'second',
     );
-    const socket = connect(owner.session.token);
-    await opened(socket);
-    await expectUpgradeRejected(connect(owner.session.token), 403);
+    const contenders = [
+      connect(owner.session.token),
+      connect(owner.session.token),
+    ];
+    const outcomes = await Promise.all(contenders.map(admission));
+    expect([...outcomes].sort()).toEqual(['opened', 'rejected']);
+    const socket = contenders[outcomes.indexOf('opened')];
+    if (!socket) throw new Error('admitted socket missing');
     await subscribe(socket, first.id);
     const requestId = randomUUID();
     socket.send(

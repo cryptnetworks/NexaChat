@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { safeInternalHref } from './links.js';
 
 export function DiscoveryResults(props: {
   query: string;
@@ -35,13 +36,19 @@ export function DiscoveryResults(props: {
               : 'Enter at least two characters.'}
       </p>
       <ul id={listId} aria-label="Discovery results">
-        {props.results.map((result) => (
-          <li key={result.id}>
-            <a href={result.href}>
+        {props.results.map((result) => {
+          const href = safeInternalHref(result.href);
+          const content = (
+            <>
               <strong>{result.label}</strong> <span>{result.description}</span>
-            </a>
-          </li>
-        ))}
+            </>
+          );
+          return (
+            <li key={result.id}>
+              {href ? <a href={href}>{content}</a> : content}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

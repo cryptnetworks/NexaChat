@@ -197,6 +197,39 @@ describe('deny-by-default decision table', () => {
       }).allowed,
     ).toBe(false);
   });
+
+  it('rejects role assignments and roles from another community', () => {
+    const grant = {
+      roleId: 'role',
+      permission: 'space.view' as const,
+      scope: space,
+      effect: 'grant' as const,
+    };
+    expect(
+      evaluatePermission({
+        ...base,
+        assignments: [
+          {
+            ...base.assignments[0]!,
+            communityId: '00000000-0000-4000-8000-000000000099',
+          },
+        ],
+        decisions: [grant],
+      }),
+    ).toMatchObject({ allowed: false, reason: 'missing_grant' });
+    expect(
+      evaluatePermission({
+        ...base,
+        roles: [
+          {
+            ...base.roles[0]!,
+            communityId: '00000000-0000-4000-8000-000000000099',
+          },
+        ],
+        decisions: [grant],
+      }),
+    ).toMatchObject({ allowed: false, reason: 'missing_grant' });
+  });
 });
 
 describe('authorization mutations', () => {

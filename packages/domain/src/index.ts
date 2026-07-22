@@ -358,6 +358,11 @@ export interface Persistence {
     rename(id: string, name: string): Promise<Space | undefined>;
   };
   messages: {
+    lockIdempotency(
+      authorId: string,
+      spaceId: string,
+      key: string,
+    ): Promise<void>;
     create(message: Message): Promise<Message>;
     findById(id: string): Promise<Message | undefined>;
     findByIdempotencyKey(
@@ -648,9 +653,26 @@ export class FixedWindowInvitationRateLimiter implements InvitationRateLimiter {
   constructor(
     private readonly limit: number,
     private readonly windowMs: number,
-  ) {}
+    private readonly maxBuckets = 10_000,
+  ) {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      !Number.isSafeInteger(windowMs) ||
+      windowMs < 1 ||
+      !Number.isSafeInteger(maxBuckets) ||
+      maxBuckets < 1
+    )
+      throw new Error('invalid_invitation_rate_limit');
+  }
   consume(key: string, now: Date): Promise<boolean> {
     const timestamp = now.getTime();
+    if (!this.buckets.has(key) && this.buckets.size >= this.maxBuckets) {
+      for (const [candidate, value] of this.buckets)
+        if (timestamp - value.startedAt >= this.windowMs)
+          this.buckets.delete(candidate);
+      if (this.buckets.size >= this.maxBuckets) return Promise.resolve(false);
+    }
     const current = this.buckets.get(key);
     const bucket =
       !current || timestamp - current.startedAt >= this.windowMs
@@ -1868,6 +1890,18 @@ export class CommunityService {
     key: string = randomUUID(),
     replyToId: string | null = null,
   ): Promise<Message> {
+    return (
+      await this.postMessageCommand(spaceId, authorId, body, key, replyToId)
+    ).message;
+  }
+
+  async postMessageCommand(
+    spaceId: string,
+    authorId: string,
+    body: string,
+    key: string = randomUUID(),
+    replyToId: string | null = null,
+  ): Promise<{ message: Message; existing: boolean }> {
     const space = await this.persistence.spaces.findById(spaceId);
     if (
       !space ||
@@ -1875,6 +1909,10 @@ export class CommunityService {
       !(await this.persistence.accounts.findById(authorId))
     )
       throw new DomainError('not_found');
+    const community = await this.persistence.communities.findById(
+      space.communityId,
+    );
+    if (!community || community.archivedAt) throw new DomainError('not_found');
     if (space.categoryId) {
       const category = await this.persistence.categories.findById(
         space.categoryId,
@@ -1890,9 +1928,6 @@ export class CommunityService {
     ] as const;
     await this.enforce(authorId, 'message.create', scopes);
     const normalizedBody = messageBody(body);
-    const limits = await this.getContentLimits(authorId, space.communityId);
-    if (normalizedBody.length > limits.messageBodyMax)
-      throw new DomainError('conflict');
     const normalizedKey = idempotencyKey(key);
     const fingerprint = createHash('sha256')
       .update(JSON.stringify({ body: normalizedBody, replyToId }))
@@ -1905,15 +1940,59 @@ export class CommunityService {
     if (existing) {
       if (existing.requestFingerprint !== fingerprint)
         throw new DomainError('conflict');
-      return existing;
+      return { message: existing, existing: true };
     }
+    const limits = await this.getContentLimits(authorId, space.communityId);
+    if (normalizedBody.length > limits.messageBodyMax)
+      throw new DomainError('conflict');
     if (replyToId) {
       const reply = await this.persistence.messages.findById(replyToId);
       if (!reply || reply.spaceId !== spaceId)
         throw new DomainError('not_found');
     }
     return this.persistence.transaction(async (persistence) => {
-      await this.enforce(authorId, 'message.create', scopes);
+      await persistence.messages.lockIdempotency(
+        authorId,
+        spaceId,
+        normalizedKey,
+      );
+      const currentSpace = await persistence.spaces.findById(spaceId);
+      if (
+        !currentSpace ||
+        currentSpace.archivedAt ||
+        !(await persistence.accounts.findById(authorId))
+      )
+        throw new DomainError('not_found');
+      const currentCommunity = await persistence.communities.findById(
+        currentSpace.communityId,
+      );
+      if (!currentCommunity || currentCommunity.archivedAt)
+        throw new DomainError('not_found');
+      if (currentSpace.categoryId) {
+        const currentCategory = await persistence.categories.findById(
+          currentSpace.categoryId,
+        );
+        if (!currentCategory || currentCategory.archivedAt)
+          throw new DomainError('not_found');
+      }
+      const currentScopes = [
+        { type: 'community' as const, id: currentSpace.communityId },
+        ...(currentSpace.categoryId
+          ? [
+              {
+                type: 'category' as const,
+                id: currentSpace.categoryId,
+              },
+            ]
+          : []),
+        { type: 'space' as const, id: currentSpace.id },
+      ];
+      await this.enforce(
+        authorId,
+        'message.create',
+        currentScopes,
+        persistence,
+      );
       const retried = await persistence.messages.findByIdempotencyKey(
         authorId,
         spaceId,
@@ -1922,23 +2001,30 @@ export class CommunityService {
       if (retried) {
         if (retried.requestFingerprint !== fingerprint)
           throw new DomainError('conflict');
-        return retried;
+        return { message: retried, existing: true };
+      }
+      const currentLimits =
+        (await persistence.contentLimits.find(currentSpace.communityId)) ??
+        limits;
+      if (normalizedBody.length > currentLimits.messageBodyMax)
+        throw new DomainError('conflict');
+      if (replyToId) {
+        const reply = await persistence.messages.findById(replyToId);
+        if (!reply || reply.spaceId !== spaceId)
+          throw new DomainError('not_found');
       }
       const now = new Date().toISOString();
-      const community = await persistence.communities.findById(
-        space.communityId,
-      );
-      const bypass = community?.ownerId === authorId;
-      if (!bypass && space.slowModeSeconds > 0) {
+      const bypass = currentCommunity.ownerId === authorId;
+      if (!bypass && currentSpace.slowModeSeconds > 0) {
         const retryAfter = await persistence.messagePacing.consume(
-          space.id,
+          currentSpace.id,
           authorId,
-          space.slowModeSeconds,
+          currentSpace.slowModeSeconds,
           now,
         );
         if (retryAfter > 0) throw new DomainError('rate_limited', retryAfter);
       }
-      return persistence.messages.create({
+      const candidate: Message = {
         id: randomUUID(),
         spaceId,
         authorId,
@@ -1951,7 +2037,11 @@ export class CommunityService {
         updatedAt: now,
         deletedAt: null,
         version: 1,
-      });
+      };
+      const message = await persistence.messages.create(candidate);
+      if (message.requestFingerprint !== fingerprint)
+        throw new DomainError('conflict');
+      return { message, existing: message.id !== candidate.id };
     });
   }
   async listMessages(
@@ -2599,6 +2689,7 @@ export class CommunityService {
     actorId: string,
     permission: Parameters<AuthorizationGateway['enforce']>[1],
     scopes: Parameters<AuthorizationGateway['enforce']>[2],
+    persistence: Persistence = this.persistence,
   ): Promise<void> {
     if (this.authorization) {
       await this.authorization.enforce(actorId, permission, scopes);
@@ -2608,7 +2699,7 @@ export class CommunityService {
     if (
       communityId &&
       !permission.startsWith('moderation.') &&
-      (await this.persistence.moderationRestrictions.findEffective(
+      (await persistence.moderationRestrictions.findEffective(
         communityId,
         actorId,
         new Date().toISOString(),
@@ -2616,10 +2707,10 @@ export class CommunityService {
     )
       throw new DomainError('forbidden');
     const community = communityId
-      ? await this.persistence.communities.findById(communityId)
+      ? await persistence.communities.findById(communityId)
       : undefined;
     const membership = communityId
-      ? await this.persistence.memberships.findByCommunityAndAccount(
+      ? await persistence.memberships.findByCommunityAndAccount(
           communityId,
           actorId,
         )
@@ -2904,6 +2995,7 @@ export class InMemoryPersistence implements Persistence {
     },
   };
   readonly messages = {
+    lockIdempotency: async () => {},
     create: async (v: Message) => {
       const existing = await this.messages.findByIdempotencyKey(
         v.authorId,
