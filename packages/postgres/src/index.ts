@@ -22,7 +22,12 @@ import type {
   Space,
 } from '@nexa/domain';
 import { auditEventHash, zeroAuditHash } from '@nexa/domain';
-import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
+import type {
+  AuthAccount,
+  AuthSession,
+  AuthStore,
+  CredentialSecurityEvent,
+} from '@nexa/auth';
 import {
   StaleAuthorizationWriteError,
   type AuthorizationSnapshot,
@@ -34,7 +39,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 10;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -291,11 +296,63 @@ export class PostgresAuthStore implements AuthStore {
     return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
   }
 
+  async updateProfile(
+    id: string,
+    profile: Pick<
+      AuthAccount,
+      'username' | 'normalizedUsername' | 'displayName' | 'avatar'
+    >,
+    expectedVersion: number,
+  ) {
+    const result = await this.authQueryable.query<AuthAccountRow>(
+      `UPDATE accounts SET
+         username = $2,
+         normalized_username = $3,
+         display_name = $4,
+         avatar_object_key = $5,
+         avatar_media_type = $6,
+         avatar_byte_length = $7,
+         avatar_sha256 = $8,
+         profile_version = profile_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'active' AND profile_version = $9
+       RETURNING ${AUTH_ACCOUNT_FIELDS}`,
+      [
+        id,
+        profile.username,
+        profile.normalizedUsername,
+        profile.displayName,
+        profile.avatar?.objectKey ?? null,
+        profile.avatar?.mediaType ?? null,
+        profile.avatar?.byteLength ?? null,
+        profile.avatar?.sha256 ?? null,
+        expectedVersion,
+      ],
+    );
+    return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
+  }
+
   async updatePasswordHash(id: string, passwordHash: string): Promise<void> {
     await this.authQueryable.query(
       'UPDATE accounts SET password_hash = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
       [id, passwordHash],
     );
+  }
+
+  async changeCredentials(
+    id: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ) {
+    const result = await this.authQueryable.query<AuthAccountRow>(
+      `UPDATE accounts SET password_hash = $3,
+         credential_version = credential_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'active' AND credential_version = $2
+       RETURNING ${AUTH_ACCOUNT_FIELDS}`,
+      [id, expectedCredentialVersion, passwordHash],
+    );
+    return result.rows[0] ? mapAuthAccount(result.rows[0]) : undefined;
   }
 
   async resetCredentials(id: string, passwordHash: string): Promise<void> {
@@ -310,12 +367,13 @@ export class PostgresAuthStore implements AuthStore {
   async createSession(session: AuthSession): Promise<AuthSession> {
     const result = await this.authQueryable.query<AuthSessionRow>(
       `INSERT INTO sessions
-        (id, account_id, token_hash, credential_version, created_at, last_seen_at,
-         recent_auth_at, expires_at, idle_expires_at, revoked_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        (id, public_handle, account_id, token_hash, credential_version, created_at,
+         last_seen_at, recent_auth_at, expires_at, idle_expires_at, revoked_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING ${AUTH_SESSION_FIELDS}`,
       [
         session.id,
+        session.publicHandle,
         session.accountId,
         session.tokenHash,
         session.credentialVersion,
@@ -355,6 +413,20 @@ export class PostgresAuthStore implements AuthStore {
     return result.rowCount === 1;
   }
 
+  async revokeOwnedSession(
+    accountId: string,
+    publicHandle: string,
+    revokedAt: string,
+  ) {
+    const result = await this.authQueryable.query<AuthSessionRow>(
+      `UPDATE sessions SET revoked_at = $3
+       WHERE account_id = $1 AND public_handle = $2 AND revoked_at IS NULL
+       RETURNING ${AUTH_SESSION_FIELDS}`,
+      [accountId, publicHandle, revokedAt],
+    );
+    return result.rows[0] ? mapAuthSession(result.rows[0]) : undefined;
+  }
+
   async revokeAllSessions(accountId: string, revokedAt: string) {
     const result = await this.authQueryable.query(
       `UPDATE sessions SET revoked_at = $2
@@ -364,13 +436,66 @@ export class PostgresAuthStore implements AuthStore {
     return result.rowCount ?? 0;
   }
 
+  async revokeOtherSessions(
+    accountId: string,
+    currentSessionId: string,
+    revokedAt: string,
+  ) {
+    const result = await this.authQueryable.query(
+      `UPDATE sessions SET revoked_at = $3
+       WHERE account_id = $1 AND id <> $2 AND revoked_at IS NULL`,
+      [accountId, currentSessionId, revokedAt],
+    );
+    return result.rowCount ?? 0;
+  }
+
   async listSessions(accountId: string) {
     const result = await this.authQueryable.query<AuthSessionRow>(
       `SELECT ${AUTH_SESSION_FIELDS} FROM sessions
-       WHERE account_id = $1 ORDER BY created_at DESC, id DESC`,
+       WHERE account_id = $1
+         AND credential_version = (
+           SELECT credential_version FROM accounts
+           WHERE id = $1 AND status = 'active'
+         )
+         AND revoked_at IS NULL
+         AND expires_at > CURRENT_TIMESTAMP
+         AND idle_expires_at > CURRENT_TIMESTAMP
+       ORDER BY last_seen_at DESC, created_at DESC, public_handle DESC
+       LIMIT 100`,
       [accountId],
     );
     return result.rows.map(mapAuthSession);
+  }
+
+  async recordSecurityEvent(event: CredentialSecurityEvent): Promise<void> {
+    await this.authQueryable.query(
+      `INSERT INTO security_notifications
+        (id, account_id, notification_type, correlation_id, occurred_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        event.id,
+        event.accountId,
+        event.notificationType,
+        event.correlationId,
+        event.occurredAt,
+        event.expiresAt,
+      ],
+    );
+    await this.authQueryable.query(
+      `INSERT INTO audit_events
+        (id, actor_id, community_id, invitation_id, action, outcome, occurred_at,
+         event_version, actor_type, scope_type, scope_id, target_type, target_id,
+         reason_code, correlation_id, retention_until)
+       VALUES ($1,$2,NULL,NULL,$3,'succeeded',$4,1,'account','instance',NULL,
+         'account',$2,NULL,$5,$4::timestamptz + interval '7 years')`,
+      [
+        event.id,
+        event.accountId,
+        event.action,
+        event.occurredAt,
+        event.correlationId,
+      ],
+    );
   }
 
   async transaction<T>(work: (store: AuthStore) => Promise<T>): Promise<T> {
@@ -591,9 +716,9 @@ function isSerializationFailure(error: unknown): boolean {
 }
 
 const AUTH_ACCOUNT_FIELDS =
-  'id, username, normalized_username, display_name, password_hash, status, credential_version, created_at, updated_at';
+  'id, username, normalized_username, display_name, password_hash, status, credential_version, profile_version, avatar_object_key, avatar_media_type, avatar_byte_length, avatar_sha256, created_at, updated_at';
 const AUTH_SESSION_FIELDS =
-  'id, account_id, token_hash, credential_version, created_at, last_seen_at, recent_auth_at, expires_at, idle_expires_at, revoked_at';
+  'id, public_handle, account_id, token_hash, credential_version, created_at, last_seen_at, recent_auth_at, expires_at, idle_expires_at, revoked_at';
 type AuthAccountRow = {
   id: string;
   username: string;
@@ -602,11 +727,17 @@ type AuthAccountRow = {
   password_hash: string;
   status: 'active' | 'suspended';
   credential_version: number;
+  profile_version: number;
+  avatar_object_key: string | null;
+  avatar_media_type: 'image/jpeg' | 'image/png' | 'image/webp' | null;
+  avatar_byte_length: number | null;
+  avatar_sha256: string | null;
   created_at: Date;
   updated_at: Date;
 };
 type AuthSessionRow = {
   id: string;
+  public_handle: string;
   account_id: string;
   token_hash: string;
   credential_version: number;
@@ -625,11 +756,25 @@ const mapAuthAccount = (row: AuthAccountRow): AuthAccount => ({
   passwordHash: row.password_hash,
   status: row.status,
   credentialVersion: row.credential_version,
+  profileVersion: row.profile_version,
+  avatar:
+    row.avatar_object_key &&
+    row.avatar_media_type &&
+    row.avatar_byte_length !== null &&
+    row.avatar_sha256
+      ? {
+          objectKey: row.avatar_object_key,
+          mediaType: row.avatar_media_type,
+          byteLength: row.avatar_byte_length,
+          sha256: row.avatar_sha256,
+        }
+      : null,
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
 });
 const mapAuthSession = (row: AuthSessionRow): AuthSession => ({
   id: row.id,
+  publicHandle: row.public_handle,
   accountId: row.account_id,
   tokenHash: row.token_hash,
   credentialVersion: row.credential_version,
@@ -692,6 +837,7 @@ type SessionRow = {
   id: string;
   account_id: string;
   token_hash: string;
+  public_handle: string;
   created_at: Date;
   last_seen_at: Date;
   expires_at: Date;
@@ -1091,18 +1237,19 @@ function messageRepository(db: Queryable): Persistence['messages'] {
 
 function sessionRepository(db: Queryable): Persistence['sessions'] {
   const fields =
-    'id, account_id, token_hash, created_at, last_seen_at, expires_at, revoked_at';
+    'id, account_id, token_hash, public_handle, created_at, last_seen_at, expires_at, revoked_at';
   return {
     async create(session) {
       const result = await db.query<SessionRow>(
         `INSERT INTO sessions
-          (id, account_id, token_hash, created_at, last_seen_at, expires_at, revoked_at,
+          (id, account_id, token_hash, public_handle, created_at, last_seen_at, expires_at, revoked_at,
            recent_auth_at, idle_expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $4, $6) RETURNING ${fields}`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $5, $7) RETURNING ${fields}`,
         [
           session.id,
           session.accountId,
           session.tokenHash,
+          session.publicHandle,
           session.createdAt,
           session.lastSeenAt,
           session.expiresAt,
@@ -1462,6 +1609,7 @@ const mapSession = (row: SessionRow): SessionRecord => ({
   id: row.id,
   accountId: row.account_id,
   tokenHash: row.token_hash,
+  publicHandle: row.public_handle,
   createdAt: row.created_at.toISOString(),
   lastSeenAt: row.last_seen_at.toISOString(),
   expiresAt: row.expires_at.toISOString(),

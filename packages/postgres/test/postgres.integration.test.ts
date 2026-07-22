@@ -157,6 +157,7 @@ describe('PostgreSQL persistence', () => {
       id: randomUUID(),
       accountId: account.id,
       tokenHash: 'a'.repeat(64),
+      publicHandle: 'sess_AAAAAAAAAAAAAAAA',
       createdAt: now,
       lastSeenAt: now,
       expiresAt: later,
@@ -532,7 +533,7 @@ describe('PostgreSQL migrations', () => {
         applied.push(version),
       ),
     ]);
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     await expect(verifyPostgresSchema(pool)).resolves.toBe(
       CURRENT_SCHEMA_VERSION,
     );
@@ -559,9 +560,11 @@ describe('PostgreSQL migrations', () => {
       migratePostgres(pool, migrationsDirectory, ({ version }) =>
         applied.push(version),
       ),
-    ).resolves.toBe(7);
-    expect(applied).toEqual([3, 4, 5, 6, 7]);
-    await expect(verifyPostgresSchema(pool)).resolves.toBe(7);
+    ).resolves.toBe(CURRENT_SCHEMA_VERSION);
+    expect(applied).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+    await expect(verifyPostgresSchema(pool)).resolves.toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
   });
 
   it('backfills and verifies existing version 6 audit rows', async () => {
@@ -603,7 +606,9 @@ describe('PostgreSQL migrations', () => {
         ],
       );
 
-    await expect(migratePostgres(pool, migrationsDirectory)).resolves.toBe(7);
+    await expect(migratePostgres(pool, migrationsDirectory)).resolves.toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
     const persistence = new PostgresPersistence(pool);
     await expect(persistence.auditEvents.verify(communityId)).resolves.toEqual(
       expect.objectContaining({ valid: true, count: 2 }),

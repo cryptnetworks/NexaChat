@@ -1,9 +1,13 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   authAccountSchema,
+  authProfileSchema,
   authSessionSchema,
+  changePasswordSchema,
   loginSchema,
   registrationSchema,
+  sessionHandleSchema,
+  updateProfileSchema,
 } from '@nexa/api-contracts';
 import {
   AuthenticationError,
@@ -51,18 +55,51 @@ export function registerAuthRoutes(
 
   app.get('/v1/account', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
-    return reply.send(authAccountSchema.parse(authenticated.account));
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    return reply.send(
+      authProfileSchema.parse(
+        await runtime.service.getProfile(authenticated.account.id),
+      ),
+    );
+  });
+
+  app.patch('/v1/account', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const input = updateProfileSchema.parse(request.body);
+    return reply.send(
+      authProfileSchema.parse(
+        await runtime.service.updateProfile(authenticated.account.id, {
+          expectedVersion: input.expectedVersion,
+          ...(input.username !== undefined ? { username: input.username } : {}),
+          ...(input.displayName !== undefined
+            ? { displayName: input.displayName }
+            : {}),
+          ...(input.avatar !== undefined ? { avatar: input.avatar } : {}),
+        }),
+      ),
+    );
   });
 
   app.get('/v1/sessions', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
     const sessions = await runtime.service.listSessions(
       authenticated.account.id,
     );
     return reply.send(
       sessions.map((session) =>
         authSessionSchema.parse({
-          id: session.id,
+          handle: session.publicHandle,
           createdAt: session.createdAt,
           lastSeenAt: session.lastSeenAt,
           recentAuthAt: session.recentAuthAt,
@@ -71,6 +108,37 @@ export function registerAuthRoutes(
         }),
       ),
     );
+  });
+
+  app.delete('/v1/sessions/:handle', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const { handle } = sessionHandleSchema.parse(request.params);
+    const revoked = await runtime.service.revokeOwnedSession(
+      authenticated.account.id,
+      handle,
+      request.id,
+    );
+    if (revoked && handle === authenticated.session.publicHandle)
+      clearSessionCookie(reply, runtime.config);
+    return reply.code(204).send();
+  });
+
+  app.post('/v1/sessions/revoke-others', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    await runtime.service.logoutOthers(
+      authenticated.account.id,
+      authenticated.session.id,
+      request.id,
+    );
+    return reply.code(204).send();
   });
 
   app.post('/v1/auth/logout', async (request, reply) => {
@@ -86,8 +154,25 @@ export function registerAuthRoutes(
     enforceOrigin(request, runtime.config);
     enforceCsrf(request);
     const authenticated = await authenticateRequest(request, runtime);
-    await runtime.service.logoutAll(authenticated.account.id);
+    await runtime.service.logoutAll(authenticated.account.id, request.id);
     clearSessionCookie(reply, runtime.config);
+    return reply.code(204).send();
+  });
+
+  app.post('/v1/account/password', async (request, reply) => {
+    const authenticated = await authenticateMutation(request, runtime);
+    await request.enforceAccountRateLimit?.(
+      authenticated.account.id,
+      'authenticated',
+    );
+    const input = changePasswordSchema.parse(request.body);
+    const session = await runtime.service.changePassword({
+      accountId: authenticated.account.id,
+      currentPassword: input.currentPassword,
+      newPassword: input.newPassword,
+      correlationId: request.id,
+    });
+    setSessionCookie(reply, session.token, runtime.config);
     return reply.code(204).send();
   });
 }

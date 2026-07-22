@@ -21,19 +21,59 @@ export const registrationSchema = z
 export const loginSchema = z
   .object({ username: usernameSchema, password: passwordSchema })
   .strict();
+export const changePasswordSchema = z
+  .object({ currentPassword: passwordSchema, newPassword: passwordSchema })
+  .strict();
 export const authAccountSchema = z.object({
   id,
   username: usernameSchema,
   displayName: name,
 });
+export const avatarMetadataSchema = z
+  .object({
+    objectKey: z
+      .string()
+      .max(255)
+      .regex(/^avatars\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,128}$/),
+    mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    byteLength: z.number().int().min(1).max(5_242_880),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+export const authProfileSchema = authAccountSchema
+  .extend({
+    avatar: avatarMetadataSchema.nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    version: z.number().int().positive(),
+  })
+  .strict();
+export const updateProfileSchema = z
+  .object({
+    username: usernameSchema.optional(),
+    displayName: name.optional(),
+    avatar: avatarMetadataSchema.nullable().optional(),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.username !== undefined ||
+      input.displayName !== undefined ||
+      input.avatar !== undefined,
+    { message: 'at least one profile field is required' },
+  );
 export const authSessionSchema = z.object({
-  id,
+  handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/),
   createdAt: z.string().datetime(),
   lastSeenAt: z.string().datetime(),
   recentAuthAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   current: z.boolean(),
 });
+export const sessionHandleSchema = z
+  .object({ handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/) })
+  .strict();
 export const createCommunitySchema = z
   .object({
     ownerId: z.string().uuid(),
@@ -273,7 +313,13 @@ export const auditEventSchema = z
     actorId: z.string().min(3).max(128),
     scopeType: z.enum(['community', 'instance']),
     scopeId: id.nullable(),
-    targetType: z.enum(['audit_chain', 'community', 'invitation', 'none']),
+    targetType: z.enum([
+      'account',
+      'audit_chain',
+      'community',
+      'invitation',
+      'none',
+    ]),
     targetId: id.nullable(),
     action: z.enum([
       'invitation.create',
@@ -282,6 +328,10 @@ export const auditEventSchema = z
       'audit.checkpoint',
       'audit.legal_hold.apply',
       'audit.legal_hold.release',
+      'account.credentials.change',
+      'account.session.revoke',
+      'account.sessions.revoke_all',
+      'account.sessions.revoke_others',
     ]),
     outcome: z.enum(['succeeded', 'rejected']),
     reasonCode: z
@@ -346,6 +396,7 @@ export const errorResponseSchema = z.object({
     'not_found',
     'authentication_failed',
     'identifier_unavailable',
+    'invalid_profile',
     'rate_limited',
     'unauthenticated',
     'csrf_rejected',
@@ -411,7 +462,11 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
 export type CreateDevAccountRequest = z.infer<typeof createDevAccountSchema>;
 export type RegistrationRequest = z.infer<typeof registrationSchema>;
 export type LoginRequest = z.infer<typeof loginSchema>;
+export type ChangePasswordRequest = z.infer<typeof changePasswordSchema>;
 export type AuthAccountResponse = z.infer<typeof authAccountSchema>;
+export type AvatarMetadata = z.infer<typeof avatarMetadataSchema>;
+export type AuthProfileResponse = z.infer<typeof authProfileSchema>;
+export type UpdateProfileRequest = z.infer<typeof updateProfileSchema>;
 export type AuthSessionResponse = z.infer<typeof authSessionSchema>;
 export type CreateCommunityRequest = z.infer<typeof createCommunitySchema>;
 export type CreateSpaceRequest = z.infer<typeof createSpaceSchema>;

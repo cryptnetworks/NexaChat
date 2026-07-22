@@ -1007,7 +1007,11 @@ export function buildApp(
           ? 429
           : error.code === 'identifier_unavailable'
             ? 409
-            : 401;
+            : error.code === 'stale_write'
+              ? 409
+              : error.code === 'invalid_profile'
+                ? 400
+                : 401;
       return sendApiError(
         reply,
         status,

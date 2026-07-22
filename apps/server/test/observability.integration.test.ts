@@ -693,6 +693,7 @@ function captureAuth(
         },
         session: {
           id: randomUUID(),
+          publicHandle: 'sess_AAAAAAAAAAAAAAAA',
           accountId,
           tokenHash: 'a'.repeat(64),
           credentialVersion: 1,

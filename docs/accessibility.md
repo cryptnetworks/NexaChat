@@ -26,7 +26,7 @@ The release candidate must pass on current stable browser and assistive-technolo
 | macOS, Safari     | Full keyboard | VoiceOver     | Authentication, navigation, messaging, invitations, errors | Not executed for this local commit |
 | macOS, Chromium   | Full keyboard | VoiceOver     | Authentication, navigation, messaging, invitations, errors | Not executed for this local commit |
 
-The release owner records browser, OS, assistive-technology versions, tester, date, result, and linked defects. “Not executed” is not a pass. Registration/login screens are not yet implemented, so their matrix cells cannot be completed and issue #20 remains release-blocking.
+The release owner records browser, OS, assistive-technology versions, tester, date, result, and linked defects. “Not executed” is not a pass. Registration, login, session inventory, and destructive session confirmations are implemented and covered by automated browser checks, but issue #20 remains release-blocking until the manual matrix is completed.
 
 ## Automated procedure
 
@@ -38,7 +38,7 @@ npx playwright install chromium
 npm run test:accessibility
 ```
 
-The Playwright suite starts the built-in web development server, stubs only the local application API, uses real browser semantics and axe-core WCAG 2.0/2.1/2.2 A/AA rules, and exercises initial, community navigation, message composer, invitation, error, narrow-reflow, reduced-motion, and forced-color states. CI installs its own Chromium and runs the same command. Any violation fails the job. The complete repository format, lint, strict TypeScript, unit/integration, and production-build gates still apply.
+The Playwright suite starts the built-in web development server, stubs only the local application API, uses real browser semantics and axe-core WCAG 2.0/2.1/2.2 A/AA rules, and exercises registration, login, profile and credential forms, session inventory and confirmation, cross-tab logout, community navigation, message composition, invitation, error, narrow-reflow, reduced-motion, and forced-color states. CI installs its own Chromium and runs the same command. Any violation fails the job. The complete repository format, lint, strict TypeScript, unit/integration, and production-build gates still apply.
 
 ## Manual keyboard procedure
 
@@ -46,7 +46,7 @@ For each critical flow, begin with the browser chrome focused and do not use a p
 
 1. Use `Tab` to reveal and activate “Skip to conversation”. Confirm the conversation heading receives a visible, unobscured focus indicator.
 2. Traverse every interactive element using `Tab` and `Shift+Tab`. Confirm the order follows the visual and reading order, every action works with `Enter` or `Space`, and focus never becomes trapped.
-3. Create or enter a community, select each category/space, send a message, create/copy/accept an invitation, and recover from representative validation, authorization, dependency, and network errors.
+3. Register and sign in; inspect and revoke sessions; sign out; then create or enter a community, select each category/space, send a message, create/copy/accept an invitation, and recover from representative validation, authorization, dependency, and network errors.
 4. Confirm selecting a space moves focus to its conversation heading. Submitting a composer or invitation action retains predictable focus. Background history and real-time updates never move focus.
 5. Confirm disabled, busy, current, edited, deleted, unread, and error states do not depend on color or visual position alone.
 6. Trigger every destructive confirmation once by cancelling and once by confirming. Initial focus, accessible description, focus containment, `Escape`, and return focus must be correct.
@@ -86,10 +86,8 @@ For each matrix combination, navigate by landmarks, headings, forms, controls, a
 
 ## Known exceptions and incomplete evidence
 
-| Gap                                                                        | Criterion/evidence                                                                          | Impact and workaround                                                                                 | Owner                                     | Target date                           |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------- |
-| Registration/login UI is not implemented                                   | Keyboard-complete critical authentication flow and WCAG review cannot run                   | No web authentication flow is available to users; API verification is not an accessibility substitute | Web maintainers, issue #20                | 2026-08-15                            |
-| Manual assistive-technology matrix is not executed for this local revision | Human verification is required for semantics, reading order, announcements, and interaction | Automated browser checks catch only a subset; release remains blocked                                 | Release accessibility reviewer, issue #20 | Before MVP release candidate approval |
-| Destructive confirmations and unread UI are not implemented                | Their focus and state behavior cannot be inspected                                          | Apply the rules above when introduced; no current UI path is affected                                 | Web maintainers, issue #20                | Before the implementing change merges |
+| Gap                                                                        | Criterion/evidence                                                                          | Impact and workaround                                                 | Owner                                     | Target date                           |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------- |
+| Manual assistive-technology matrix is not executed for this local revision | Human verification is required for semantics, reading order, announcements, and interaction | Automated browser checks catch only a subset; release remains blocked | Release accessibility reviewer, issue #20 | Before MVP release candidate approval |
 
-These are tracked gaps, not WCAG waivers. The first two prevent closure of issue #20 and MVP release approval until the evidence is completed.
+This is a tracked evidence gap, not a WCAG waiver. It prevents closure of issue #20 and MVP release approval until the matrix is completed.
