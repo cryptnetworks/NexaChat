@@ -33,7 +33,10 @@ Every long-running service has a read-only root filesystem, drops all Linux
 capabilities, prevents privilege escalation, bounds processes/CPU/memory/open
 files, rotates local logs, and has an explicit healthcheck and stop deadline.
 Every long-running and one-shot service runs non-root. The pinned SeaweedFS
-runtime owns `/data` before Docker initializes the named volume, reads its
+4.40 runtime replaces only its `weed` binary with a reproducible build from
+upstream revision `875cd1f67ea25e8965a4f5ba1e6aaf501ba6b6fa`; that build pins
+gRPC-Go 1.82.1 to include the current upstream security fixes. The runtime owns
+`/data` before Docker initializes the named volume, reads its
 bucket-scoped S3 identity from files, and creates the configured private bucket
 as part of startup. No provider administrator identity or root permission job is
 needed on a clean host.
