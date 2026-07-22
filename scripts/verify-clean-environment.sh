@@ -7,9 +7,19 @@ server_pid=''
 log_file="$(mktemp "${TMPDIR:-/tmp}/nexa-chat-clean-verify.XXXXXX")"
 port_offset=$(( $$ % 500 ))
 server_port=$(( 31000 + port_offset ))
-postgres_port=$(( 55000 + port_offset ))
-valkey_port=$(( 56000 + port_offset ))
-s3_port=$(( 57000 + port_offset ))
+
+published_port() {
+  local endpoint
+  local port
+  endpoint="$(docker compose -p "$project" port "$1" "$2")"
+  endpoint="${endpoint%%$'\n'*}"
+  port="${endpoint##*:}"
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    echo "clean_environment_error: no published port for $1:$2" >&2
+    return 1
+  fi
+  printf '%s' "$port"
+}
 
 process_exited() {
   local pid="$1"
@@ -93,26 +103,29 @@ bash scripts/check-toolchain.sh
 npm ci --ignore-scripts
 docker compose config --quiet
 
-export POSTGRES_PUBLISHED_PORT="$postgres_port"
-export VALKEY_PUBLISHED_PORT="$valkey_port"
-export S3_PUBLISHED_PORT="$s3_port"
-export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
+export POSTGRES_PUBLISHED_PORT=0
+export VALKEY_PUBLISHED_PORT=0
+export S3_PUBLISHED_PORT=0
 export NEXA_SERVER_PORT="$server_port"
 export NEXA_SERVER_HOST=127.0.0.1
 export NEXA_WEB_ORIGIN=http://localhost:5173
 export NEXA_SECURE_COOKIES=false
 export NODE_ENV=development
 export NEXA_COORDINATION_ENABLED=true
-export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export NEXA_OBJECT_STORAGE_ENABLED=true
 export NEXA_OBJECT_STORAGE_CREATE_BUCKET=true
-export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
 export S3_ACCESS_KEY='nexa-local'
 export S3_SECRET_KEY='change-this-local-secret'
 export S3_BUCKET='nexa-observability-verify'
 export S3_REGION='us-east-1'
 
 docker compose -p "$project" up -d --wait postgres redis object-storage
+postgres_port="$(published_port postgres 5432)"
+valkey_port="$(published_port redis 6379)"
+s3_port="$(published_port object-storage 8333)"
+export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
+export REDIS_URL="redis://127.0.0.1:${valkey_port}"
+export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
 npm run migrate
 node --import tsx apps/server/src/main.ts > "$log_file" 2>&1 &
 server_pid="$!"
