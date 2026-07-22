@@ -449,9 +449,7 @@ export class JobControlService extends AdministrationService {
       throw new Error('invalid_job_page');
     return this.jobs.listJobs(input);
   }
-  async metrics(
-    actorId: string,
-  ): Promise<{
+  async metrics(actorId: string): Promise<{
     queued: number;
     running: number;
     oldestAgeSeconds: number;
