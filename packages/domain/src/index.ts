@@ -12,6 +12,7 @@ export * from './notifications.js';
 export * from './web-notifications.js';
 export * from './presence.js';
 export * from './member-status.js';
+export * from './mentions.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';
