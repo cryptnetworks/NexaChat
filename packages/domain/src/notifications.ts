@@ -268,3 +268,58 @@ export class NotificationPreferenceService {
     };
   }
 }
+
+export interface NotificationReadState {
+  accountId: string;
+  stream: string;
+  sequence: number;
+  eventId: string;
+  updatedAt: string;
+  version: number;
+}
+export interface NotificationReadStore {
+  find(
+    accountId: string,
+    stream: string,
+  ): Promise<NotificationReadState | undefined>;
+  advance(
+    value: NotificationReadState,
+    expectedVersion?: number,
+  ): Promise<NotificationReadState | undefined>;
+}
+export async function advanceNotificationReadState(
+  store: NotificationReadStore,
+  input: {
+    accountId: string;
+    stream: string;
+    sequence: number;
+    eventId: string;
+    now: Date;
+  },
+): Promise<NotificationReadState> {
+  if (
+    !Number.isSafeInteger(input.sequence) ||
+    input.sequence < 0 ||
+    input.stream.length > 128
+  )
+    throw new Error('invalid_notification_read_state');
+  const current = await store.find(input.accountId, input.stream);
+  if (current && input.sequence <= current.sequence) return current;
+  const saved = await store.advance(
+    {
+      accountId: input.accountId,
+      stream: input.stream,
+      sequence: input.sequence,
+      eventId: input.eventId,
+      updatedAt: input.now.toISOString(),
+      version: current ? current.version + 1 : 1,
+    },
+    current?.version,
+  );
+  if (!saved) {
+    const winner = await store.find(input.accountId, input.stream);
+    if (winner && winner.sequence >= input.sequence) return winner;
+    throw new Error('stale_notification_read_state');
+  }
+  return saved;
+}
