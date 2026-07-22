@@ -223,6 +223,20 @@ export const messagePageSchema = z.object({
   items: z.array(messageSchema),
   nextCursor: z.string().nullable(),
 });
+export const unreadIndicatorSchema = z.object({
+  spaceId: id,
+  unreadCount: z.number().int().min(0).max(999),
+  mentionCount: z.number().int().min(0).max(999),
+  lastReadMessageId: id.nullable(),
+  version: z.number().int().positive(),
+});
+export const markReadSchema = z
+  .object({
+    actorId: id,
+    messageId: id.nullable(),
+    expectedVersion: z.number().int().positive().optional(),
+  })
+  .strict();
 export const invitationSchema = z.object({
   id,
   communityId: id,
