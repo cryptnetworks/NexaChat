@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-stored-account"
+description = "Enables the remove_stored_account command without any pre-configured scope."
+commands.allow = ["remove_stored_account"]
+
+[[permission]]
+identifier = "deny-remove-stored-account"
+description = "Denies the remove_stored_account command without any pre-configured scope."
+commands.deny = ["remove_stored_account"]

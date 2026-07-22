@@ -30,6 +30,9 @@ debug content additionally reaches the exact Vite development origin. A future
 remote-instance connection flow must introduce an explicit, validated endpoint
 scope instead of widening this policy to every HTTPS or WebSocket destination.
 File drag-and-drop and webview developer tools are disabled by configuration.
+The [desktop credential persistence model](../security/desktop-credentials.md)
+documents the only application IPC surface, its OS trust boundary, bounded
+lifecycle, and platform evidence.
 
 ## Pinned prerequisites
 

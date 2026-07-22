@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The main webview has no frontend-accessible native commands",
+  "description": "The bundled main webview may manage only bounded session credentials",
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    "allow-credential-store-status",
+    "allow-list-stored-accounts",
+    "allow-store-session-credential",
+    "allow-select-stored-account",
+    "allow-remove-stored-account",
+    "allow-clear-stored-accounts"
+  ]
 }

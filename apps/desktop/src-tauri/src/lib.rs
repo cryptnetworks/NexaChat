@@ -1,4 +1,10 @@
-use tauri::{Url, webview::NewWindowResponse};
+mod credentials;
+
+use credentials::{
+    CredentialState, clear_stored_accounts, credential_store_status, list_stored_accounts,
+    remove_stored_account, select_stored_account, store_session_credential,
+};
+use tauri::{Manager, Url, webview::NewWindowResponse};
 use tauri_plugin_opener::OpenerExt;
 
 fn has_untrusted_authority(url: &Url) -> bool {
@@ -30,7 +36,24 @@ fn external_url_is_allowed(url: &Url) -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _arguments, _cwd| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            },
+        ))
         .plugin(tauri_plugin_opener::init())
+        .manage(CredentialState::default())
+        .invoke_handler(tauri::generate_handler![
+            credential_store_status,
+            list_stored_accounts,
+            store_session_credential,
+            select_stored_account,
+            remove_stored_account,
+            clear_stored_accounts
+        ])
         .setup(|app| {
             let window_config = app.config().app.windows.first().ok_or_else(|| {
                 std::io::Error::other("the main desktop window is not configured")
