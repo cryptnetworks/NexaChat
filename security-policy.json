@@ -21,10 +21,20 @@
     "MPL-2.0"
   ],
   "actions": {
-    "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/dependency-review-action": "2031cfc080254a8a887f58cffee85186f0e49e48"
+  },
+  "workflowPermissionExceptions": {
+    "publish-wiki.yml": {
+      "permissions": {
+        "contents": "write"
+      },
+      "owner": "@cryptnetworks",
+      "rationale": "Publish generated documentation to the repository wiki with the repository-scoped workflow token.",
+      "reviewAfter": "2026-10-22"
+    }
   },
   "scannerImages": {
     "gitleaks": "zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f",

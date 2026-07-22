@@ -24,6 +24,14 @@ secret-free pull-request lane. Scheduled and default-branch image jobs likewise
 use no secrets or write token; publishing and deployment are separate reviewed
 operations.
 
+The documentation wiki publisher is the only reviewed workflow-level exception:
+it receives `contents: write` on default-branch or manual runs so the
+repository-scoped workflow token can update the companion wiki. It has no
+pull-request trigger or repository-secret access, checks the repository and
+default branch again at job start, checks out only documentation inputs, and is
+bounded by concurrency and a five-minute timeout. Its owner, rationale, exact
+permission map, and review deadline are recorded in `security-policy.json`.
+
 ## Policy and blocking thresholds
 
 `security-policy.json` is the reviewable source for action revisions, scanner
@@ -37,6 +45,8 @@ thresholds. `npm run verify:security-policy` fails on:
 - a missing job timeout, broad workflow permission, unsafe pull-request event,
   secret reference, shell interpolation of event input, or absent concurrency
   cancellation;
+- an undeclared, mismatched, ownerless, or overdue workflow permission
+  exception;
 - unordered migration filenames, missing static rules, expired policy review,
   or an invalid suppression.
 

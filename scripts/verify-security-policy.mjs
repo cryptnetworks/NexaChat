@@ -69,6 +69,55 @@ for (const [path, entry] of Object.entries(lock.packages ?? {})) {
 }
 
 const workflowDirectory = join(root, '.github', 'workflows');
+const permissionExceptions = policy.workflowPermissionExceptions ?? {};
+const observedPermissionExceptions = new Set();
+const validWorkflowPermissions = new Set([
+  'actions',
+  'attestations',
+  'checks',
+  'contents',
+  'deployments',
+  'discussions',
+  'id-token',
+  'issues',
+  'packages',
+  'pages',
+  'pull-requests',
+  'security-events',
+  'statuses',
+]);
+for (const [file, exception] of Object.entries(permissionExceptions)) {
+  if (!/^[a-zA-Z0-9_.-]+\.ya?ml$/u.test(file))
+    fail(`invalid workflow permission exception name ${file}`);
+  if (!exception || typeof exception !== 'object' || Array.isArray(exception)) {
+    fail(`${file}: workflow permission exception is invalid`);
+    continue;
+  }
+  if (!exception.owner?.startsWith('@') || !exception.rationale)
+    fail(`${file}: workflow permission exception lacks an owner or rationale`);
+  if (!Number.isFinite(Date.parse(exception.reviewAfter)))
+    fail(`${file}: workflow permission exception lacks a review date`);
+  if (Date.now() > Date.parse(exception.reviewAfter))
+    fail(`${file}: workflow permission exception is overdue for review`);
+  const permissions = exception.permissions ?? {};
+  if (
+    !permissions ||
+    typeof permissions !== 'object' ||
+    Array.isArray(permissions)
+  ) {
+    fail(`${file}: workflow permission exception map is invalid`);
+    continue;
+  }
+  if (!Object.keys(permissions).length)
+    fail(`${file}: workflow permission exception is empty`);
+  for (const [permission, access] of Object.entries(permissions)) {
+    if (!validWorkflowPermissions.has(permission))
+      fail(`${file}: workflow permission ${permission} is invalid`);
+    if (!['read', 'write', 'none'].includes(access))
+      fail(`${file}: workflow permission ${permission} has invalid access`);
+  }
+}
+
 for (const file of await readdir(workflowDirectory)) {
   if (!/\.ya?ml$/u.test(file)) continue;
   const text = await readFile(join(workflowDirectory, file), 'utf8');
@@ -88,8 +137,14 @@ for (const file of await readdir(workflowDirectory)) {
         `${file}: pull-request workflow grants a privileged token permission`,
       );
   }
-  if (!/^permissions:\n {2}contents: read$/mu.test(text))
-    fail(`${file}: workflow default permissions are not contents: read`);
+  const permissionException = permissionExceptions[file];
+  const expectedPermissions = permissionException?.permissions ?? {
+    contents: 'read',
+  };
+  const workflowPermissions = extractWorkflowPermissions(text);
+  if (!samePermissions(workflowPermissions, expectedPermissions))
+    fail(`${file}: workflow default permissions differ from reviewed policy`);
+  if (permissionException) observedPermissionExceptions.add(file);
 
   const uses = [
     ...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#\s*(\S+))?/gmu),
@@ -120,6 +175,11 @@ for (const file of await readdir(workflowDirectory)) {
     if (!/^ {4}timeout-minutes:\s*\d+$/mu.test(body))
       fail(`${file}: job ${job} has no timeout`);
   }
+}
+
+for (const file of Object.keys(permissionExceptions)) {
+  if (!observedPermissionExceptions.has(file))
+    fail(`${file}: workflow permission exception does not match a workflow`);
 }
 
 for (const [action, revision] of Object.entries(policy.actions ?? {})) {
@@ -217,4 +277,31 @@ function extractRunBlocks(text) {
     blocks.push(body.join('\n'));
   }
   return blocks.join('\n');
+}
+
+function extractWorkflowPermissions(text) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => /^permissions:\s*$/u.test(line));
+  if (start < 0) return null;
+  const permissions = {};
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    if (!/^\s/u.test(line)) break;
+    const match = /^ {2}([a-z][a-z-]*):\s*(read|write|none)\s*$/u.exec(line);
+    if (!match || Object.hasOwn(permissions, match[1])) return null;
+    permissions[match[1]] = match[2];
+  }
+  return permissions;
+}
+
+function samePermissions(actual, expected) {
+  if (!actual) return false;
+  const actualEntries = Object.entries(actual).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const expectedEntries = Object.entries(expected).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
 }
