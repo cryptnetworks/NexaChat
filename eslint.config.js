@@ -28,4 +28,8 @@ export default tseslint.config(
       globals: { self: 'readonly' },
     },
   },
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ['tools/wiki/*.mjs'],
+  },
 );
