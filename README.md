@@ -65,6 +65,7 @@ npm run verify:clean-env
 - `packages/realtime-contracts` owns versioned server event envelopes and reuses message response schemas from `api-contracts`.
 - `packages/domain` contains storage ports, the community service, authorization rules, and an in-memory test adapter without transport-specific logic.
 - `packages/postgres` implements the storage ports, connection pooling, schema verification, and concurrency-safe migrations.
+- [Data lifecycle and retention model](docs/privacy/data-lifecycle.md) defines policy precedence, export and deletion handling, legal holds, backup recovery, and operator responsibilities.
 
 Malformed HTTP input returns a stable `invalid_request` response with a correlation ID and no validation internals. Malformed WebSocket messages return `invalid_message`; missing and unauthorized subscription targets both return the non-disclosing `unavailable` error.
 
