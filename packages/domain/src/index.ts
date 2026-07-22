@@ -7,6 +7,7 @@ export * from './account-deletion.js';
 export * from './direct.js';
 export * from './direct-requests.js';
 export * from './search.js';
+export * from './discovery.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';
