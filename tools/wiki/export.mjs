@@ -10,7 +10,6 @@ import {
 import { isAbsolute, resolve, sep } from 'node:path';
 import { posix } from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 const MAX_DOCUMENTS = 256;
 const MAX_DOCUMENT_BYTES = 256 * 1024;
@@ -357,7 +356,7 @@ async function main(arguments_) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   main(process.argv.slice(2)).catch((error) => {
     const code =
       error instanceof WikiExportError ? error.code : 'unexpected_failure';
