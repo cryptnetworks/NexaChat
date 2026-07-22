@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nexa Chat",
+  "version": "0.1.0",
+  "identifier": "chat.nexa.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev --workspace @nexa/web",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build --workspace @nexa/web",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nexa Chat",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 360,
+        "minHeight": 520,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": true
+      }
+    ],
+    "security": {
+      "capabilities": ["main"],
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "base-uri": "'none'",
+        "connect-src": "'self' ipc: http://ipc.localhost https: wss:",
+        "font-src": "'self' data:",
+        "frame-src": "'none'",
+        "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "object-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'"
+      },
+      "devCsp": {
+        "default-src": "'self' customprotocol: asset:",
+        "base-uri": "'none'",
+        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 https: wss:",
+        "font-src": "'self' data:",
+        "frame-src": "'none'",
+        "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "object-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "Private self-hosted community messaging",
+    "longDescription": "Nexa Chat desktop client for private self-hosted community messaging."
+  }
+}

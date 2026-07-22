@@ -1,0 +1,27 @@
+[package]
+name = "nexa-desktop"
+version = "0.1.0"
+description = "Least-privilege desktop shell for Nexa Chat"
+authors = ["Nexa Chat contributors"]
+license = "GPL-3.0-only"
+repository = "https://github.com/cryptnetworks/NexaChat"
+edition = "2024"
+rust-version = "1.97.1"
+build = "build.rs"
+
+[lib]
+name = "nexa_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = "symbols"

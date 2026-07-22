@@ -8,9 +8,11 @@ Local account registration and login use Argon2id password hashes and revocable 
 
 - Node.js 24.18.0 (pinned in `.node-version`, `.nvmrc`, and `.tool-versions`)
 - npm 11.16.0 (pinned by `packageManager`)
+- Rust 1.97.1 (pinned by `rust-toolchain.toml`) for desktop development
 - Docker Engine with Docker Compose, for PostgreSQL and local adapter services
 
-Rust desktop prerequisites are not currently satisfied on the verified development machine. See [Desktop status](#desktop-status).
+Desktop packaging also requires the target platform prerequisites described in
+the [desktop architecture guide](docs/architecture/desktop.md).
 
 ## Local setup
 
@@ -46,9 +48,11 @@ npm run test:contracts
 npm run test:performance
 npm run test:realtime-capacity
 npm run test:resilience
+npm run test:desktop
 npm test
 npm run build --workspace @nexa/server
 npm run build --workspace @nexa/web
+npm run desktop:build
 docker compose config --quiet
 npm audit
 npm run verify:clean-env
@@ -86,16 +90,23 @@ Community invitations are bounded, revocable, optionally account-targeted, and s
 
 ## Desktop status
 
-The web/domain split is suitable for a thin Tauri shell without duplicating interface or domain logic, but the desktop scaffold is deferred because `rustc`, `cargo`, and the Tauri CLI are not installed locally. Xcode 26.6 is available.
-
-Before adding `apps/desktop`, install the stable Rust toolchain (including `rustc` and `cargo`) using the official Rust installer, ensure the macOS Xcode command-line tools are selected, and make the Tauri CLI available as a repository-local development dependency. The future desktop package should load or build `apps/web` and expose root-level desktop development and build commands.
+`apps/desktop` is a thin Tauri 2 shell that builds and loads `apps/web`. The
+Rust toolchain and repository-local Tauri CLI are pinned, native capabilities
+are explicit, and the shell exposes no application IPC commands or shell
+execution. Use `npm run desktop:dev` for development, `npm run desktop:build`
+for a native executable, and `npm run desktop:package` only on a host prepared
+to package the target platform. See the
+[desktop architecture guide](docs/architecture/desktop.md) for the verified
+platform scope and trust boundary.
 
 ## Current limitations
 
 - PostgreSQL persistence, a private S3-compatible object-storage adapter, and a resilient Valkey coordination adapter are implemented. Attachment and coordination application flows are not connected.
 - Real-time sequences are intentionally process-local and are gap signals, not durable replay cursors; HTTP history remains authoritative after reconnects and server restarts.
 - The web client provides keyboard-accessible community/category/space navigation and loading, empty, and error states; lifecycle administration forms are not yet exposed.
-- There is no desktop application scaffold until the documented toolchain is available.
+- Desktop navigation, credentials, native notifications, packaging, signing,
+  and updates remain separate hardening and release increments; the initial
+  shell does not claim those capabilities.
 - External identity providers, account recovery, multi-factor authentication, voice, video, federation, and peer-to-peer transport are planned work, not implemented behavior.
 
 Further context is in the [architecture record](docs/architecture/0001-application-language.md), [operations guide](docs/operations/development.md), [security policy](SECURITY.md), and [roadmap](ROADMAP.md).

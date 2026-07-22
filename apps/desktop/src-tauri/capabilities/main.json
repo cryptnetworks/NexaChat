@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Minimum core capability for the bundled Nexa Chat window",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

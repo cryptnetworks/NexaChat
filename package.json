@@ -15,6 +15,9 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "desktop:build": "npm run build:app --workspace @nexa/desktop",
+    "desktop:dev": "npm run dev --workspace @nexa/desktop",
+    "desktop:package": "npm run package --workspace @nexa/desktop",
     "dev": "npm run dev --workspace @nexa/server & npm run dev --workspace @nexa/web",
     "dev:up": "bash scripts/dev-up.sh",
     "format": "prettier --write .",
@@ -28,6 +31,7 @@
     "test:config": "vitest run apps/server/test/config.test.ts",
     "test:contracts": "vitest run packages/api-contracts/src/error-contract.test.ts packages/realtime-contracts/src/contracts.test.ts packages/realtime-contracts/src/compatibility-fixtures.test.ts",
     "test:coordination": "vitest run packages/coordination/test",
+    "test:desktop": "vitest run apps/desktop/test",
     "test:http": "vitest run apps/server/test/http.integration.test.ts apps/server/test/community-lifecycle.integration.test.ts",
     "test:object-storage": "vitest run packages/object-storage/test",
     "test:performance": "tsx tools/performance/api-benchmark.ts --profile=ci",
@@ -46,6 +50,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@tauri-apps/cli": "2.11.4",
     "@types/node": "26.1.1",
     "@types/ws": "8.18.1",
     "eslint": "10.7.0",
