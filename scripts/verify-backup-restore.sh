@@ -125,8 +125,14 @@ INSERT INTO categories (id, community_id, name, position)
 VALUES ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Backup Category', 0);
 INSERT INTO spaces (id, community_id, category_id, name, kind, position)
 VALUES ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'Backup Space', 'text', 0);
-INSERT INTO messages (id, space_id, author_id, body, created_at, idempotency_key)
-VALUES ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'restore verification message', CURRENT_TIMESTAMP, 'backup-restore-verification');
+INSERT INTO messages
+  (id, space_id, author_id, body, created_at, idempotency_key,
+   request_fingerprint, created_event_id)
+VALUES
+  ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000002', 'restore verification message',
+   CURRENT_TIMESTAMP, 'backup-restore-verification', repeat('b', 64),
+   '51000000-0000-4000-8000-000000000001');
 INSERT INTO invitations
   (id, community_id, creator_id, token_hash, created_at, expires_at, max_uses)
 VALUES
