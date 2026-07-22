@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { PassThrough, Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { decryptStream, encryptStream } from './crypto.mjs';
@@ -9,6 +10,33 @@ async function transform(input, operation, key) {
   output.on('data', (chunk) => chunks.push(chunk));
   await operation(Readable.from([input]), output, key);
   return Buffer.concat(chunks);
+}
+
+class SynchronousFinishDestination extends EventEmitter {
+  chunks = [];
+
+  write(chunk) {
+    this.chunks.push(Buffer.from(chunk));
+    return true;
+  }
+
+  end() {
+    this.emit('finish');
+  }
+
+  destroy(error) {
+    if (error) this.emit('error', error);
+  }
+
+  contents() {
+    return Buffer.concat(this.chunks);
+  }
+}
+
+async function transformWithSynchronousFinish(input, operation, key) {
+  const output = new SynchronousFinishDestination();
+  await operation(Readable.from([input]), output, key);
+  return output.contents();
 }
 
 describe('backup component encryption', () => {
@@ -23,6 +51,20 @@ describe('backup component encryption', () => {
     await expect(transform(encrypted, decryptStream, key)).resolves.toEqual(
       plaintext,
     );
+  });
+
+  it('observes destinations that finish synchronously during end', async () => {
+    const key = randomBytes(32);
+    const plaintext = Buffer.from('synchronous destination completion');
+    const encrypted = await transformWithSynchronousFinish(
+      plaintext,
+      encryptStream,
+      key,
+    );
+
+    await expect(
+      transformWithSynchronousFinish(encrypted, decryptStream, key),
+    ).resolves.toEqual(plaintext);
   });
 
   it('rejects altered ciphertext and the wrong key', async () => {
