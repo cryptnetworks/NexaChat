@@ -33,6 +33,25 @@ function nextMessage(socket: WebSocket): Promise<unknown> {
   });
 }
 
+function nextMessages(socket: WebSocket, count: number): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const values: unknown[] = [];
+    const listener = (data: RawData) => {
+      try {
+        values.push(JSON.parse(textFromRawData(data)));
+        if (values.length === count) {
+          socket.off('message', listener);
+          resolve(values);
+        }
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('invalid JSON'));
+      }
+    };
+    socket.on('message', listener);
+    socket.once('error', reject);
+  });
+}
+
 function textFromRawData(data: RawData): string {
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
@@ -239,6 +258,7 @@ describe('secure real WebSocket integration', () => {
     const socket = connect(owner.session.token);
     await opened(socket);
     const requestId = randomUUID();
+    const deliveries = nextMessages(socket, 2);
     socket.send(
       JSON.stringify({
         version: 1,
@@ -247,13 +267,13 @@ describe('secure real WebSocket integration', () => {
         accountIds: [targetId],
       }),
     );
-    await expect(nextMessage(socket)).resolves.toEqual({
+    const [subscription, update] = await deliveries;
+    expect(subscription).toEqual({
       version: 1,
       type: 'presence_subscribed',
       requestId,
       accountIds: [targetId],
     });
-    const update = await nextMessage(socket);
     expect(update).toEqual({
       version: 1,
       type: 'presence',
