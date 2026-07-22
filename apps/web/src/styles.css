@@ -150,6 +150,12 @@ input:focus-visible {
   margin: 6px 0;
   line-height: 1.5;
 }
+.messages a {
+  color: #8ee9ca;
+  overflow-wrap: anywhere;
+  text-decoration-thickness: 0.12em;
+  text-underline-offset: 0.16em;
+}
 form {
   display: flex;
   gap: 10px;

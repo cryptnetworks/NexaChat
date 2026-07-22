@@ -17,6 +17,7 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
+import { safeLinkSegments } from './links.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -375,7 +376,26 @@ function App() {
                           Message deleted
                         </span>
                       ) : (
-                        message.body
+                        message.body &&
+                        safeLinkSegments(message.body).map((part, index) =>
+                          part.type === 'text' ? (
+                            part.value
+                          ) : (
+                            <a
+                              key={`${part.href}-${String(index)}`}
+                              href={part.href}
+                              target="_blank"
+                              rel="noopener noreferrer nofollow ugc"
+                              title={part.href}
+                            >
+                              {part.label}
+                              <span className="sr-only">
+                                {' '}
+                                (opens in a new tab)
+                              </span>
+                            </a>
+                          ),
+                        )
                       )}
                     </p>
                     {!message.deletedAt &&
