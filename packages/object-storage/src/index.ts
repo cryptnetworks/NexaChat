@@ -110,16 +110,29 @@ export class S3PrivateObjectStore implements PrivateObjectStore {
     if (bytes.byteLength > this.config.maxObjectBytes)
       throw new ObjectStorageError('invalid_object');
     const sha256 = digest(bytes);
-    await this.execute(
-      new PutObjectCommand({
-        Bucket: this.config.bucket,
-        Key: key,
-        Body: bytes,
-        ContentLength: bytes.byteLength,
-        ContentType: contentType,
-        Metadata: { 'nexa-sha256': sha256 },
-      }),
-    );
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          Key: key,
+          Body: bytes,
+          ContentLength: bytes.byteLength,
+          ContentType: contentType,
+          Metadata: { 'nexa-sha256': sha256 },
+          IfNoneMatch: '*',
+        }),
+        this.options(),
+      );
+    } catch (error) {
+      if (!alreadyExists(error)) throw unavailable();
+      const existing = await this.get(key);
+      if (
+        existing.byteLength !== bytes.byteLength ||
+        existing.sha256 !== sha256 ||
+        existing.contentType !== contentType
+      )
+        throw new ObjectStorageError('integrity_failure');
+    }
     return { byteLength: bytes.byteLength, sha256 };
   }
 
@@ -270,4 +283,20 @@ function missingPolicy(error: unknown): boolean {
 
 function unsupported(error: unknown): boolean {
   return ['NotImplemented', 'MethodNotAllowed'].includes(name(error));
+}
+
+function alreadyExists(error: unknown): boolean {
+  if (
+    ['PreconditionFailed', 'ConditionalRequestConflict'].includes(name(error))
+  )
+    return true;
+  if (typeof error !== 'object' || error === null || !('$metadata' in error))
+    return false;
+  const metadata = error.$metadata;
+  return (
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    'httpStatusCode' in metadata &&
+    (metadata.httpStatusCode === 409 || metadata.httpStatusCode === 412)
+  );
 }

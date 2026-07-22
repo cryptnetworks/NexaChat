@@ -37,6 +37,8 @@
     "test:realtime-capacity": "tsx tools/performance/realtime-capacity.ts --profile=ci --coordination=local",
     "test:realtime-capacity:valkey": "tsx tools/performance/realtime-capacity.ts --profile=ci --coordination=valkey",
     "test:realtime-soak": "tsx tools/performance/realtime-capacity.ts --profile=soak --coordination=valkey",
+    "test:resilience": "vitest run packages/object-storage/test packages/domain/test/job-recovery.test.ts",
+    "test:resilience:integration": "vitest run packages/postgres/test/postgres.integration.test.ts packages/object-storage/test/object-storage.test.ts",
     "test:unit": "vitest run packages/domain/test",
     "test:websocket": "vitest run apps/server/test/websocket.integration.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tools/performance/tsconfig.json",

@@ -5,7 +5,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
 import { parseRuntimeConfig } from '../src/config.js';
-import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
+import {
+  CURRENT_SCHEMA_VERSION,
+  createPostgresPool,
+  type PostgresConfig,
+} from '@nexa/postgres';
 
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
@@ -160,7 +164,7 @@ describe('PostgreSQL-backed API', () => {
     expect(ready.json()).toEqual({
       status: 'ready',
       storage: 'postgresql',
-      schemaVersion: 6,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
     });
     await secondApp.close();
     await second.pool.end();

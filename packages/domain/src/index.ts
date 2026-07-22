@@ -16,6 +16,7 @@ export * from './mentions.js';
 export * from './threads.js';
 export * from './saved-messages.js';
 export * from './administration.js';
+export * from './job-recovery.js';
 
 export type MembershipStatus =
   'active' | 'invited' | 'left' | 'removed' | 'suspended';

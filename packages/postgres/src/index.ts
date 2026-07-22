@@ -39,6 +39,8 @@ import type {
   PresenceVisibility,
   MemberStatus,
   MemberStatusStore,
+  RecoverableJob,
+  JobRecoveryStore,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -52,7 +54,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 40;
+export const CURRENT_SCHEMA_VERSION = 41;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -160,6 +162,221 @@ export class PostgresPersistence implements Persistence {
     } finally {
       client.release();
     }
+  }
+}
+
+interface RecoverableJobRow {
+  id: string;
+  kind: string;
+  status: RecoverableJob['status'];
+  attempts: number;
+  max_attempts: number;
+  checkpoint: Record<string, string | number | boolean | null>;
+  created_at: Date | string;
+  available_at: Date | string;
+  lease_token: string | null;
+  lease_expires_at: Date | string | null;
+  completed_at: Date | string | null;
+  last_error_code: RecoverableJob['lastErrorCode'];
+  version: number;
+}
+
+const RECOVERABLE_JOB_FIELDS = `id, kind, status, attempts, max_attempts,
+  checkpoint, created_at, available_at, lease_token, lease_expires_at,
+  completed_at, last_error_code, version`;
+
+function mapRecoverableJob(row: RecoverableJobRow): RecoverableJob {
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    checkpoint: row.checkpoint,
+    createdAt: timestamp(row.created_at),
+    availableAt: timestamp(row.available_at),
+    leaseToken: row.lease_token,
+    leaseExpiresAt: nullableTimestamp(row.lease_expires_at),
+    completedAt: nullableTimestamp(row.completed_at),
+    lastErrorCode: row.last_error_code,
+    version: row.version,
+  };
+}
+
+export class PostgresJobRecoveryStore implements JobRecoveryStore {
+  constructor(private readonly pool: Pool) {}
+
+  async claim(input: Parameters<JobRecoveryStore['claim']>[0]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE background_jobs
+         SET status='failed', completed_at=$1, last_error_code='handler_failed',
+             lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+             version=version+1
+         WHERE status='running' AND lease_expires_at <= $1
+           AND attempts >= max_attempts`,
+        [input.now],
+      );
+      const result = await client.query<RecoverableJobRow>(
+        `WITH candidate AS (
+           SELECT id FROM background_jobs
+           WHERE kind = ANY($1::varchar[])
+             AND (
+               (status='queued' AND available_at <= $2 AND attempts < max_attempts)
+               OR
+               (status='running' AND lease_expires_at <= $2 AND attempts < max_attempts)
+               OR
+               (status='cancel_requested' AND
+                 (lease_expires_at IS NULL OR lease_expires_at <= $2))
+             )
+           ORDER BY
+             CASE WHEN status='cancel_requested' THEN 0 ELSE 1 END,
+             available_at, created_at, id
+           FOR UPDATE SKIP LOCKED LIMIT 1
+         )
+         UPDATE background_jobs AS job
+         SET status=CASE WHEN job.status='cancel_requested'
+                         THEN 'cancel_requested' ELSE 'running' END,
+             attempts=CASE WHEN job.status='cancel_requested'
+                           THEN job.attempts ELSE job.attempts+1 END,
+             started_at=CASE WHEN job.status='cancel_requested'
+                             THEN job.started_at ELSE COALESCE(job.started_at,$2) END,
+             lease_owner=$3, lease_token=$4, lease_expires_at=$5,
+             version=job.version+1
+         FROM candidate WHERE job.id=candidate.id
+         RETURNING job.id, job.kind, job.status, job.attempts,
+           job.max_attempts, job.checkpoint, job.created_at, job.available_at,
+           job.lease_token, job.lease_expires_at, job.completed_at,
+           job.last_error_code, job.version`,
+        [
+          input.kinds,
+          input.now,
+          input.workerId,
+          input.leaseToken,
+          input.leaseExpiresAt,
+        ],
+      );
+      await client.query('COMMIT');
+      const row = result.rows[0];
+      return row ? mapRecoverableJob(row) : undefined;
+    } catch (error) {
+      await rollback(client);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveCheckpoint(
+    input: Parameters<JobRecoveryStore['saveCheckpoint']>[0],
+  ) {
+    const result = await this.pool.query<RecoverableJobRow>(
+      `UPDATE background_jobs
+       SET checkpoint=$4::jsonb, lease_expires_at=$5, version=version+1
+       WHERE id=$1 AND status='running' AND lease_token=$2
+         AND version=$3 RETURNING ${RECOVERABLE_JOB_FIELDS}`,
+      [
+        input.id,
+        input.leaseToken,
+        input.expectedVersion,
+        JSON.stringify(input.checkpoint),
+        input.leaseExpiresAt,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapRecoverableJob(row) : undefined;
+  }
+
+  async cancellationState(
+    input: Parameters<JobRecoveryStore['cancellationState']>[0],
+  ) {
+    const result = await this.pool.query<{
+      status: RecoverableJob['status'];
+      version: number;
+    }>(
+      `SELECT status,version FROM background_jobs
+       WHERE id=$1 AND lease_token=$2
+         AND status IN ('running','cancel_requested')`,
+      [input.id, input.leaseToken],
+    );
+    const row = result.rows[0];
+    return row
+      ? { requested: row.status === 'cancel_requested', version: row.version }
+      : undefined;
+  }
+
+  complete(input: Parameters<JobRecoveryStore['complete']>[0]) {
+    return this.transition(
+      input,
+      `status='succeeded', completed_at=$4, last_error_code=NULL`,
+      input.completedAt,
+      'running',
+    );
+  }
+
+  reschedule(input: Parameters<JobRecoveryStore['reschedule']>[0]) {
+    return this.transition(
+      input,
+      `status='queued', available_at=$4, last_error_code=$5`,
+      input.availableAt,
+      'running',
+      input.errorCode,
+    );
+  }
+
+  fail(input: Parameters<JobRecoveryStore['fail']>[0]) {
+    return this.transition(
+      input,
+      `status='failed', completed_at=$4, last_error_code=$5`,
+      input.completedAt,
+      'running',
+      input.errorCode,
+    );
+  }
+
+  cancel(input: Parameters<JobRecoveryStore['cancel']>[0]) {
+    return this.transition(
+      input,
+      `status='cancelled', completed_at=$4, last_error_code=NULL`,
+      input.completedAt,
+      'cancel_requested',
+    );
+  }
+
+  private async transition(
+    input: { id: string; leaseToken: string; expectedVersion: number },
+    update: string,
+    timestampValue: string,
+    expectedStatus: RecoverableJob['status'],
+    errorCode?: RecoverableJob['lastErrorCode'],
+  ): Promise<RecoverableJob | undefined> {
+    const result = await this.pool.query<RecoverableJobRow>(
+      `UPDATE background_jobs SET ${update},
+         lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+         version=version+1
+       WHERE id=$1 AND lease_token=$2 AND version=$3 AND status=$6
+       RETURNING ${RECOVERABLE_JOB_FIELDS}`,
+      [
+        input.id,
+        input.leaseToken,
+        input.expectedVersion,
+        timestampValue,
+        errorCode ?? null,
+        expectedStatus,
+      ],
+    );
+    const row = result.rows[0];
+    return row ? mapRecoverableJob(row) : undefined;
+  }
+}
+
+async function rollback(client: PoolClient): Promise<void> {
+  try {
+    await client.query('ROLLBACK');
+  } catch {
+    // The original storage failure remains authoritative.
   }
 }
 
@@ -349,12 +566,10 @@ export class PostgresNotificationStore implements NotificationStore {
     const mapped = result.rows.map(mapNotification);
     const hasMore = mapped.length > input.limit;
     const items = mapped.slice(0, input.limit);
+    const last = items.at(-1);
     return {
       items,
-      nextCursor:
-        hasMore && items.length > 0
-          ? notificationCursor(items[items.length - 1]!)
-          : null,
+      nextCursor: hasMore && last ? notificationCursor(last) : null,
     };
   }
 

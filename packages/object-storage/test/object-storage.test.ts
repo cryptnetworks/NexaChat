@@ -96,11 +96,57 @@ describe('private object storage bounds', () => {
     await store.put('safe/key', new TextEncoder().encode('original'));
     const command = send.mock.calls[0]?.[0] as unknown as PutObjectCommand;
     expect(command).toBeInstanceOf(PutObjectCommand);
+    expect(command.input.IfNoneMatch).toBe('*');
     expect(command.input.Metadata?.['nexa-sha256']).toMatch(/^[a-f0-9]{64}$/);
     await expect(store.get('safe/key')).rejects.toMatchObject({
       code: 'integrity_failure',
     });
     expect(send.mock.calls[1]?.[0]).toBeInstanceOf(GetObjectCommand);
+  });
+
+  it('makes ambiguous write retries immutable and idempotent', async () => {
+    const bytes = new TextEncoder().encode('original');
+    const sha256 =
+      '0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5';
+    const conflict = Object.assign(new Error('private provider detail'), {
+      name: 'PreconditionFailed',
+      $metadata: { httpStatusCode: 412 },
+    });
+    const send = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('timeout after commit'))
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce({
+        Body: { transformToByteArray: () => Promise.resolve(bytes) },
+        ContentLength: bytes.byteLength,
+        ContentType: 'text/plain',
+        Metadata: { 'nexa-sha256': sha256 },
+      })
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce({
+        Body: { transformToByteArray: () => Promise.resolve(bytes) },
+        ContentLength: bytes.byteLength,
+        ContentType: 'text/plain',
+        Metadata: { 'nexa-sha256': sha256 },
+      });
+    const store = new S3PrivateObjectStore(config, {
+      send,
+      destroy: vi.fn(),
+    } as unknown as S3Client);
+
+    await expect(
+      store.put('safe/immutable', bytes, 'text/plain'),
+    ).rejects.toMatchObject({ code: 'object_unavailable' });
+    await expect(
+      store.put('safe/immutable', bytes, 'text/plain'),
+    ).resolves.toEqual({ byteLength: bytes.byteLength, sha256 });
+    await expect(
+      store.put(
+        'safe/immutable',
+        new TextEncoder().encode('different'),
+        'text/plain',
+      ),
+    ).rejects.toMatchObject({ code: 'integrity_failure' });
   });
 
   it('bounds prefix cleanup and translates listing failures', async () => {
