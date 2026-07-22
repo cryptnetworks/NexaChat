@@ -21,6 +21,13 @@ published_port() {
   printf '%s' "$port"
 }
 
+expect_published_port() {
+  if [[ "$(published_port "$1" "$2")" != "$3" ]]; then
+    echo "clean_environment_error: published port changed for $1:$2" >&2
+    return 1
+  fi
+}
+
 process_exited() {
   local pid="$1"
   local state
@@ -141,18 +148,21 @@ expect_status 503 'dependency outage'
 expect_body '/health/live' '{"status":"ok"}'
 expect_body '/health/startup' '{"status":"started"}'
 docker compose -p "$project" up -d --wait postgres >/dev/null
+expect_published_port postgres 5432 "$postgres_port"
 expect_status 200 'dependency recovery'
 
 docker compose -p "$project" stop redis >/dev/null
 expect_status 200 'coordination degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
 docker compose -p "$project" up -d --wait redis >/dev/null
+expect_published_port redis 6379 "$valkey_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 docker compose -p "$project" stop object-storage >/dev/null
 expect_status 200 'object storage degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
 docker compose -p "$project" up -d --wait object-storage >/dev/null
+expect_published_port object-storage 8333 "$s3_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 kill -TERM "$server_pid"
