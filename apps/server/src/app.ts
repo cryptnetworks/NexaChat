@@ -379,14 +379,17 @@ export function buildApp(
       );
       const event: RealtimeEnvelope = {
         version: 1,
-        id: randomUUID(),
+        id: message.createdEventId,
         type: 'message.created',
         occurredAt: new Date().toISOString(),
         correlationId: request.id,
         payload: { message },
       };
       if (!existing) app.websocketHub?.broadcast(request.params.spaceId, event);
-      return reply.code(201).send(messageSchema.parse(message));
+      if (existing) reply.header('idempotent-replayed', 'true');
+      return reply
+        .code(existing ? 200 : 201)
+        .send(messageSchema.parse(message));
     },
   );
 

@@ -34,6 +34,8 @@ describe('message lifecycle HTTP boundary', () => {
       url: `/v1/spaces/${space.id}/messages`,
       payload,
     });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.headers['idempotent-replayed']).toBe('true');
     expect(retried.json<{ id: string }>().id).toBe(message.id);
 
     const history = await app.inject({

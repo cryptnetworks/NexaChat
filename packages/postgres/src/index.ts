@@ -554,6 +554,8 @@ type MessageRow = {
   body: string | null;
   reply_to_id: string | null;
   idempotency_key: string;
+  request_fingerprint: string;
+  created_event_id: string;
   created_at: Date;
   updated_at: Date | null;
   deleted_at: Date | null;
@@ -848,13 +850,13 @@ function spaceRepository(db: Queryable): Persistence['spaces'] {
 
 function messageRepository(db: Queryable): Persistence['messages'] {
   const fields =
-    'id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, deleted_at, version';
+    'id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, deleted_at, version';
   return {
     async create(message) {
       const result = await db.query<MessageRow>(
         `INSERT INTO messages
-          (id, space_id, author_id, body, reply_to_id, idempotency_key, created_at, updated_at, version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          (id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (author_id, space_id, idempotency_key) DO UPDATE
            SET idempotency_key = EXCLUDED.idempotency_key
          RETURNING ${fields}`,
@@ -865,6 +867,8 @@ function messageRepository(db: Queryable): Persistence['messages'] {
           message.body,
           message.replyToId,
           message.idempotencyKey,
+          message.requestFingerprint,
+          message.createdEventId,
           message.createdAt,
           message.updatedAt,
           message.version,
@@ -1158,6 +1162,8 @@ const mapMessage = (row: MessageRow): Message => ({
   body: row.body,
   replyToId: row.reply_to_id,
   idempotencyKey: row.idempotency_key,
+  requestFingerprint: row.request_fingerprint,
+  createdEventId: row.created_event_id,
   createdAt: row.created_at.toISOString(),
   updatedAt: (row.updated_at ?? row.created_at).toISOString(),
   deletedAt: row.deleted_at?.toISOString() ?? null,

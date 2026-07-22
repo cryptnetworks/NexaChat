@@ -29,7 +29,7 @@ describe('message lifecycle', () => {
     const retried = await service.postMessage(
       space.id,
       owner.id,
-      'different body is ignored',
+      '  hello\r\nworld  ',
       'request-0001',
     );
     expect(retried).toEqual(first);
@@ -37,6 +37,9 @@ describe('message lifecycle', () => {
     await expect(
       persistence.messages.list(space.id, { limit: 10 }),
     ).resolves.toMatchObject({ items: [first] });
+    await expect(
+      service.postMessage(space.id, owner.id, 'changed', 'request-0001'),
+    ).rejects.toMatchObject({ code: 'conflict' });
   });
 
   it('validates reply references without exposing other spaces', async () => {

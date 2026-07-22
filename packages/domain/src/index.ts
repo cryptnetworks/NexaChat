@@ -49,6 +49,8 @@ export interface Message {
   body: string | null;
   replyToId: string | null;
   idempotencyKey: string;
+  requestFingerprint: string;
+  createdEventId: string;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -631,13 +633,21 @@ export class CommunityService {
       { type: 'space', id: space.id },
     ] as const;
     await this.enforce(authorId, 'message.create', scopes);
+    const normalizedBody = messageBody(body);
     const normalizedKey = idempotencyKey(key);
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ body: normalizedBody, replyToId }))
+      .digest('hex');
     const existing = await this.persistence.messages.findByIdempotencyKey(
       authorId,
       spaceId,
       normalizedKey,
     );
-    if (existing) return existing;
+    if (existing) {
+      if (existing.requestFingerprint !== fingerprint)
+        throw new DomainError('conflict');
+      return existing;
+    }
     if (replyToId) {
       const reply = await this.persistence.messages.findById(replyToId);
       if (!reply || reply.spaceId !== spaceId)
@@ -650,15 +660,21 @@ export class CommunityService {
         spaceId,
         normalizedKey,
       );
-      if (retried) return retried;
+      if (retried) {
+        if (retried.requestFingerprint !== fingerprint)
+          throw new DomainError('conflict');
+        return retried;
+      }
       const now = new Date().toISOString();
       return persistence.messages.create({
         id: randomUUID(),
         spaceId,
         authorId,
-        body: messageBody(body),
+        body: normalizedBody,
         replyToId,
         idempotencyKey: normalizedKey,
+        requestFingerprint: fingerprint,
+        createdEventId: randomUUID(),
         createdAt: now,
         updatedAt: now,
         deletedAt: null,

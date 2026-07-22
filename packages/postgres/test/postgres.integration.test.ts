@@ -148,6 +148,9 @@ describe('PostgreSQL persistence', () => {
       body: 'persist me',
       replyToId: null,
       idempotencyKey: 'request-0001',
+      requestFingerprint:
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      createdEventId: randomUUID(),
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
