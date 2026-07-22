@@ -395,3 +395,125 @@ export class MaintenanceService extends AdministrationService {
     return { retryAfterSeconds: state.retryAfterSeconds };
   }
 }
+
+export type AdminJobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancel_requested'
+  | 'cancelled';
+export interface AdminJob {
+  id: string;
+  kind: string;
+  status: AdminJobStatus;
+  attempts: number;
+  maxAttempts: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  deduplicationKey: string;
+  version: number;
+}
+export interface JobControlStore extends AdminStore {
+  listJobs(input: {
+    limit: number;
+    cursor?: string;
+  }): Promise<{ items: AdminJob[]; nextCursor: string | null }>;
+  findJob(id: string): Promise<AdminJob | undefined>;
+  retryJob(id: string, expectedVersion: number): Promise<AdminJob | undefined>;
+  requestCancellation(
+    id: string,
+    expectedVersion: number,
+  ): Promise<AdminJob | undefined>;
+  queueMetrics(): Promise<{
+    queued: number;
+    running: number;
+    oldestAgeSeconds: number;
+    capacity: number;
+  }>;
+}
+export class JobControlService extends AdministrationService {
+  constructor(
+    private readonly jobs: JobControlStore,
+    authorization: AdminAuthorization,
+  ) {
+    super(jobs, authorization);
+  }
+  async list(
+    actorId: string,
+    input: { limit: number; cursor?: string },
+  ): Promise<{ items: AdminJob[]; nextCursor: string | null }> {
+    await this.authorization.assertPermission(actorId, 'instance.jobs.view');
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
+      throw new Error('invalid_job_page');
+    return this.jobs.listJobs(input);
+  }
+  async metrics(
+    actorId: string,
+  ): Promise<{
+    queued: number;
+    running: number;
+    oldestAgeSeconds: number;
+    saturation: number;
+  }> {
+    await this.authorization.assertPermission(actorId, 'instance.jobs.view');
+    const value = await this.jobs.queueMetrics();
+    return {
+      queued: value.queued,
+      running: value.running,
+      oldestAgeSeconds: Math.max(0, value.oldestAgeSeconds),
+      saturation:
+        value.capacity > 0 ? Math.min(1, value.running / value.capacity) : 1,
+    };
+  }
+  async retry(
+    actorId: string,
+    id: string,
+    expectedVersion: number,
+    authenticatedAt: string,
+    correlationId: string,
+    now: Date,
+  ): Promise<AdminJob> {
+    await this.sensitive(actorId, authenticatedAt, 'instance.jobs.manage', now);
+    const current = await this.jobs.findJob(id);
+    if (
+      !current ||
+      current.status !== 'failed' ||
+      current.attempts >= current.maxAttempts
+    )
+      throw new Error('job_unavailable');
+    const retried = await this.jobs.retryJob(id, expectedVersion);
+    if (!retried) throw new Error('stale_job');
+    await this.audit(actorId, 'job.retry', id, 'succeeded', correlationId, now);
+    return retried;
+  }
+  async cancel(
+    actorId: string,
+    id: string,
+    expectedVersion: number,
+    authenticatedAt: string,
+    correlationId: string,
+    now: Date,
+  ): Promise<AdminJob> {
+    await this.sensitive(actorId, authenticatedAt, 'instance.jobs.manage', now);
+    const current = await this.jobs.findJob(id);
+    if (
+      !current ||
+      !['queued', 'running', 'cancel_requested'].includes(current.status)
+    )
+      throw new Error('job_unavailable');
+    if (current.status === 'cancel_requested') return current;
+    const cancelled = await this.jobs.requestCancellation(id, expectedVersion);
+    if (!cancelled) throw new Error('stale_job');
+    await this.audit(
+      actorId,
+      'job.cancel.request',
+      id,
+      'succeeded',
+      correlationId,
+      now,
+    );
+    return cancelled;
+  }
+}
