@@ -50,6 +50,7 @@ jobs:
     env:
       NEXA_IMAGE_REVISION: ${{ github.sha }}
       NEXA_IMAGE_VERSION: security-${{ github.sha }}
+      BUILDX_METADATA_PROVENANCE: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,11 +59,11 @@ jobs:
       - name: Build production images with BuildKit provenance
         run: |
           mkdir -p "$RUNNER_TEMP/build-metadata" "$RUNNER_TEMP/image-reports"
-          docker build --target postgres-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/postgres-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-postgres:security .
-          docker build --target backup-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/backup-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-backup:security .
-          docker build --target server-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/server-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-server:security .
-          docker build --target edge-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/edge-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-edge:security .
-          docker build --target object-storage-runtime --provenance=mode=max --metadata-file "$RUNNER_TEMP/build-metadata/object-storage-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-object-storage:security .
+          docker build --target postgres-runtime --metadata-file "$RUNNER_TEMP/build-metadata/postgres-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-postgres:security .
+          docker build --target backup-runtime --metadata-file "$RUNNER_TEMP/build-metadata/backup-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-backup:security .
+          docker build --target server-runtime --metadata-file "$RUNNER_TEMP/build-metadata/server-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-server:security .
+          docker build --target edge-runtime --metadata-file "$RUNNER_TEMP/build-metadata/edge-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-edge:security .
+          docker build --target object-storage-runtime --metadata-file "$RUNNER_TEMP/build-metadata/object-storage-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-object-storage:security .
           docker pull valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
       - name: Validate build provenance
         run: node scripts/verify-build-metadata.mjs "$RUNNER_TEMP/build-metadata" "$NEXA_IMAGE_REVISION" "$NEXA_IMAGE_VERSION"
