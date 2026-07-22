@@ -51,12 +51,17 @@ import {
   notificationPageSchema,
   notificationSchema,
   updateNotificationSchema,
+  effectiveNotificationPreferenceQuerySchema,
+  effectiveNotificationPreferenceSchema,
+  notificationPreferenceSchema,
+  updateNotificationPreferenceSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
   DomainError,
   InMemoryCommunityService,
   type NotificationService,
+  type NotificationPreferenceService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
@@ -201,6 +206,55 @@ export function buildApp(
         );
       },
     );
+  }
+
+  if (experience.notificationPreferences) {
+    app.get(
+      '/v1/notification-preferences/effective',
+      async (request, reply) => {
+        const input = effectiveNotificationPreferenceQuerySchema.parse(
+          request.query,
+        );
+        const actorId = await verifiedActor(request, auth, input.actorId);
+        return reply.send(
+          effectiveNotificationPreferenceSchema.parse(
+            await experience.notificationPreferences!.effective(
+              actorId,
+              {
+                ...(input.communityId
+                  ? { communityId: input.communityId }
+                  : {}),
+                ...(input.categoryId ? { categoryId: input.categoryId } : {}),
+                ...(input.spaceId ? { spaceId: input.spaceId } : {}),
+              },
+              input.kind,
+              new Date(),
+            ),
+          ),
+        );
+      },
+    );
+    app.put('/v1/notification-preferences', async (request, reply) => {
+      const input = updateNotificationPreferenceSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        notificationPreferenceSchema.parse(
+          await experience.notificationPreferences!.update(
+            actorId,
+            {
+              scopeType: input.scopeType,
+              scopeId: input.scopeId,
+              mode: input.mode,
+              mutedUntil: input.mutedUntil,
+              ...(input.expectedVersion === undefined
+                ? {}
+                : { expectedVersion: input.expectedVersion }),
+            },
+            new Date(),
+          ),
+        ),
+      );
+    });
   }
 
   app.post('/v1/communities', async (request, reply) => {
@@ -962,6 +1016,19 @@ export function buildApp(
       )
     )
       return sendApiError(reply, 409, 'stale_write', request.id);
+    if (
+      error instanceof Error &&
+      error.message === 'notification_preference_not_found'
+    )
+      return sendApiError(reply, 404, 'not_found', request.id);
+    if (
+      error instanceof Error &&
+      [
+        'stale_notification_preference',
+        'invalid_notification_preference',
+      ].includes(error.message)
+    )
+      return sendApiError(reply, 409, 'stale_write', request.id);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -991,6 +1058,7 @@ export function buildApp(
 
 export interface ExperienceRuntime {
   notifications?: NotificationService;
+  notificationPreferences?: NotificationPreferenceService;
 }
 
 function sendApiError(

@@ -23,6 +23,16 @@ export interface NotificationPreferenceStore {
     value: NotificationPreference,
     expectedVersion?: number,
   ): Promise<NotificationPreference | undefined>;
+  transaction<T>(
+    work: (store: NotificationPreferenceStore) => Promise<T>,
+  ): Promise<T>;
+}
+export interface NotificationPreferenceAuthorization {
+  mayConfigure(
+    accountId: string,
+    scopeType: NotificationPreferenceScope,
+    scopeId: string,
+  ): Promise<boolean>;
 }
 export interface NotificationRecord {
   id: string;
@@ -209,7 +219,10 @@ export class NotificationService {
 }
 
 export class NotificationPreferenceService {
-  constructor(private readonly store: NotificationPreferenceStore) {}
+  constructor(
+    private readonly store: NotificationPreferenceStore,
+    private readonly authorization: NotificationPreferenceAuthorization,
+  ) {}
   async update(
     accountId: string,
     input: Omit<
@@ -218,32 +231,42 @@ export class NotificationPreferenceService {
     > & { expectedVersion?: number },
     now: Date,
   ): Promise<NotificationPreference> {
-    const current = await this.store.find(
-      accountId,
-      input.scopeType,
-      input.scopeId,
-    );
-    if (current && input.expectedVersion === undefined)
-      throw new Error('stale_notification_preference');
     if (
       input.mutedUntil &&
       new Date(input.mutedUntil).getTime() > now.getTime() + 365 * 86_400_000
     )
       throw new Error('invalid_notification_preference');
-    const saved = await this.store.save(
-      {
+    return this.store.transaction(async (store) => {
+      if (
+        !(await this.authorization.mayConfigure(
+          accountId,
+          input.scopeType,
+          input.scopeId,
+        ))
+      )
+        throw new Error('notification_preference_not_found');
+      const current = await store.find(
         accountId,
-        scopeType: input.scopeType,
-        scopeId: input.scopeId,
-        mode: input.mode,
-        mutedUntil: input.mutedUntil,
-        version: current ? current.version + 1 : 1,
-        updatedAt: now.toISOString(),
-      },
-      input.expectedVersion,
-    );
-    if (!saved) throw new Error('stale_notification_preference');
-    return saved;
+        input.scopeType,
+        input.scopeId,
+      );
+      if (current && input.expectedVersion === undefined)
+        throw new Error('stale_notification_preference');
+      const saved = await store.save(
+        {
+          accountId,
+          scopeType: input.scopeType,
+          scopeId: input.scopeId,
+          mode: input.mode,
+          mutedUntil: input.mutedUntil,
+          version: current ? current.version + 1 : 1,
+          updatedAt: now.toISOString(),
+        },
+        input.expectedVersion,
+      );
+      if (!saved) throw new Error('stale_notification_preference');
+      return saved;
+    });
   }
   async effective(
     accountId: string,
@@ -259,17 +282,23 @@ export class NotificationPreferenceService {
     mode: NotificationPreference['mode'];
     muted: boolean;
   }> {
+    const allowed = async (
+      type: NotificationPreferenceScope,
+      scopeId: string | undefined,
+    ) =>
+      scopeId &&
+      (await this.authorization.mayConfigure(accountId, type, scopeId))
+        ? this.store.find(accountId, type, scopeId)
+        : undefined;
     const candidates = [
-      scopes.spaceId
-        ? await this.store.find(accountId, 'space', scopes.spaceId)
-        : undefined,
+      scopes.spaceId ? await allowed('space', scopes.spaceId) : undefined,
       scopes.categoryId
-        ? await this.store.find(accountId, 'category', scopes.categoryId)
+        ? await allowed('category', scopes.categoryId)
         : undefined,
       scopes.communityId
-        ? await this.store.find(accountId, 'community', scopes.communityId)
+        ? await allowed('community', scopes.communityId)
         : undefined,
-      await this.store.find(accountId, 'account', accountId),
+      await allowed('account', accountId),
     ];
     const selected = candidates.find((value): value is NotificationPreference =>
       Boolean(value),

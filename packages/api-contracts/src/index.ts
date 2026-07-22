@@ -433,6 +433,50 @@ export const updateNotificationSchema = z
     expectedVersion: z.number().int().positive(),
   })
   .strict();
+export const notificationPreferenceScopeSchema = z.enum([
+  'account',
+  'community',
+  'category',
+  'space',
+]);
+export const notificationPreferenceModeSchema = z.enum([
+  'all',
+  'mentions',
+  'none',
+]);
+export const notificationPreferenceSchema = z.object({
+  accountId: id,
+  scopeType: notificationPreferenceScopeSchema,
+  scopeId: id,
+  mode: notificationPreferenceModeSchema,
+  mutedUntil: z.string().datetime().nullable(),
+  version: z.number().int().positive(),
+  updatedAt: z.string().datetime(),
+});
+export const updateNotificationPreferenceSchema = z
+  .object({
+    actorId: id,
+    scopeType: notificationPreferenceScopeSchema,
+    scopeId: id,
+    mode: notificationPreferenceModeSchema,
+    mutedUntil: z.string().datetime().nullable(),
+    expectedVersion: z.number().int().positive().optional(),
+  })
+  .strict();
+export const effectiveNotificationPreferenceQuerySchema = z
+  .object({
+    actorId: id,
+    kind: notificationKindSchema,
+    communityId: id.optional(),
+    categoryId: id.optional(),
+    spaceId: id.optional(),
+  })
+  .strict();
+export const effectiveNotificationPreferenceSchema = z.object({
+  deliver: z.boolean(),
+  mode: notificationPreferenceModeSchema,
+  muted: z.boolean(),
+});
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,

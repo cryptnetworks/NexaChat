@@ -30,6 +30,9 @@ import type {
   NotificationRecord,
   NotificationStore,
   NotificationAuthorization,
+  NotificationPreference,
+  NotificationPreferenceAuthorization,
+  NotificationPreferenceStore,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -417,6 +420,137 @@ export class PostgresNotificationAuthorization implements NotificationAuthorizat
       return result.rows.length > 0;
     }
     return false;
+  }
+}
+
+interface NotificationPreferenceRow {
+  account_id: string;
+  scope_type: NotificationPreference['scopeType'];
+  scope_id: string;
+  mode: NotificationPreference['mode'];
+  muted_until: Date | string | null;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapNotificationPreference(
+  row: NotificationPreferenceRow,
+): NotificationPreference {
+  return {
+    accountId: row.account_id,
+    scopeType: row.scope_type,
+    scopeId: row.scope_id,
+    mode: row.mode,
+    mutedUntil: nullableTimestamp(row.muted_until),
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresNotificationPreferenceStore implements NotificationPreferenceStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async find(
+    accountId: string,
+    scopeType: NotificationPreference['scopeType'],
+    scopeId: string,
+  ) {
+    const result = await this.db.query<NotificationPreferenceRow>(
+      `SELECT account_id, scope_type, scope_id, mode, muted_until, updated_at,
+       version FROM notification_preferences WHERE account_id=$1
+       AND scope_type=$2 AND scope_id=$3`,
+      [accountId, scopeType, scopeId],
+    );
+    return result.rows[0]
+      ? mapNotificationPreference(result.rows[0])
+      : undefined;
+  }
+
+  async save(value: NotificationPreference, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<NotificationPreferenceRow>(
+            `INSERT INTO notification_preferences
+             (account_id,scope_type,scope_id,mode,muted_until,updated_at,version)
+             VALUES ($1,$2,$3,$4,$5,$6,1)
+             ON CONFLICT DO NOTHING RETURNING account_id, scope_type, scope_id,
+             mode, muted_until, updated_at, version`,
+            [
+              value.accountId,
+              value.scopeType,
+              value.scopeId,
+              value.mode,
+              value.mutedUntil,
+              value.updatedAt,
+            ],
+          )
+        : await this.db.query<NotificationPreferenceRow>(
+            `UPDATE notification_preferences SET mode=$5, muted_until=$6,
+             updated_at=$7, version=version+1 WHERE account_id=$1
+             AND scope_type=$2 AND scope_id=$3 AND version=$4
+             RETURNING account_id, scope_type, scope_id, mode, muted_until,
+             updated_at, version`,
+            [
+              value.accountId,
+              value.scopeType,
+              value.scopeId,
+              expectedVersion,
+              value.mode,
+              value.mutedUntil,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0]
+      ? mapNotificationPreference(result.rows[0])
+      : undefined;
+  }
+
+  async transaction<T>(
+    work: (store: NotificationPreferenceStore) => Promise<T>,
+  ): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const result = await work(
+        new PostgresNotificationPreferenceStore(this.pool, client),
+      );
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export class PostgresNotificationPreferenceAuthorization implements NotificationPreferenceAuthorization {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async mayConfigure(
+    accountId: string,
+    scopeType: NotificationPreference['scopeType'],
+    scopeId: string,
+  ): Promise<boolean> {
+    if (scopeType === 'account') return accountId === scopeId;
+    const relation =
+      scopeType === 'community'
+        ? `SELECT id AS community_id FROM communities WHERE id=$2 AND archived_at IS NULL`
+        : scopeType === 'category'
+          ? `SELECT community_id FROM categories WHERE id=$2 AND archived_at IS NULL`
+          : `SELECT community_id FROM spaces WHERE id=$2 AND archived_at IS NULL`;
+    const result = await this.db.query(
+      `SELECT 1 FROM (${relation}) scope
+       JOIN memberships m ON m.community_id=scope.community_id
+       WHERE m.account_id=$1 AND m.status='active' LIMIT 1`,
+      [accountId, scopeId],
+    );
+    return result.rows.length === 1;
   }
 }
 

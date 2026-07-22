@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   NotificationService,
+  NotificationPreferenceService,
+  type NotificationPreference,
+  type NotificationPreferenceStore,
   type NotificationRecord,
   type NotificationStore,
 } from '@nexa/domain';
@@ -88,6 +91,64 @@ describe('notification HTTP integration', () => {
     });
     expect(hidden.statusCode).toBe(404);
     expect(JSON.stringify(hidden.json())).not.toContain(resourceId);
+    await app.close();
+  });
+
+  it('applies scoped preference writes with stale-write protection', async () => {
+    const values = new Map<string, NotificationPreference>();
+    const store: NotificationPreferenceStore = {
+      find: (accountId, scopeType, scopeId) =>
+        Promise.resolve(values.get(`${accountId}:${scopeType}:${scopeId}`)),
+      save: (value, expectedVersion) => {
+        const key = `${value.accountId}:${value.scopeType}:${value.scopeId}`;
+        const current = values.get(key);
+        if (current?.version !== expectedVersion)
+          return Promise.resolve(undefined);
+        values.set(key, value);
+        return Promise.resolve(value);
+      },
+      transaction: (work) => work(store),
+    };
+    const accountId = randomUUID();
+    const preferences = new NotificationPreferenceService(store, {
+      mayConfigure: (actorId, type, id) =>
+        Promise.resolve(type === 'account' && actorId === id),
+    });
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        notificationPreferences: preferences,
+      },
+    );
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v1/notification-preferences',
+      payload: {
+        actorId: accountId,
+        scopeType: 'account',
+        scopeId: accountId,
+        mode: 'all',
+        mutedUntil: null,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ mode: 'all', version: 1 });
+    const hidden = await app.inject({
+      method: 'PUT',
+      url: '/v1/notification-preferences',
+      payload: {
+        actorId: accountId,
+        scopeType: 'community',
+        scopeId: randomUUID(),
+        mode: 'none',
+        mutedUntil: null,
+      },
+    });
+    expect(hidden.statusCode).toBe(404);
     await app.close();
   });
 });
