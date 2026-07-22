@@ -17,6 +17,7 @@ export const permissionCatalog = [
   'moderation.ban',
   'moderation.timeout',
   'moderation.message.delete',
+  'moderation.case',
   'moderation.audit',
 ] as const;
 export type Permission = (typeof permissionCatalog)[number];

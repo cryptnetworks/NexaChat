@@ -147,6 +147,7 @@ export const permissionSchema = z.enum([
   'moderation.ban',
   'moderation.timeout',
   'moderation.message.delete',
+  'moderation.case',
   'moderation.audit',
 ]);
 export const permissionScopeSchema = z.object({
@@ -320,6 +321,35 @@ export const safetyReportReceiptSchema = z.object({
   correlationId: id,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
+export const openModerationCaseSchema = z
+  .object({
+    actorId: id,
+    reportId: id,
+    idempotencyKey: z.string().min(8).max(128),
+  })
+  .strict();
+export const updateModerationCaseSchema = z
+  .object({
+    actorId: id,
+    assigneeId: id.nullable().optional(),
+    status: z.enum(['open', 'investigating', 'resolved', 'closed']).optional(),
+    note: z.string().trim().min(1).max(2000).optional(),
+    linkedActionId: id.optional(),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+export const moderationCaseSchema = z.object({
+  id,
+  communityId: id,
+  reportId: id,
+  assigneeId: id.nullable(),
+  status: z.enum(['open', 'investigating', 'resolved', 'closed']),
+  correlationId: id,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  closedAt: z.string().datetime().nullable(),
   version: z.number().int().positive(),
 });
 export const moderationRestrictionSchema = z.object({

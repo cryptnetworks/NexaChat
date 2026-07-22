@@ -39,6 +39,9 @@ import {
   moderatorDeleteMessageSchema,
   createSafetyReportSchema,
   safetyReportReceiptSchema,
+  openModerationCaseSchema,
+  updateModerationCaseSchema,
+  moderationCaseSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -628,6 +631,77 @@ export function buildApp(
           await service.getOwnSafetyReport(reporterId, request.params.reportId),
         ),
       );
+    },
+  );
+
+  app.post('/v1/moderation/cases', async (request, reply) => {
+    const input = openModerationCaseSchema.parse(request.body);
+    const actorId = await verifiedActor(request, auth, input.actorId, true);
+    return reply
+      .code(201)
+      .send(
+        moderationCaseSchema.parse(
+          await service.openModerationCase(
+            actorId,
+            input.reportId,
+            input.idempotencyKey,
+            request.id,
+          ),
+        ),
+      );
+  });
+
+  app.patch<{ Params: { caseId: string } }>(
+    '/v1/moderation/cases/:caseId',
+    async (request, reply) => {
+      const input = updateModerationCaseSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        moderationCaseSchema.parse(
+          await service.updateModerationCase(actorId, request.params.caseId, {
+            ...(input.assigneeId !== undefined
+              ? { assigneeId: input.assigneeId }
+              : {}),
+            ...(input.status ? { status: input.status } : {}),
+            ...(input.note ? { note: input.note } : {}),
+            ...(input.linkedActionId
+              ? { linkedActionId: input.linkedActionId }
+              : {}),
+            expectedVersion: input.expectedVersion,
+          }),
+        ),
+      );
+    },
+  );
+
+  app.get<{ Params: { caseId: string } }>(
+    '/v1/moderation/cases/:caseId',
+    async (request, reply) => {
+      const input = actorSchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      return reply.send(
+        await service.getModerationCase(actorId, request.params.caseId),
+      );
+    },
+  );
+
+  app.get<{ Params: { communityId: string } }>(
+    '/v1/communities/:communityId/moderation/cases',
+    async (request, reply) => {
+      const input = pageQuerySchema.parse(request.query);
+      const actorId = await verifiedActor(request, auth, input.actorId);
+      const result = await service.listModerationCases(
+        actorId,
+        request.params.communityId,
+        {
+          limit: input.limit,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+        },
+      );
+      return reply.send({
+        items: result.items.map((item) => moderationCaseSchema.parse(item)),
+        nextCursor: result.nextCursor,
+      });
     },
   );
 

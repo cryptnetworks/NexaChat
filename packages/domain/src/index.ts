@@ -163,6 +163,28 @@ export interface SafetyReport {
   updatedAt: string;
   version: number;
 }
+export interface ModerationCase {
+  id: string;
+  communityId: string;
+  reportId: string;
+  assigneeId: string | null;
+  status: 'open' | 'investigating' | 'resolved' | 'closed';
+  idempotencyKey: string;
+  correlationId: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  version: number;
+}
+export interface ModerationCaseActivity {
+  id: string;
+  caseId: string;
+  actorId: string;
+  kind: 'opened' | 'assigned' | 'status_changed' | 'note' | 'action_linked';
+  note: string | null;
+  linkedActionId: string | null;
+  occurredAt: string;
+}
 export interface SessionRecord {
   id: string;
   accountId: string;
@@ -348,6 +370,27 @@ export interface Persistence {
       key: string,
     ): Promise<SafetyReport | undefined>;
   };
+  moderationCases: {
+    create(value: ModerationCase): Promise<ModerationCase>;
+    findById(id: string): Promise<ModerationCase | undefined>;
+    findByIdempotencyKey(
+      communityId: string,
+      key: string,
+    ): Promise<ModerationCase | undefined>;
+    list(communityId: string, page: ListPage): Promise<Page<ModerationCase>>;
+    update(
+      id: string,
+      input: Pick<
+        ModerationCase,
+        'assigneeId' | 'status' | 'closedAt' | 'updatedAt'
+      >,
+      expectedVersion: number,
+    ): Promise<ModerationCase | undefined>;
+  };
+  moderationCaseActivity: {
+    create(value: ModerationCaseActivity): Promise<ModerationCaseActivity>;
+    list(caseId: string): Promise<ModerationCaseActivity[]>;
+  };
   sessions: {
     create(session: SessionRecord): Promise<SessionRecord>;
     findByTokenHash(tokenHash: string): Promise<SessionRecord | undefined>;
@@ -390,6 +433,7 @@ export interface AuthorizationGateway {
       | 'moderation.timeout'
       | 'moderation.ban'
       | 'moderation.message.delete'
+      | 'moderation.case'
       | 'moderation.audit',
     scopes: readonly { type: 'community' | 'category' | 'space'; id: string }[],
   ): Promise<unknown>;
@@ -459,6 +503,12 @@ function moderationReason(value: string): string {
 function reportDescription(value: string): string {
   const normalized = value.trim().replace(/\s+/g, ' ').normalize('NFC');
   if (!normalized || normalized.length > 1000)
+    throw new DomainError('conflict');
+  return normalized;
+}
+function caseNote(value: string): string {
+  const normalized = value.trim().replace(/\r\n?/g, '\n').normalize('NFC');
+  if (!normalized || normalized.length > 2000)
     throw new DomainError('conflict');
   return normalized;
 }
@@ -1024,6 +1074,180 @@ export class CommunityService {
       { type: 'community', id: report.communityId },
     ]);
     return report;
+  }
+
+  async openModerationCase(
+    actorId: string,
+    reportId: string,
+    keyValue: string,
+    correlationId: string,
+  ): Promise<ModerationCase> {
+    const key = idempotencyKey(keyValue);
+    const report = await this.persistence.safetyReports.findById(reportId);
+    if (!report) throw new DomainError('not_found');
+    await this.enforce(actorId, 'moderation.case', [
+      { type: 'community', id: report.communityId },
+    ]);
+    return this.persistence.transaction(async (persistence) => {
+      const existing = await persistence.moderationCases.findByIdempotencyKey(
+        report.communityId,
+        key,
+      );
+      if (existing) {
+        if (existing.reportId !== reportId) throw new DomainError('conflict');
+        return existing;
+      }
+      await this.enforce(actorId, 'moderation.case', [
+        { type: 'community', id: report.communityId },
+      ]);
+      const currentReport = await persistence.safetyReports.findById(reportId);
+      if (!currentReport || currentReport.communityId !== report.communityId)
+        throw new DomainError('not_found');
+      const now = new Date().toISOString();
+      const moderationCase = await persistence.moderationCases.create({
+        id: randomUUID(),
+        communityId: report.communityId,
+        reportId,
+        assigneeId: null,
+        status: 'open',
+        idempotencyKey: key,
+        correlationId,
+        createdAt: now,
+        updatedAt: now,
+        closedAt: null,
+        version: 1,
+      });
+      await persistence.moderationCaseActivity.create({
+        id: randomUUID(),
+        caseId: moderationCase.id,
+        actorId,
+        kind: 'opened',
+        note: null,
+        linkedActionId: null,
+        occurredAt: now,
+      });
+      return moderationCase;
+    });
+  }
+
+  async updateModerationCase(
+    actorId: string,
+    caseId: string,
+    input: {
+      assigneeId?: string | null;
+      status?: ModerationCase['status'];
+      note?: string;
+      linkedActionId?: string;
+      expectedVersion: number;
+    },
+  ): Promise<ModerationCase> {
+    return this.persistence.transaction(async (persistence) => {
+      const current = await persistence.moderationCases.findById(caseId);
+      if (!current) throw new DomainError('not_found');
+      await this.enforce(actorId, 'moderation.case', [
+        { type: 'community', id: current.communityId },
+      ]);
+      if (current.status === 'closed') throw new DomainError('conflict');
+      const assigneeId =
+        input.assigneeId === undefined ? current.assigneeId : input.assigneeId;
+      if (assigneeId) {
+        const member = await persistence.memberships.findByCommunityAndAccount(
+          current.communityId,
+          assigneeId,
+        );
+        if (!member || member.status !== 'active')
+          throw new DomainError('not_found');
+      }
+      const status = input.status ?? current.status;
+      const now = new Date().toISOString();
+      const updated = await persistence.moderationCases.update(
+        caseId,
+        {
+          assigneeId,
+          status,
+          updatedAt: now,
+          closedAt: status === 'closed' ? now : current.closedAt,
+        },
+        input.expectedVersion,
+      );
+      if (!updated) throw new DomainError('stale_write');
+      const activities: ModerationCaseActivity[] = [];
+      if (assigneeId !== current.assigneeId)
+        activities.push({
+          id: randomUUID(),
+          caseId,
+          actorId,
+          kind: 'assigned',
+          note: null,
+          linkedActionId: null,
+          occurredAt: now,
+        });
+      if (status !== current.status)
+        activities.push({
+          id: randomUUID(),
+          caseId,
+          actorId,
+          kind: 'status_changed',
+          note: null,
+          linkedActionId: null,
+          occurredAt: now,
+        });
+      if (input.note)
+        activities.push({
+          id: randomUUID(),
+          caseId,
+          actorId,
+          kind: 'note',
+          note: caseNote(input.note),
+          linkedActionId: null,
+          occurredAt: now,
+        });
+      if (input.linkedActionId)
+        activities.push({
+          id: randomUUID(),
+          caseId,
+          actorId,
+          kind: 'action_linked',
+          note: null,
+          linkedActionId: input.linkedActionId,
+          occurredAt: now,
+        });
+      for (const [index, activity] of activities.entries())
+        await persistence.moderationCaseActivity.create({
+          ...activity,
+          occurredAt: new Date(new Date(now).getTime() + index).toISOString(),
+        });
+      return updated;
+    });
+  }
+
+  async getModerationCase(actorId: string, caseId: string) {
+    const moderationCase =
+      await this.persistence.moderationCases.findById(caseId);
+    if (!moderationCase) throw new DomainError('not_found');
+    await this.enforce(actorId, 'moderation.case', [
+      { type: 'community', id: moderationCase.communityId },
+    ]);
+    const report = await this.persistence.safetyReports.findById(
+      moderationCase.reportId,
+    );
+    if (!report) throw new DomainError('not_found');
+    return {
+      case: moderationCase,
+      report,
+      activity: await this.persistence.moderationCaseActivity.list(caseId),
+    };
+  }
+
+  async listModerationCases(
+    actorId: string,
+    communityId: string,
+    input: ListPage,
+  ): Promise<Page<ModerationCase>> {
+    await this.enforce(actorId, 'moderation.case', [
+      { type: 'community', id: communityId },
+    ]);
+    return this.persistence.moderationCases.list(communityId, page(input));
   }
 
   async listCommunities(
@@ -1897,6 +2121,13 @@ export class CommunityService {
       (community.ownerId !== actorId && membership?.status !== 'active')
     )
       throw new DomainError('forbidden');
+    if (
+      community.ownerId !== actorId &&
+      (permission.endsWith('.manage') ||
+        permission.startsWith('moderation.') ||
+        permission === 'community.manage')
+    )
+      throw new DomainError('forbidden');
   }
   private saved<T>(value: T | undefined): T {
     if (!value) throw new DomainError('stale_write');
@@ -1921,6 +2152,8 @@ type MemoryState = {
   moderationMessageEvidence: Map<string, ModerationMessageEvidence>;
   moderationMessageDeletions: Map<string, ModerationMessageDeletion>;
   safetyReports: Map<string, SafetyReport>;
+  moderationCases: Map<string, ModerationCase>;
+  moderationCaseActivity: Map<string, ModerationCaseActivity>;
 };
 const clone = (state: MemoryState): MemoryState => ({
   accounts: new Map(state.accounts),
@@ -1939,6 +2172,8 @@ const clone = (state: MemoryState): MemoryState => ({
   moderationMessageEvidence: new Map(state.moderationMessageEvidence),
   moderationMessageDeletions: new Map(state.moderationMessageDeletions),
   safetyReports: new Map(state.safetyReports),
+  moderationCases: new Map(state.moderationCases),
+  moderationCaseActivity: new Map(state.moderationCaseActivity),
 });
 const cursor = (id: string): string => Buffer.from(id).toString('base64url');
 const after = (value?: string): string =>
@@ -1971,6 +2206,8 @@ export class InMemoryPersistence implements Persistence {
     moderationMessageEvidence: new Map(),
     moderationMessageDeletions: new Map(),
     safetyReports: new Map(),
+    moderationCases: new Map(),
+    moderationCaseActivity: new Map(),
   };
   /* eslint-disable @typescript-eslint/require-await -- async parity with storage ports */
   readonly accounts = {
@@ -2449,6 +2686,65 @@ export class InMemoryPersistence implements Persistence {
           value.communityId === communityId &&
           value.idempotencyKey === key,
       ),
+  };
+  readonly moderationCases = {
+    create: async (value: ModerationCase) => {
+      const duplicateReport = [...this.state.moderationCases.values()].find(
+        (candidate) => candidate.reportId === value.reportId,
+      );
+      if (duplicateReport) return duplicateReport;
+      this.state.moderationCases.set(value.id, value);
+      return value;
+    },
+    findById: async (id: string) => this.state.moderationCases.get(id),
+    findByIdempotencyKey: async (communityId: string, key: string) =>
+      [...this.state.moderationCases.values()].find(
+        (value) =>
+          value.communityId === communityId && value.idempotencyKey === key,
+      ),
+    list: async (communityId: string, input: ListPage) => {
+      const values = [...this.state.moderationCases.values()]
+        .filter((value) => value.communityId === communityId)
+        .sort(
+          (left, right) =>
+            right.updatedAt.localeCompare(left.updatedAt) ||
+            right.id.localeCompare(left.id),
+        )
+        .filter((value) => !input.cursor || value.id < after(input.cursor));
+      const items = values.slice(0, input.limit);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          values.length > input.limit && last ? cursor(last.id) : null,
+      };
+    },
+    update: async (
+      id: string,
+      input: Pick<
+        ModerationCase,
+        'assigneeId' | 'status' | 'closedAt' | 'updatedAt'
+      >,
+      version: number,
+    ) =>
+      this.updateMap(this.state.moderationCases, id, version, (value) => ({
+        ...value,
+        ...input,
+      })),
+  };
+  readonly moderationCaseActivity = {
+    create: async (value: ModerationCaseActivity) => {
+      this.state.moderationCaseActivity.set(value.id, value);
+      return value;
+    },
+    list: async (caseId: string) =>
+      [...this.state.moderationCaseActivity.values()]
+        .filter((value) => value.caseId === caseId)
+        .sort(
+          (left, right) =>
+            left.occurredAt.localeCompare(right.occurredAt) ||
+            left.id.localeCompare(right.id),
+        ),
   };
   /* eslint-enable @typescript-eslint/require-await */
   private transactionQueue: Promise<void> = Promise.resolve();

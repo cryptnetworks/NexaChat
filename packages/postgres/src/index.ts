@@ -15,6 +15,8 @@ import type {
   ModerationMessageEvidence,
   ModerationMessageDeletion,
   SafetyReport,
+  ModerationCase,
+  ModerationCaseActivity,
   Category,
   Community,
   Invitation,
@@ -95,6 +97,8 @@ export class PostgresPersistence implements Persistence {
   readonly moderationMessageEvidence;
   readonly moderationMessageDeletions;
   readonly safetyReports;
+  readonly moderationCases;
+  readonly moderationCaseActivity;
 
   constructor(
     private readonly pool: Pool,
@@ -118,6 +122,8 @@ export class PostgresPersistence implements Persistence {
     this.moderationMessageDeletions =
       moderationMessageDeletionRepository(queryable);
     this.safetyReports = safetyReportRepository(queryable);
+    this.moderationCases = moderationCaseRepository(queryable);
+    this.moderationCaseActivity = moderationCaseActivityRepository(queryable);
   }
 
   async transaction<T>(
@@ -684,6 +690,28 @@ type SafetyReportRow = {
   created_at: Date;
   updated_at: Date;
   version: number;
+};
+type ModerationCaseRow = {
+  id: string;
+  community_id: string;
+  report_id: string;
+  assignee_id: string | null;
+  status: ModerationCase['status'];
+  idempotency_key: string;
+  correlation_id: string;
+  created_at: Date;
+  updated_at: Date;
+  closed_at: Date | null;
+  version: number;
+};
+type ModerationCaseActivityRow = {
+  id: string;
+  case_id: string;
+  actor_id: string;
+  kind: ModerationCaseActivity['kind'];
+  note: string | null;
+  linked_action_id: string | null;
+  occurred_at: Date;
 };
 
 function accountRepository(db: Queryable): Persistence['accounts'] {
@@ -1484,6 +1512,130 @@ function safetyReportRepository(db: Queryable): Persistence['safetyReports'] {
   };
 }
 
+function moderationCaseRepository(
+  db: Queryable,
+): Persistence['moderationCases'] {
+  const fields =
+    'id,community_id,report_id,assignee_id,status,idempotency_key,correlation_id,created_at,updated_at,closed_at,version';
+  return {
+    async create(value) {
+      const result = await db.query<ModerationCaseRow>(
+        `INSERT INTO moderation_cases
+          (id,community_id,report_id,assignee_id,status,idempotency_key,
+           correlation_id,created_at,updated_at,closed_at,version)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (report_id) DO UPDATE SET report_id=EXCLUDED.report_id
+         RETURNING ${fields}`,
+        [
+          value.id,
+          value.communityId,
+          value.reportId,
+          value.assigneeId,
+          value.status,
+          value.idempotencyKey,
+          value.correlationId,
+          value.createdAt,
+          value.updatedAt,
+          value.closedAt,
+          value.version,
+        ],
+      );
+      return mapModerationCase(requiredRow(result.rows));
+    },
+    async findById(id) {
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases WHERE id=$1`,
+        [id],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+    async findByIdempotencyKey(communityId, key) {
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases
+         WHERE community_id=$1 AND idempotency_key=$2`,
+        [communityId, key],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+    async list(communityId, page) {
+      const decoded = page.cursor
+        ? Buffer.from(page.cursor, 'base64url').toString()
+        : '';
+      const separator = decoded.lastIndexOf(':');
+      const beforeTime =
+        separator < 0 ? 'infinity' : decoded.slice(0, separator);
+      const beforeId =
+        separator < 0
+          ? 'ffffffff-ffff-4fff-bfff-ffffffffffff'
+          : decoded.slice(separator + 1);
+      const result = await db.query<ModerationCaseRow>(
+        `SELECT ${fields} FROM moderation_cases
+         WHERE community_id=$1 AND (updated_at,id)<($2::timestamptz,$3::uuid)
+         ORDER BY updated_at DESC,id DESC LIMIT $4`,
+        [communityId, beforeTime, beforeId, page.limit + 1],
+      );
+      const items = result.rows.slice(0, page.limit).map(mapModerationCase);
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          result.rows.length > page.limit && last
+            ? Buffer.from(`${last.updatedAt}:${last.id}`).toString('base64url')
+            : null,
+      };
+    },
+    async update(id, input, expectedVersion) {
+      const result = await db.query<ModerationCaseRow>(
+        `UPDATE moderation_cases SET assignee_id=$2,status=$3,updated_at=$4,
+           closed_at=$5,version=version+1
+         WHERE id=$1 AND version=$6 RETURNING ${fields}`,
+        [
+          id,
+          input.assigneeId,
+          input.status,
+          input.updatedAt,
+          input.closedAt,
+          expectedVersion,
+        ],
+      );
+      return result.rows[0] ? mapModerationCase(result.rows[0]) : undefined;
+    },
+  };
+}
+
+function moderationCaseActivityRepository(
+  db: Queryable,
+): Persistence['moderationCaseActivity'] {
+  return {
+    async create(value) {
+      const result = await db.query<ModerationCaseActivityRow>(
+        `INSERT INTO moderation_case_activity
+          (id,case_id,actor_id,kind,note,linked_action_id,occurred_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING id,case_id,actor_id,kind,note,linked_action_id,occurred_at`,
+        [
+          value.id,
+          value.caseId,
+          value.actorId,
+          value.kind,
+          value.note,
+          value.linkedActionId,
+          value.occurredAt,
+        ],
+      );
+      return mapModerationCaseActivity(requiredRow(result.rows));
+    },
+    async list(caseId) {
+      const result = await db.query<ModerationCaseActivityRow>(
+        `SELECT id,case_id,actor_id,kind,note,linked_action_id,occurred_at
+         FROM moderation_case_activity WHERE case_id=$1 ORDER BY occurred_at,id`,
+        [caseId],
+      );
+      return result.rows.map(mapModerationCaseActivity);
+    },
+  };
+}
+
 function requiredRow<R>(rows: R[]): R {
   const row = rows[0];
   if (!row) throw new Error('PostgreSQL write returned no row');
@@ -1681,6 +1833,30 @@ const mapSafetyReport = (row: SafetyReportRow): SafetyReport => ({
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
   version: row.version,
+});
+const mapModerationCase = (row: ModerationCaseRow): ModerationCase => ({
+  id: row.id,
+  communityId: row.community_id,
+  reportId: row.report_id,
+  assigneeId: row.assignee_id,
+  status: row.status,
+  idempotencyKey: row.idempotency_key,
+  correlationId: row.correlation_id,
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString(),
+  closedAt: row.closed_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapModerationCaseActivity = (
+  row: ModerationCaseActivityRow,
+): ModerationCaseActivity => ({
+  id: row.id,
+  caseId: row.case_id,
+  actorId: row.actor_id,
+  kind: row.kind,
+  note: row.note,
+  linkedActionId: row.linked_action_id,
+  occurredAt: row.occurred_at.toISOString(),
 });
 
 interface Migration {
