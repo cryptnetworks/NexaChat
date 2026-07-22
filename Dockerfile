@@ -106,7 +106,7 @@ USER node
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["node", "/app/backup/command.mjs"]
 
-FROM --platform=$BUILDPLATFORM golang:1.25.8-alpine3.23@sha256:8e02eb337d9e0ea459e041f1ee5eece41cbb61f1d83e7d883a3e2fb4862063fa AS object-storage-build
+FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine3.23@sha256:cc985ef6f9c3bf9ece7488129c9abe0a150388ccdfa428d886fc709dca0b230a AS object-storage-build
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
