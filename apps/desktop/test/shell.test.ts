@@ -19,6 +19,7 @@ describe('desktop shell contract', () => {
     expect(config.app.windows).toEqual([
       expect.objectContaining({
         label: 'main',
+        create: false,
         minWidth: 360,
         minHeight: 520,
         resizable: true,

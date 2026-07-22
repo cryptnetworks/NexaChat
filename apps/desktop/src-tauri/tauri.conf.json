@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Nexa Chat",
         "width": 1180,
         "height": 760,
@@ -20,32 +21,42 @@
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
+        "devtools": false,
+        "dragDropEnabled": false,
         "visible": true
       }
     ],
     "security": {
       "capabilities": ["main"],
       "csp": {
-        "default-src": "'self' customprotocol: asset:",
+        "default-src": "'self'",
         "base-uri": "'none'",
-        "connect-src": "'self' ipc: http://ipc.localhost https: wss:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
         "font-src": "'self' data:",
+        "form-action": "'self'",
+        "frame-ancestors": "'none'",
         "frame-src": "'none'",
         "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "media-src": "'self' blob:",
         "object-src": "'none'",
         "script-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self'",
+        "worker-src": "'self' blob:"
       },
       "devCsp": {
-        "default-src": "'self' customprotocol: asset:",
+        "default-src": "'self'",
         "base-uri": "'none'",
-        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 https: wss:",
+        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173",
         "font-src": "'self' data:",
+        "form-action": "'self'",
+        "frame-ancestors": "'none'",
         "frame-src": "'none'",
         "img-src": "'self' asset: http://asset.localhost data: blob:",
+        "media-src": "'self' blob:",
         "object-src": "'none'",
         "script-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self'",
+        "worker-src": "'self' blob:"
       }
     }
   },

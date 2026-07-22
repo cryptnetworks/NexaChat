@@ -6,6 +6,8 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/coverage/**',
+      '**/target/**',
+      '.cache/**',
       'eslint.config.js',
       'tools/architecture/fixtures/**',
     ],
