@@ -130,6 +130,14 @@ docker compose -p "$project" up -d --wait postgres redis object-storage
 postgres_port="$(published_port postgres 5432)"
 valkey_port="$(published_port redis 6379)"
 s3_port="$(published_port object-storage 8333)"
+docker compose -p "$project" down --remove-orphans >/dev/null
+export POSTGRES_PUBLISHED_PORT="$postgres_port"
+export VALKEY_PUBLISHED_PORT="$valkey_port"
+export S3_PUBLISHED_PORT="$s3_port"
+docker compose -p "$project" up -d --wait postgres redis object-storage
+expect_published_port postgres 5432 "$postgres_port"
+expect_published_port redis 6379 "$valkey_port"
+expect_published_port object-storage 8333 "$s3_port"
 export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
 export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
@@ -147,21 +155,21 @@ docker compose -p "$project" stop postgres >/dev/null
 expect_status 503 'dependency outage'
 expect_body '/health/live' '{"status":"ok"}'
 expect_body '/health/startup' '{"status":"started"}'
-docker compose -p "$project" up -d --wait postgres >/dev/null
+docker compose -p "$project" start postgres >/dev/null
 expect_published_port postgres 5432 "$postgres_port"
 expect_status 200 'dependency recovery'
 
 docker compose -p "$project" stop redis >/dev/null
 expect_status 200 'coordination degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait redis >/dev/null
+docker compose -p "$project" start redis >/dev/null
 expect_published_port redis 6379 "$valkey_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 docker compose -p "$project" stop object-storage >/dev/null
 expect_status 200 'object storage degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait object-storage >/dev/null
+docker compose -p "$project" start object-storage >/dev/null
 expect_published_port object-storage 8333 "$s3_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
