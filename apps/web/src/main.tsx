@@ -19,6 +19,7 @@ import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
 import { safeLinkSegments } from './links.js';
 import { clearDraft, draftKey, loadDraft, saveDraft } from './drafts.js';
+import { applyTheme, readThemePreference } from './theme.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -515,6 +516,11 @@ function App() {
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Application root is missing');
+applyTheme(
+  document.documentElement,
+  readThemePreference(localStorage),
+  matchMedia('(prefers-color-scheme: dark)').matches,
+);
 createRoot(root).render(
   <StrictMode>
     <App />

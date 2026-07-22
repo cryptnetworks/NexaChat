@@ -1,14 +1,39 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #e9edf3;
-  background: #0b1018;
+  --page: #f7f9fc;
+  --panel: #ffffff;
+  --surface: #e8eef6;
+  --text: #172033;
+  --muted: #526178;
+  --border: #94a3b8;
+  --accent: #08664f;
+  --accent-surface: #c6f5e4;
+  --accent-text: #073b30;
+  --focus: #8a4b00;
+  --danger: #a11212;
+  color: var(--text);
+  background: var(--page);
   font-synthesis: none;
+}
+[data-theme='dark'] {
+  --page: #0b1018;
+  --panel: #101722;
+  --surface: #1b2634;
+  --text: #e9edf3;
+  --muted: #aab4c3;
+  --border: #526178;
+  --accent: #7ce0bd;
+  --accent-surface: #182d2b;
+  --accent-text: #10251e;
+  --focus: #f1c76b;
+  --danger: #ff9b9b;
 }
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
+  background: var(--page);
 }
 button,
 input {
@@ -21,8 +46,8 @@ main {
 }
 aside {
   padding: 32px 24px;
-  background: #101722;
-  border-right: 1px solid #263141;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
 }
 .mark {
   display: grid;
@@ -31,8 +56,8 @@ aside {
   height: 44px;
   margin-bottom: 64px;
   border-radius: 14px;
-  background: #7ce0bd;
-  color: #10251e;
+  background: var(--accent);
+  color: var(--accent-text);
   font-weight: 900;
 }
 h1,
@@ -44,7 +69,7 @@ h1 {
   font-size: 24px;
 }
 .eyebrow {
-  color: #7ce0bd;
+  color: var(--accent);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   font-size: 11px;
@@ -52,7 +77,7 @@ h1 {
 }
 .muted,
 .empty {
-  color: #8f9bad;
+  color: var(--muted);
 }
 nav {
   margin-top: 36px;
@@ -61,8 +86,8 @@ nav {
   display: block;
   padding: 12px;
   border-radius: 10px;
-  background: #1b2634;
-  color: #dce5ef;
+  background: var(--surface);
+  color: var(--text);
 }
 .conversation {
   display: grid;
@@ -74,13 +99,13 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 22px 32px;
-  border-bottom: 1px solid #263141;
+  border-bottom: 1px solid var(--border);
 }
 header h2 {
   margin-bottom: 0;
 }
 .status {
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 13px;
 }
 .welcome {
@@ -97,29 +122,31 @@ header h2 {
   height: 72px;
   margin: 0 auto 24px;
   border-radius: 50%;
-  background: #182d2b;
-  color: #7ce0bd;
+  background: var(--accent-surface);
+  color: var(--accent);
   font-size: 28px;
 }
 .welcome p {
-  color: #aab4c3;
+  color: var(--muted);
   line-height: 1.6;
 }
 button {
   border: 0;
   border-radius: 10px;
-  background: #7ce0bd;
-  color: #10251e;
+  background: var(--accent);
+  color: var(--accent-text);
   padding: 12px 18px;
   font-weight: 800;
   cursor: pointer;
 }
 button:hover {
-  background: #9ce9cf;
+  filter: brightness(1.1);
 }
 button:focus-visible,
-input:focus-visible {
-  outline: 3px solid #f1c76b;
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 .messages {
@@ -137,13 +164,13 @@ input:focus-visible {
   height: 40px;
   place-items: center;
   border-radius: 12px;
-  background: #29384c;
+  background: var(--surface);
   font-size: 12px;
   font-weight: 800;
 }
 .messages time {
   margin-left: 10px;
-  color: #8491a3;
+  color: var(--muted);
   font-size: 12px;
 }
 .messages article p {
@@ -151,7 +178,7 @@ input:focus-visible {
   line-height: 1.5;
 }
 .messages a {
-  color: #8ee9ca;
+  color: var(--accent);
   overflow-wrap: anywhere;
   text-decoration-thickness: 0.12em;
   text-underline-offset: 0.16em;
@@ -165,13 +192,13 @@ input {
   width: 100%;
   min-width: 0;
   padding: 14px 16px;
-  border: 1px solid #344256;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #151e2a;
+  background: var(--panel);
   color: inherit;
 }
 .error {
-  color: #ff9b9b !important;
+  color: var(--danger) !important;
 }
 .sr-only {
   position: absolute;
@@ -198,5 +225,24 @@ input {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (forced-colors: active) {
+  button,
+  input,
+  textarea,
+  a {
+    forced-color-adjust: auto;
+  }
+  :focus-visible {
+    outline: 3px solid CanvasText;
+  }
+}
+@media (min-resolution: 2dppx) and (max-width: 85rem) {
+  main {
+    grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
   }
 }
