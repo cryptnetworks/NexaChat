@@ -5,6 +5,7 @@ import {
   NotificationPreferenceService,
   NotificationReadService,
   PresenceService,
+  MemberStatusService,
   type NotificationPreference,
   type NotificationPreferenceStore,
   type NotificationReadState,
@@ -301,6 +302,62 @@ describe('notification HTTP integration', () => {
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.headers['retry-after']).toBe('15');
+    await app.close();
+  });
+
+  it('updates versioned member status and hides it after permission loss', async () => {
+    const accountId = randomUUID();
+    let visible = true;
+    let status:
+      | {
+          accountId: string;
+          text: string | null;
+          expiresAt: string | null;
+          updatedAt: string;
+          version: number;
+        }
+      | undefined;
+    const memberStatus = new MemberStatusService(
+      {
+        find: () => Promise.resolve(status),
+        save: (value, expectedVersion) => {
+          if (status?.version !== expectedVersion)
+            return Promise.resolve(undefined);
+          status = value;
+          return Promise.resolve(value);
+        },
+      },
+      { mayView: () => Promise.resolve(visible) },
+    );
+    const app = buildApp(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        memberStatus,
+      },
+    );
+    const updated = await app.inject({
+      method: 'PUT',
+      url: '/v1/member-status',
+      payload: {
+        actorId: accountId,
+        text: '  Working   remotely ',
+        expiresAt: null,
+      },
+    });
+    expect(updated.json()).toMatchObject({
+      text: 'Working remotely',
+      version: 1,
+    });
+    visible = false;
+    const hidden = await app.inject({
+      method: 'GET',
+      url: `/v1/member-status/${accountId}?actorId=${accountId}`,
+    });
+    expect(hidden.json()).toBeNull();
     await app.close();
   });
 });

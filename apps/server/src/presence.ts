@@ -2,6 +2,7 @@ import type { EphemeralCoordination } from '@nexa/coordination';
 import type { PresenceCoordination, PresenceValue } from '@nexa/domain';
 
 export const PRESENCE_CHANNEL = 'presence:events';
+export const MEMBER_STATUS_CHANNEL = 'status:events';
 
 export class CoordinatedPresence implements PresenceCoordination {
   constructor(private readonly coordination: EphemeralCoordination) {}

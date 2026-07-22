@@ -42,6 +42,7 @@ app.websocketHub = attachWebsocketHub(app.server, database.service, {
   ...(database.experience.presence
     ? { presence: database.experience.presence }
     : {}),
+  memberStatus: database.experience.memberStatus,
 });
 database.experience.notificationReadState.setPublisher({
   publish(state) {

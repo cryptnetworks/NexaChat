@@ -540,6 +540,22 @@ export const presenceQuerySchema = z.object({ actorId: id }).strict();
 export const presenceHeartbeatSchema = z
   .object({ actorId: id, available: z.boolean() })
   .strict();
+export const memberStatusSchema = z.object({
+  accountId: id,
+  text: z.string().max(160).nullable(),
+  expiresAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime(),
+  version: z.number().int().positive(),
+});
+export const memberStatusQuerySchema = z.object({ actorId: id }).strict();
+export const updateMemberStatusSchema = z
+  .object({
+    actorId: id,
+    text: z.string().max(160).nullable(),
+    expiresAt: z.string().datetime().nullable(),
+    expectedVersion: z.number().int().positive().optional(),
+  })
+  .strict();
 export const moderationRestrictionSchema = z.object({
   id,
   communityId: id,
@@ -668,6 +684,12 @@ export const websocketServerMessageSchema = z.discriminatedUnion('type', [
     version: z.literal(1),
     type: z.literal('presence'),
     presence: presenceSchema,
+  }),
+  z.object({
+    version: z.literal(1),
+    type: z.literal('member_status'),
+    accountId: id,
+    status: memberStatusSchema.omit({ accountId: true }).nullable(),
   }),
 ]);
 

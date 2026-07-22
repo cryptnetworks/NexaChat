@@ -7,7 +7,11 @@ import {
   type WebsocketServerMessage,
 } from '@nexa/api-contracts';
 import { AuthenticationError, type AuthenticatedSession } from '@nexa/auth';
-import type { CommunityService, PresenceService } from '@nexa/domain';
+import type {
+  CommunityService,
+  MemberStatusService,
+  PresenceService,
+} from '@nexa/domain';
 import {
   realtimeDeliverySchema,
   realtimeEnvelopeSchema,
@@ -16,7 +20,11 @@ import {
 } from '@nexa/realtime-contracts';
 import { sessionTokenFromCookie, type AuthRuntime } from './auth-routes.js';
 import type { EphemeralCoordination } from '@nexa/coordination';
-import { parsePresence, PRESENCE_CHANNEL } from './presence.js';
+import {
+  MEMBER_STATUS_CHANNEL,
+  parsePresence,
+  PRESENCE_CHANNEL,
+} from './presence.js';
 
 export interface WebsocketLimits {
   maxConnections: number;
@@ -46,6 +54,7 @@ export interface WebsocketHubOptions {
   coordination?: EphemeralCoordination;
   instanceId?: string;
   presence?: PresenceService;
+  memberStatus?: MemberStatusService;
 }
 
 export interface WebsocketHub {
@@ -119,6 +128,7 @@ export function attachWebsocketHub(
   const instanceId = options.instanceId ?? randomUUID();
   let unsubscribeFanout: (() => Promise<void>) | undefined;
   let unsubscribePresence: (() => Promise<void>) | undefined;
+  let unsubscribeMemberStatus: (() => Promise<void>) | undefined;
   let draining = false;
   const wss = new WebSocketServer({
     server,
@@ -311,7 +321,7 @@ export function attachWebsocketHub(
         requestId: parsed.data.requestId,
         accountIds: [...state.presenceSubscriptions],
       });
-      for (const accountId of state.presenceSubscriptions)
+      for (const accountId of state.presenceSubscriptions) {
         safeSend(socket, state, {
           version: 1,
           type: 'presence',
@@ -324,6 +334,18 @@ export function attachWebsocketHub(
             ),
           },
         });
+        if (options.memberStatus)
+          safeSend(socket, state, {
+            version: 1,
+            type: 'member_status',
+            accountId,
+            status: await options.memberStatus.view(
+              state.actorId,
+              accountId,
+              new Date(),
+            ),
+          });
+      }
       return;
     }
     if (parsed.data.type === 'unsubscribe') {
@@ -472,6 +494,17 @@ export function attachWebsocketHub(
       .catch(() => {
         metrics.increment('presence_fanout_degraded');
       });
+  if (options.coordination && options.memberStatus)
+    void options.coordination
+      .subscribe(MEMBER_STATUS_CHANNEL, (payload) => {
+        void receiveMemberStatus(payload);
+      })
+      .then((unsubscribe) => {
+        unsubscribeMemberStatus = unsubscribe;
+      })
+      .catch(() => {
+        metrics.increment('member_status_fanout_degraded');
+      });
 
   async function receivePresence(payload: string): Promise<void> {
     try {
@@ -493,6 +526,36 @@ export function attachWebsocketHub(
       }
     } catch {
       metrics.increment('presence_fanout_invalid');
+    }
+  }
+
+  async function receiveMemberStatus(payload: string): Promise<void> {
+    try {
+      const event = JSON.parse(payload) as Record<string, unknown>;
+      if (
+        typeof event.accountId !== 'string' ||
+        !/^[0-9a-f-]{36}$/i.test(event.accountId) ||
+        typeof event.version !== 'number' ||
+        !Number.isSafeInteger(event.version) ||
+        typeof event.updatedAt !== 'string' ||
+        !Number.isFinite(Date.parse(event.updatedAt))
+      )
+        throw new Error('invalid_member_status_event');
+      for (const [socket, state] of connections) {
+        if (!state.presenceSubscriptions.has(event.accountId)) continue;
+        safeSend(socket, state, {
+          version: 1,
+          type: 'member_status',
+          accountId: event.accountId,
+          status: await options.memberStatus!.view(
+            state.actorId,
+            event.accountId,
+            new Date(),
+          ),
+        });
+      }
+    } catch {
+      metrics.increment('member_status_fanout_invalid');
     }
   }
 
@@ -604,6 +667,7 @@ export function attachWebsocketHub(
       clearInterval(authorizationCheck);
       await unsubscribeFanout?.();
       await unsubscribePresence?.();
+      await unsubscribeMemberStatus?.();
       for (const [socket, state] of connections) {
         safeSend(socket, state, {
           version: 1,

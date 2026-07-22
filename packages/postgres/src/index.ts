@@ -37,6 +37,8 @@ import type {
   NotificationReadState,
   NotificationReadStore,
   PresenceVisibility,
+  MemberStatus,
+  MemberStatusStore,
 } from '@nexa/domain';
 import type { AuthAccount, AuthSession, AuthStore } from '@nexa/auth';
 import {
@@ -686,6 +688,62 @@ export class PostgresPresenceVisibility implements PresenceVisibility {
       [viewerId, accountId],
     );
     return result.rows.length === 1;
+  }
+}
+
+interface MemberStatusRow {
+  account_id: string;
+  status_text: string | null;
+  expires_at: Date | string | null;
+  updated_at: Date | string;
+  version: number;
+}
+
+function mapMemberStatus(row: MemberStatusRow): MemberStatus {
+  return {
+    accountId: row.account_id,
+    text: row.status_text,
+    expiresAt: nullableTimestamp(row.expires_at),
+    updatedAt: timestamp(row.updated_at),
+    version: row.version,
+  };
+}
+
+export class PostgresMemberStatusStore implements MemberStatusStore {
+  constructor(private readonly db: Pool | PoolClient) {}
+
+  async find(accountId: string) {
+    const result = await this.db.query<MemberStatusRow>(
+      `SELECT account_id,status_text,expires_at,updated_at,version
+       FROM member_statuses WHERE account_id=$1`,
+      [accountId],
+    );
+    return result.rows[0] ? mapMemberStatus(result.rows[0]) : undefined;
+  }
+
+  async save(value: MemberStatus, expectedVersion?: number) {
+    const result =
+      expectedVersion === undefined
+        ? await this.db.query<MemberStatusRow>(
+            `INSERT INTO member_statuses
+             (account_id,status_text,expires_at,updated_at,version)
+             VALUES ($1,$2,$3,$4,1) ON CONFLICT DO NOTHING
+             RETURNING account_id,status_text,expires_at,updated_at,version`,
+            [value.accountId, value.text, value.expiresAt, value.updatedAt],
+          )
+        : await this.db.query<MemberStatusRow>(
+            `UPDATE member_statuses SET status_text=$3,expires_at=$4,
+             updated_at=$5,version=version+1 WHERE account_id=$1 AND version=$2
+             RETURNING account_id,status_text,expires_at,updated_at,version`,
+            [
+              value.accountId,
+              expectedVersion,
+              value.text,
+              value.expiresAt,
+              value.updatedAt,
+            ],
+          );
+    return result.rows[0] ? mapMemberStatus(result.rows[0]) : undefined;
   }
 }
 

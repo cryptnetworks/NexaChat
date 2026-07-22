@@ -65,6 +65,9 @@ import {
   presenceHeartbeatSchema,
   presenceQuerySchema,
   presenceSchema,
+  memberStatusQuerySchema,
+  memberStatusSchema,
+  updateMemberStatusSchema,
 } from '@nexa/api-contracts';
 import {
   CommunityService,
@@ -74,6 +77,7 @@ import {
   type NotificationPreferenceService,
   type NotificationReadService,
   type PresenceService,
+  type MemberStatusService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
 import { AuthenticationError } from '@nexa/auth';
@@ -365,6 +369,40 @@ export function buildApp(
             ),
           }),
         );
+      },
+    );
+  }
+
+  if (experience.memberStatus) {
+    app.put('/v1/member-status', async (request, reply) => {
+      const input = updateMemberStatusSchema.parse(request.body);
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
+      return reply.send(
+        memberStatusSchema.parse(
+          await experience.memberStatus!.update(
+            actorId,
+            input.text,
+            input.expiresAt,
+            input.expectedVersion,
+            new Date(),
+          ),
+        ),
+      );
+    });
+    app.get<{ Params: { accountId: string } }>(
+      '/v1/member-status/:accountId',
+      async (request, reply) => {
+        const input = memberStatusQuerySchema.parse(request.query);
+        const actorId = await verifiedActor(request, auth, input.actorId);
+        const accountId = memberStatusSchema.shape.accountId.parse(
+          request.params.accountId,
+        );
+        const status = await experience.memberStatus!.view(
+          actorId,
+          accountId,
+          new Date(),
+        );
+        return reply.send(status ? memberStatusSchema.parse(status) : null);
       },
     );
   }
@@ -1175,6 +1213,10 @@ export function buildApp(
       return sendApiError(reply, 503, 'dependency_unavailable', request.id, 5);
     if (error instanceof Error && error.message === 'presence_rate_limited')
       return sendApiError(reply, 429, 'rate_limited', request.id, 15);
+    if (error instanceof Error && error.message === 'invalid_member_status')
+      return sendApiError(reply, 400, 'invalid_request', request.id);
+    if (error instanceof Error && error.message === 'stale_member_status')
+      return sendApiError(reply, 409, 'stale_write', request.id);
     if (error instanceof HttpSecurityError)
       return sendApiError(reply, 403, error.code, request.id);
     if (
@@ -1208,6 +1250,7 @@ export interface ExperienceRuntime {
   notificationReadState?: NotificationReadService;
   webPush?: WebPushController;
   presence?: PresenceService;
+  memberStatus?: MemberStatusService;
 }
 
 function sendApiError(

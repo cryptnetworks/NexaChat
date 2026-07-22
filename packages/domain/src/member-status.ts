@@ -15,6 +15,9 @@ export interface MemberStatusStore {
 export interface MemberStatusVisibility {
   mayView(viewerId: string, accountId: string): Promise<boolean>;
 }
+export interface MemberStatusPublisher {
+  publish(status: MemberStatus): Promise<void>;
+}
 
 const normalize = (value: string): string => {
   const text = value.trim().replace(/\s+/g, ' ').normalize('NFC');
@@ -34,7 +37,11 @@ export class MemberStatusService {
   constructor(
     private readonly store: MemberStatusStore,
     private readonly visibility: MemberStatusVisibility,
+    private publisher?: MemberStatusPublisher,
   ) {}
+  setPublisher(publisher: MemberStatusPublisher): void {
+    this.publisher = publisher;
+  }
   async update(
     accountId: string,
     text: string | null,
@@ -60,6 +67,7 @@ export class MemberStatusService {
       expectedVersion,
     );
     if (!saved) throw new Error('stale_member_status');
+    await this.publisher?.publish(saved).catch(() => undefined);
     return saved;
   }
   async view(
