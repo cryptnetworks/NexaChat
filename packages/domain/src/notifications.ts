@@ -2,6 +2,28 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export type NotificationKind =
   'mention' | 'reply' | 'invite' | 'moderation_outcome';
+export type NotificationPreferenceScope =
+  'account' | 'community' | 'category' | 'space';
+export interface NotificationPreference {
+  accountId: string;
+  scopeType: NotificationPreferenceScope;
+  scopeId: string;
+  mode: 'all' | 'mentions' | 'none';
+  mutedUntil: string | null;
+  version: number;
+  updatedAt: string;
+}
+export interface NotificationPreferenceStore {
+  find(
+    accountId: string,
+    scopeType: NotificationPreferenceScope,
+    scopeId: string,
+  ): Promise<NotificationPreference | undefined>;
+  save(
+    value: NotificationPreference,
+    expectedVersion?: number,
+  ): Promise<NotificationPreference | undefined>;
+}
 export interface NotificationRecord {
   id: string;
   accountId: string;
@@ -162,5 +184,87 @@ export class NotificationService {
     const updated = await this.store.update(id, expectedVersion, patch);
     if (!updated) throw new Error('stale_notification');
     return updated;
+  }
+}
+
+export class NotificationPreferenceService {
+  constructor(private readonly store: NotificationPreferenceStore) {}
+  async update(
+    accountId: string,
+    input: Omit<
+      NotificationPreference,
+      'accountId' | 'version' | 'updatedAt'
+    > & { expectedVersion?: number },
+    now: Date,
+  ): Promise<NotificationPreference> {
+    const current = await this.store.find(
+      accountId,
+      input.scopeType,
+      input.scopeId,
+    );
+    if (current && input.expectedVersion === undefined)
+      throw new Error('stale_notification_preference');
+    if (
+      input.mutedUntil &&
+      new Date(input.mutedUntil).getTime() > now.getTime() + 365 * 86_400_000
+    )
+      throw new Error('invalid_notification_preference');
+    const saved = await this.store.save(
+      {
+        accountId,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        mode: input.mode,
+        mutedUntil: input.mutedUntil,
+        version: current ? current.version + 1 : 1,
+        updatedAt: now.toISOString(),
+      },
+      input.expectedVersion,
+    );
+    if (!saved) throw new Error('stale_notification_preference');
+    return saved;
+  }
+  async effective(
+    accountId: string,
+    scopes: {
+      communityId?: string;
+      categoryId?: string;
+      spaceId?: string;
+    },
+    kind: NotificationKind,
+    now: Date,
+  ): Promise<{
+    deliver: boolean;
+    mode: NotificationPreference['mode'];
+    muted: boolean;
+  }> {
+    const candidates = [
+      scopes.spaceId
+        ? await this.store.find(accountId, 'space', scopes.spaceId)
+        : undefined,
+      scopes.categoryId
+        ? await this.store.find(accountId, 'category', scopes.categoryId)
+        : undefined,
+      scopes.communityId
+        ? await this.store.find(accountId, 'community', scopes.communityId)
+        : undefined,
+      await this.store.find(accountId, 'account', accountId),
+    ];
+    const selected = candidates.find((value): value is NotificationPreference =>
+      Boolean(value),
+    ) ?? { mode: 'mentions' as const, mutedUntil: null };
+    const muted = Boolean(
+      selected.mutedUntil && now < new Date(selected.mutedUntil),
+    );
+    const mention =
+      kind === 'mention' || kind === 'reply' || kind === 'moderation_outcome';
+    return {
+      mode: selected.mode,
+      muted,
+      deliver:
+        !muted &&
+        selected.mode !== 'none' &&
+        (selected.mode === 'all' || mention),
+    };
   }
 }
