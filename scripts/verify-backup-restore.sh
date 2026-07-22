@@ -241,7 +241,7 @@ const client=new S3Client({endpoint:process.env.S3_ENDPOINT,region:process.env.S
 
 elapsed="$(( $(date +%s) - started_at ))"
 if [[ -n "${NEXA_BACKUP_EVIDENCE_FILE:-}" ]]; then
-  printf '{"status":"passed","schemaVersion":10,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
+  printf '{"status":"passed","schemaVersion":45,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
 fi
 for value in "$postgres_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
   if grep -Fq "$value" "$logs_file"; then fail 'sensitive value appeared in verification logs'; fi

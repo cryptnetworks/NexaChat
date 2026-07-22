@@ -247,6 +247,8 @@ integration('PostgreSQL-backed API', () => {
     const broadcast = vi.fn();
     app.websocketHub = {
       broadcast,
+      broadcastAccount: vi.fn(),
+      ready: () => Promise.resolve(),
       close: () => Promise.resolve(),
     };
 

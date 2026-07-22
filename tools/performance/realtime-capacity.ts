@@ -81,6 +81,7 @@ class CapacityMetrics implements WebsocketMetrics {
 
 class LocalCoordinationBus {
   readonly values = new Map<string, string>();
+  readonly counters = new Map<string, { count: number; expiresAt: number }>();
   readonly listeners = new Map<string, Set<(value: string) => void>>();
   duplicatePublications = true;
 
@@ -120,8 +121,25 @@ class LocalCoordination implements EphemeralCoordination {
     return Promise.resolve(true);
   };
 
-  delete = (key: string): Promise<boolean> =>
-    Promise.resolve(this.bus.values.delete(key));
+  increment = (
+    key: string,
+    ttlSeconds: number,
+  ): Promise<{ count: number; ttlSeconds: number }> => {
+    const now = Date.now();
+    const current = this.bus.counters.get(key);
+    const count = current && current.expiresAt > now ? current.count + 1 : 1;
+    this.bus.counters.set(key, {
+      count,
+      expiresAt: now + ttlSeconds * 1_000,
+    });
+    return Promise.resolve({ count, ttlSeconds });
+  };
+
+  delete = (key: string): Promise<boolean> => {
+    const deletedValue = this.bus.values.delete(key);
+    const deletedCounter = this.bus.counters.delete(key);
+    return Promise.resolve(deletedValue || deletedCounter);
+  };
 
   publish = (channel: string, value: string): Promise<void> => {
     this.bus.publish(channel, value);
@@ -157,6 +175,11 @@ class FaultCoordination implements EphemeralCoordination {
     value: string,
     ttlSeconds: number,
   ): Promise<boolean> => this.delegate.setIfAbsent(key, value, ttlSeconds);
+  increment = (
+    key: string,
+    ttlSeconds: number,
+  ): Promise<{ count: number; ttlSeconds: number }> =>
+    this.delegate.increment(key, ttlSeconds);
   delete = (key: string): Promise<boolean> => this.delegate.delete(key);
   publish = (channel: string, value: string): Promise<void> =>
     this.publishAvailable
@@ -347,6 +370,8 @@ const benchmarkServerConfig = {
   shutdownTimeoutMs: 5_000,
   rateLimit: 1_000_000,
   rateWindowMs: 60_000,
+  logLevel: 'error',
+  trustedProxyCidrs: [] as string[],
 } as const;
 
 async function startHub(
@@ -363,6 +388,8 @@ async function startHub(
     undefined,
     undefined,
     benchmarkServerConfig,
+    undefined,
+    coordination,
     undefined,
     { logging: false },
   );

@@ -1,6 +1,10 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  hasCompleteSqlStatement,
+  isApprovedLicenseExpression,
+} from './security-policy-helpers.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const policy = JSON.parse(
@@ -41,7 +45,7 @@ const lock = JSON.parse(
 const allowedLicenses = new Set(policy.allowedLicenses ?? []);
 for (const [path, entry] of Object.entries(lock.packages ?? {})) {
   if (!path || entry.link) continue;
-  if (!entry.license || !allowedLicenses.has(entry.license))
+  if (!isApprovedLicenseExpression(entry.license, allowedLicenses))
     fail(`${path}: unreviewed or missing license ${String(entry.license)}`);
   if (path.startsWith('node_modules/')) {
     if (!/^sha512-[A-Za-z0-9+/=]+$/u.test(entry.integrity ?? ''))
@@ -311,7 +315,8 @@ for (const [index, file] of migrations.entries()) {
     join(root, 'apps', 'server', 'migrations', file),
     'utf8',
   );
-  if (!sql.trim().endsWith(';')) fail(`${file}: migration is not complete SQL`);
+  if (!hasCompleteSqlStatement(sql))
+    fail(`${file}: migration is not complete SQL`);
 }
 
 const semgrep = await readFile(join(root, '.semgrep.yml'), 'utf8');

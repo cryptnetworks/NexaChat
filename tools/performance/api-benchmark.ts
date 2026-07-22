@@ -176,6 +176,8 @@ async function ciRuntime(
     undefined,
     benchmarkServerConfig,
     undefined,
+    undefined,
+    undefined,
     { logging: false },
   );
   await app.ready();
@@ -214,6 +216,8 @@ const benchmarkServerConfig = {
   shutdownTimeoutMs: 5_000,
   rateLimit: 1_000_000,
   rateWindowMs: 60_000,
+  logLevel: 'error',
+  trustedProxyCidrs: [] as string[],
 } as const;
 
 async function postgresRuntime(
@@ -257,6 +261,8 @@ async function postgresRuntime(
       undefined,
       database.authorization,
       benchmarkServerConfig,
+      undefined,
+      undefined,
       database.experience,
       { logging: false },
     );

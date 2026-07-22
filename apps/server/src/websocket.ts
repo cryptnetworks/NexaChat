@@ -765,6 +765,7 @@ export function attachWebsocketHub(
 
   function deliver(spaceId: string, event: RealtimeEnvelope): void {
     if (!remember(event.id)) return;
+    const startedAt = Date.now();
     const sequence = (sequences.get(spaceId) ?? 0) + 1;
     sequences.set(spaceId, sequence);
     const delivery = realtimeDeliverySchema.parse({
@@ -774,9 +775,18 @@ export function attachWebsocketHub(
       sequence,
       event,
     });
+    let delivered = false;
     for (const [socket, state] of connections)
-      if (state.subscriptions.has(spaceId) && safeSend(socket, state, delivery))
-        metrics.increment('realtime_event_delivered');
+      if (
+        state.subscriptions.has(spaceId) &&
+        safeSend(socket, state, delivery)
+      ) {
+        delivered = true;
+        metrics.increment('realtime_delivery');
+      }
+    metrics.observe?.('realtime_delivery_duration_ms', Date.now() - startedAt, {
+      outcome: delivered ? 'success' : 'no_subscriber',
+    });
   }
 
   async function receiveFanout(payload: string): Promise<void> {

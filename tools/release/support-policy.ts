@@ -900,7 +900,7 @@ async function verifyRepositoryAlignment(
       `valkey/valkey:${policy.dependencies.valkey.validatedImage}@sha256:`,
     ) ||
     !compose.includes(
-      `minio/minio:${policy.dependencies.objectStorage.validatedImage}@sha256:`,
+      `chrislusf/seaweedfs:${policy.dependencies.objectStorage.validatedImage}@sha256:`,
     )
   ) {
     fail('dependency_baseline_drift');
