@@ -20,4 +20,8 @@ export default tseslint.config(
       },
     },
   },
+  {
+    ...tseslint.configs.disableTypeChecked,
+    files: ['tools/wiki/*.mjs'],
+  },
 );
