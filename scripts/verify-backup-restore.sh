@@ -179,7 +179,7 @@ mkdir "$backup_dir/.partial-controlled"
 expect_rejection incomplete_backup "${compose[@]}" run --rm backup verify /backups/.partial-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-corrupt-controlled"
-printf '\001' | dd of="$backup_dir/backup-corrupt-controlled/postgres.dump.enc" bs=1 seek=64 conv=notrunc 2>/dev/null
+printf '\001' >> "$backup_dir/backup-corrupt-controlled/postgres.dump.enc"
 expect_rejection component_integrity_mismatch "${compose[@]}" run --rm backup verify /backups/backup-corrupt-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-missing-controlled"
