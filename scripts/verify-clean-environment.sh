@@ -130,6 +130,14 @@ docker compose -p "$project" up -d --wait postgres redis object-storage
 postgres_port="$(published_port postgres 5432)"
 valkey_port="$(published_port redis 6379)"
 s3_port="$(published_port object-storage 8333)"
+docker compose -p "$project" down --remove-orphans >/dev/null
+export POSTGRES_PUBLISHED_PORT="$postgres_port"
+export VALKEY_PUBLISHED_PORT="$valkey_port"
+export S3_PUBLISHED_PORT="$s3_port"
+docker compose -p "$project" up -d --wait postgres redis object-storage
+expect_published_port postgres 5432 "$postgres_port"
+expect_published_port redis 6379 "$valkey_port"
+expect_published_port object-storage 8333 "$s3_port"
 export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
 export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export S3_ENDPOINT="http://127.0.0.1:${s3_port}"

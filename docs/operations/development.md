@@ -37,9 +37,10 @@ point this test at shared or production providers.
 - `toolchain_error`: activate Node 24.18.0 with the repository's version-manager
   file and install npm 11.16.0; do not bypass the check.
 - A published-port conflict: stop the process using 5432/6379/8333, or set
-  `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
-  `S3_PUBLISHED_PORT` to an available port or port range before startup
-  and update matching application URLs in `.env`.
+  `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`, and `S3_PUBLISHED_PORT`
+  to exact available ports before startup and update matching application URLs
+  in `.env`. Do not use a port range for a persistent application endpoint;
+  Docker can select a different member of the range after a service restart.
 - A service never becomes healthy: run `docker compose ps` and bounded
   `docker compose logs --tail=100 <service>`; logs must not be pasted publicly
   without checking for credentials or private content.
