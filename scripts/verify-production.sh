@@ -342,7 +342,7 @@ if [[ "${NEXA_VERIFY_SCAN:-0}" == 1 ]]; then
     "${NEXA_OBJECT_STORAGE_IMAGE:-nexa-chat-object-storage}:${NEXA_IMAGE_TAG}" \
     "${NEXA_POSTGRES_IMAGE:-nexa-chat-postgres}:${NEXA_IMAGE_TAG}" \
     "${NEXA_BACKUP_IMAGE:-nexa-chat-backup}:${NEXA_IMAGE_TAG}" \
-    'valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885' || fail 'production image scan or SBOM validation failed'
+    'valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec' || fail 'production image scan or SBOM validation failed'
 fi
 
 "${compose[@]}" logs --no-color > "$logs_file"

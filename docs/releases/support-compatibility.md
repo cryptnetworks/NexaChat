@@ -63,7 +63,7 @@ outside the supported artifact set.
 | Dependency                   | Supported candidate range | Validated baseline | Role                                     |
 | ---------------------------- | ------------------------- | ------------------ | ---------------------------------------- |
 | PostgreSQL                   | `>=17.10.0 <18.0.0`       | 17.10 Alpine 3.23  | Authoritative durable state              |
-| Valkey                       | `>=8.1.8 <9.0.0`          | 8.1.8 Alpine 3.23  | Optional, non-authoritative coordination |
+| Valkey                       | `>=8.1.9 <9.0.0`          | 8.1.9 Alpine 3.24  | Optional, non-authoritative coordination |
 | S3-compatible object storage | Adapter preview only      | SeaweedFS 4.40     | Authoritative when enabled               |
 
 PostgreSQL patch releases in the declared major line are eligible, but each

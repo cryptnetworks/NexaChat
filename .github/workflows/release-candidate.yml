@@ -80,7 +80,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+        image: valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
         ports: ['6379:6379']
         options: >-
           --health-cmd "valkey-cli ping"
@@ -183,7 +183,7 @@ jobs:
               sourceDateEpoch: Number(process.env.SOURCE_DATE_EPOCH),
               runner: { os: process.env.RUNNER_OS, arch: process.env.RUNNER_ARCH, image: process.env.ImageOS ?? "unknown", imageVersion: process.env.ImageVersion ?? "unknown" },
               environment: { osRelease: release(), osVersion: version(), node: captured("node"), npm: captured("npm"), rust: captured("rust"), cargo: captured("cargo") },
-              services: { postgres: "17.10-alpine3.23", valkey: "8.1.8-alpine3.23" },
+              services: { postgres: "17.10-alpine3.23", valkey: "8.1.9-alpine3.24" },
               locks: [
                 { path: "apps/desktop/src-tauri/Cargo.lock", sha256: digest("apps/desktop/src-tauri/Cargo.lock") },
                 { path: "package-lock.json", sha256: digest("package-lock.json") }
