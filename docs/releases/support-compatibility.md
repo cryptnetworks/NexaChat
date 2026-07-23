@@ -83,7 +83,7 @@ boundary, scanner integration, and an exact provider test matrix.
 ## Protocol and client/server compatibility
 
 The only current transport contracts are HTTP v1 and real-time v1. Runtime
-configuration is schema 1 and PostgreSQL is schema 45. The only declared
+configuration is schema 1 and PostgreSQL is schema 46. The only declared
 client/server pair is client `0.1.0` with server `0.1.0`, and it remains
 candidate-only until the activation gate passes. Unknown protocol versions
 fail closed; there is no implicit version negotiation.
