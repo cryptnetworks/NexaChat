@@ -1,8 +1,5 @@
 import { createPostgresPool, migratePostgres } from '@nexa/postgres';
-import {
-  parseMigrationConfig,
-  safeConfigurationDiagnostic,
-} from './config.js';
+import { parseMigrationConfig, safeConfigurationDiagnostic } from './config.js';
 import { loadFileBackedSecrets } from './secrets.js';
 
 async function run(): Promise<void> {

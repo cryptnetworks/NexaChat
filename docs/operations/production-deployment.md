@@ -66,22 +66,22 @@ identity.
 Create a host directory owned by the deployment administrator with mode
 `0700`. These exact files are required:
 
-| File                        | Consumer                       | Contents                                                   |
-| --------------------------- | ------------------------------ | ---------------------------------------------------------- |
-| `postgres_password`         | PostgreSQL bootstrap only      | URL-safe random password for the initial `nexa` owner      |
-| `database_owner_url`        | `database-bootstrap` only      | `postgresql://nexa:PASSWORD@postgres:5432/nexa`            |
-| `database_migrator_password`| `database-bootstrap` only      | URL-safe password for `nexa_migrator`                      |
-| `migration_database_url`    | migration job and restore job  | `postgresql://nexa_migrator:PASSWORD@postgres:5432/nexa`   |
-| `database_runtime_password` | `database-bootstrap` only      | URL-safe password for `nexa_app`                           |
-| `runtime_database_url`      | server only                    | `postgresql://nexa_app:PASSWORD@postgres:5432/nexa`        |
-| `database_backup_password`  | `database-bootstrap` only      | URL-safe password for `nexa_backup`                        |
-| `backup_database_url`       | backup job only                | `postgresql://nexa_backup:PASSWORD@postgres:5432/nexa`     |
-| `valkey_password`           | Valkey                         | URL-safe random password                                   |
-| `redis_url`                 | migration job and server       | `redis://default:PASSWORD@valkey:6379`                     |
-| `s3_access_key`             | SeaweedFS and application      | URL-safe bucket-scoped application access key              |
-| `s3_secret_key`             | SeaweedFS and application      | URL-safe bucket-scoped application secret                  |
-| `tls_cert.pem`              | edge                           | full certificate chain in PEM form                         |
-| `tls_key.pem`               | edge                           | matching unencrypted private key in PEM form               |
+| File                         | Consumer                      | Contents                                                 |
+| ---------------------------- | ----------------------------- | -------------------------------------------------------- |
+| `postgres_password`          | PostgreSQL bootstrap only     | URL-safe random password for the initial `nexa` owner    |
+| `database_owner_url`         | `database-bootstrap` only     | `postgresql://nexa:PASSWORD@postgres:5432/nexa`          |
+| `database_migrator_password` | `database-bootstrap` only     | URL-safe password for `nexa_migrator`                    |
+| `migration_database_url`     | migration job and restore job | `postgresql://nexa_migrator:PASSWORD@postgres:5432/nexa` |
+| `database_runtime_password`  | `database-bootstrap` only     | URL-safe password for `nexa_app`                         |
+| `runtime_database_url`       | server only                   | `postgresql://nexa_app:PASSWORD@postgres:5432/nexa`      |
+| `database_backup_password`   | `database-bootstrap` only     | URL-safe password for `nexa_backup`                      |
+| `backup_database_url`        | backup job only               | `postgresql://nexa_backup:PASSWORD@postgres:5432/nexa`   |
+| `valkey_password`            | Valkey                        | URL-safe random password                                 |
+| `redis_url`                  | migration job and server      | `redis://default:PASSWORD@valkey:6379`                   |
+| `s3_access_key`              | SeaweedFS and application     | URL-safe bucket-scoped application access key            |
+| `s3_secret_key`              | SeaweedFS and application     | URL-safe bucket-scoped application secret                |
+| `tls_cert.pem`               | edge                          | full certificate chain in PEM form                       |
+| `tls_key.pem`                | edge                          | matching unencrypted private key in PEM form             |
 
 Generate independent credentials. This example deliberately limits generated
 characters to the unambiguous URL-safe set used by startup validation:

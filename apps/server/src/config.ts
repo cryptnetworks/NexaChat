@@ -821,8 +821,7 @@ function validateProductionDatabase(
 ): void {
   if (!parsed.username || !parsed.password)
     fail(key, 'must include authentication in production');
-  if (parsed.pathname.length <= 1)
-    fail(key, 'must include a database name');
+  if (parsed.pathname.length <= 1) fail(key, 'must include a database name');
   if (parsed.hash) fail(key, 'must not contain a fragment');
   validateProductionDatabaseParameters(parsed, key);
   if (isSingleHostDatabase(parsed, profile)) return;
