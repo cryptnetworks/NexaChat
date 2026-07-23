@@ -162,6 +162,8 @@ export function attachWebsocketHub(
   const metrics = options.metrics ?? noopMetrics;
   const pending = new Map<IncomingMessage, PendingConnection>();
   const connections = new Map<WebSocket, ConnectionState>();
+  const subscribersBySpace = new Map<string, Set<WebSocket>>();
+  let subscriptionCount = 0;
   const sequences = new Map<string, number>();
   const maxSequenceStates = Math.min(
     100_000,
@@ -345,6 +347,7 @@ export function attachWebsocketHub(
   function cleanup(socket: WebSocket, reason: string): void {
     const state = connections.get(socket);
     if (!state || !connections.delete(socket)) return;
+    removeAllSubscriptions(socket, state);
     outboundQueueBytes = Math.max(0, outboundQueueBytes - state.outboundBytes);
     state.outboundBytes = 0;
     metrics.increment('realtime_connection_closed', { reason });
@@ -354,13 +357,43 @@ export function attachWebsocketHub(
 
   function reportConnections(): void {
     metrics.gauge('realtime_connections', connections.size);
-    metrics.gauge(
-      'realtime_subscriptions',
-      [...connections.values()].reduce(
-        (total, state) => total + state.subscriptions.size,
-        0,
-      ),
-    );
+    metrics.gauge('realtime_subscriptions', subscriptionCount);
+    metrics.gauge('realtime_indexed_spaces', subscribersBySpace.size);
+  }
+
+  function addSubscription(
+    socket: WebSocket,
+    state: ConnectionState,
+    spaceId: string,
+  ): boolean {
+    if (state.subscriptions.has(spaceId)) return false;
+    state.subscriptions.add(spaceId);
+    const subscribers = subscribersBySpace.get(spaceId) ?? new Set<WebSocket>();
+    subscribers.add(socket);
+    subscribersBySpace.set(spaceId, subscribers);
+    subscriptionCount += 1;
+    return true;
+  }
+
+  function removeSubscription(
+    socket: WebSocket,
+    state: ConnectionState,
+    spaceId: string,
+  ): boolean {
+    if (!state.subscriptions.delete(spaceId)) return false;
+    const subscribers = subscribersBySpace.get(spaceId);
+    subscribers?.delete(socket);
+    if (subscribers?.size === 0) subscribersBySpace.delete(spaceId);
+    subscriptionCount = Math.max(0, subscriptionCount - 1);
+    return true;
+  }
+
+  function removeAllSubscriptions(
+    socket: WebSocket,
+    state: ConnectionState,
+  ): void {
+    for (const spaceId of [...state.subscriptions])
+      removeSubscription(socket, state, spaceId);
   }
 
   function reportOutboundQueue(): void {
@@ -508,7 +541,7 @@ export function attachWebsocketHub(
       return;
     }
     if (parsed.data.type === 'unsubscribe') {
-      state.subscriptions.delete(parsed.data.spaceId);
+      removeSubscription(socket, state, parsed.data.spaceId);
       metrics.increment('realtime_subscription_changed', {
         reason: 'removed',
       });
@@ -539,7 +572,7 @@ export function attachWebsocketHub(
         parsed.data.spaceId,
         state.actorId,
       );
-      state.subscriptions.add(parsed.data.spaceId);
+      addSubscription(socket, state, parsed.data.spaceId);
       metrics.increment('realtime_subscription_changed', { reason: 'added' });
       reportConnections();
       safeSend(socket, state, {
@@ -658,7 +691,7 @@ export function attachWebsocketHub(
         try {
           await service.authorizeSpaceSubscription(spaceId, state.actorId);
         } catch {
-          state.subscriptions.delete(spaceId);
+          removeSubscription(socket, state, spaceId);
           metrics.increment('realtime_subscription_changed', {
             reason: 'revalidated',
           });
@@ -827,13 +860,9 @@ export function attachWebsocketHub(
     sequences.delete(spaceId);
     sequences.set(spaceId, sequence);
     if (sequences.size > maxSequenceStates) {
-      const activeSpaces = new Set<string>();
-      for (const state of connections.values())
-        for (const subscription of state.subscriptions)
-          activeSpaces.add(subscription);
       let removed = false;
       for (const candidate of sequences.keys()) {
-        if (activeSpaces.has(candidate)) continue;
+        if (subscribersBySpace.has(candidate)) continue;
         sequences.delete(candidate);
         removed = true;
         break;
@@ -852,14 +881,13 @@ export function attachWebsocketHub(
     });
     const serialized = serializeValidated(delivery, 'event');
     let delivered = false;
-    for (const [socket, state] of connections)
-      if (
-        state.subscriptions.has(spaceId) &&
-        sendSerialized(socket, state, serialized)
-      ) {
+    for (const socket of subscribersBySpace.get(spaceId) ?? []) {
+      const state = connections.get(socket);
+      if (state && sendSerialized(socket, state, serialized)) {
         delivered = true;
         metrics.increment('realtime_delivery');
       }
+    }
     metrics.observe?.('realtime_delivery_duration_ms', Date.now() - startedAt, {
       outcome: delivered ? 'success' : 'no_subscriber',
     });
@@ -895,17 +923,23 @@ export function attachWebsocketHub(
       const event = realtimeEnvelopeSchema.parse(parsed.event);
       if (seenEvents.has(event.id)) return;
       // Revalidate each local subscriber before cross-instance disclosure.
-      for (const state of connections.values()) {
-        if (!state.subscriptions.has(parsed.spaceId)) continue;
+      let removed = false;
+      for (const socket of [
+        ...(subscribersBySpace.get(parsed.spaceId) ?? []),
+      ]) {
+        const state = connections.get(socket);
+        if (!state) continue;
         try {
           await service.authorizeSpaceSubscription(
             parsed.spaceId,
             state.actorId,
           );
         } catch {
-          state.subscriptions.delete(parsed.spaceId);
+          removed =
+            removeSubscription(socket, state, parsed.spaceId) || removed;
         }
       }
+      if (removed) reportConnections();
       deliver(parsed.spaceId, event);
     } catch {
       metrics.increment('realtime_fanout_invalid');
@@ -973,24 +1007,20 @@ export function attachWebsocketHub(
       });
       clearTimeout(deadline);
       connections.clear();
+      subscribersBySpace.clear();
+      subscriptionCount = 0;
       reportConnections();
     },
     snapshot() {
       return {
         connections: connections.size,
-        subscriptions: [...connections.values()].reduce(
-          (total, state) => total + state.subscriptions.size,
-          0,
-        ),
+        subscriptions: subscriptionCount,
       };
     },
     capacitySnapshot() {
       return {
         connections: connections.size,
-        subscriptions: [...connections.values()].reduce(
-          (total, state) => total + state.subscriptions.size,
-          0,
-        ),
+        subscriptions: subscriptionCount,
         queueDepth: queuedMessages,
         queueBytes: queuedBytes,
         fanout: fanoutState,

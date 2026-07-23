@@ -36,6 +36,7 @@ interface CapacityClient {
   id: number;
   instance: 0 | 1;
   socket: WebSocket;
+  spaceIds: readonly string[];
 }
 
 interface HubRuntime {
@@ -583,6 +584,24 @@ function envelope(
   };
 }
 
+function assignedSpaceIds(
+  clientIndex: number,
+  spaces: readonly { id: string }[],
+  subscriptionsPerConnection: number,
+  pattern: 'all' | 'striped',
+): string[] {
+  if (pattern === 'all')
+    return spaces.slice(0, subscriptionsPerConnection).map((space) => space.id);
+  return Array.from({ length: subscriptionsPerConnection }, (_, offset) => {
+    const space =
+      spaces[
+        (clientIndex * subscriptionsPerConnection + offset) % spaces.length
+      ];
+    if (!space) throw new Error('capacity_space_assignment_failed');
+    return space.id;
+  });
+}
+
 async function broadcastBatch(input: {
   hub: WebsocketHub;
   tracker: EventTracker;
@@ -696,7 +715,7 @@ async function verifySubscriberFailure(
   try {
     const { socket } = await openSocket(runtime.endpoint, token);
     await subscribe(socket, spaceId);
-    const client = { id: 1, instance: 0 as const, socket };
+    const client = { id: 1, instance: 0 as const, socket, spaceIds: [spaceId] };
     const tracker = new EventTracker();
     tracker.add(client);
     const event = envelope(spaceId, authorId);
@@ -736,7 +755,7 @@ async function main(): Promise<void> {
     'Capacity community',
   );
   const spaces = await Promise.all(
-    Array.from({ length: policy.subscriptionsPerConnection }, (_, index) =>
+    Array.from({ length: policy.spaces }, (_, index) =>
       service.createTextSpace(
         community.id,
         identity.account.id,
@@ -790,14 +809,25 @@ async function main(): Promise<void> {
           identity.session.token,
         );
         return {
-          client: { id: index, instance, socket: result.socket },
+          client: {
+            id: index,
+            instance,
+            socket: result.socket,
+            spaceIds: assignedSpaceIds(
+              index,
+              spaces,
+              policy.subscriptionsPerConnection,
+              policy.subscriptionPattern,
+            ),
+          },
           elapsedMs: result.elapsedMs,
         };
       },
     );
     for (const result of opened) clients.push(result.client);
     await mapLimit(clients, 25, async (client) => {
-      for (const space of spaces) await subscribe(client.socket, space.id);
+      for (const spaceId of client.spaceIds)
+        await subscribe(client.socket, spaceId);
     });
     for (const client of clients) tracker.add(client);
     const expectedSubscriptions =
@@ -809,6 +839,11 @@ async function main(): Promise<void> {
           0,
         ) === expectedSubscriptions,
     );
+    const firstSpaceRecipients = clients.filter((client) =>
+      client.spaceIds.includes(firstSpace.id),
+    ).length;
+    if (firstSpaceRecipients < 1)
+      throw new Error('capacity_space_has_no_recipients');
 
     await broadcastBatch({
       hub: hubs[0].hub,
@@ -816,7 +851,7 @@ async function main(): Promise<void> {
       spaceId: firstSpace.id,
       authorId: identity.account.id,
       events: policy.warmupEvents,
-      expectedPerEvent: policy.connections,
+      expectedPerEvent: firstSpaceRecipients,
       durationSeconds: 0,
     });
     const cpuBefore = process.cpuUsage();
@@ -826,7 +861,7 @@ async function main(): Promise<void> {
       spaceId: firstSpace.id,
       authorId: identity.account.id,
       events: policy.measuredEvents,
-      expectedPerEvent: policy.connections,
+      expectedPerEvent: firstSpaceRecipients,
       durationSeconds: policy.soakSeconds,
     });
     const cpuUsage = process.cpuUsage(cpuBefore);
@@ -860,8 +895,10 @@ async function main(): Promise<void> {
         id: previous.id,
         instance: previous.instance,
         socket: result.socket,
+        spaceIds: previous.spaceIds,
       };
-      for (const space of spaces) await subscribe(client.socket, space.id);
+      for (const spaceId of client.spaceIds)
+        await subscribe(client.socket, spaceId);
       tracker.add(client);
       return { client, elapsedMs: result.elapsedMs };
     });
@@ -885,7 +922,7 @@ async function main(): Promise<void> {
       spaceId: firstSpace.id,
       authorId: identity.account.id,
       events: 1,
-      expectedPerEvent: policy.connections,
+      expectedPerEvent: firstSpaceRecipients,
       durationSeconds: 0,
     });
 
@@ -893,10 +930,11 @@ async function main(): Promise<void> {
     const degradedEvent = envelope(firstSpace.id, identity.account.id);
     tracker.markSent(degradedEvent.id);
     hubs[0].hub.broadcast(firstSpace.id, degradedEvent);
-    const localConnections = clients.filter(
-      (client) => client.instance === 0,
+    const localRecipients = clients.filter(
+      (client) =>
+        client.instance === 0 && client.spaceIds.includes(firstSpace.id),
     ).length;
-    await tracker.waitFor(degradedEvent.id, localConnections);
+    await tracker.waitFor(degradedEvent.id, localRecipients);
     await delay(100);
     const degradedDeliveryCount = tracker.count(degradedEvent.id);
     await waitUntil(
@@ -909,7 +947,7 @@ async function main(): Promise<void> {
       spaceId: firstSpace.id,
       authorId: identity.account.id,
       events: 1,
-      expectedPerEvent: policy.connections,
+      expectedPerEvent: firstSpaceRecipients,
       durationSeconds: 0,
     });
     await waitUntil(() => hubs[0].hub.capacitySnapshot?.().fanout === 'ready');
@@ -943,6 +981,9 @@ async function main(): Promise<void> {
     const maxQueueBytes = Math.max(
       ...hubs.map((hub) => hub.metrics.maximum('realtime_queue_bytes')),
     );
+    const maxIndexedSpaces = Math.max(
+      ...hubs.map((hub) => hub.metrics.maximum('realtime_indexed_spaces')),
+    );
     const duplicateEventsRejected = hubs.reduce(
       (sum, hub) => sum + hub.metrics.count('realtime_event_duplicate'),
       0,
@@ -970,13 +1011,13 @@ async function main(): Promise<void> {
     if (tracker.duplicates !== 0) failures.push('client_duplicate_delivery');
     if (slowConsumer.closeCode !== 1013 || slowConsumer.metricCount < 1)
       failures.push('slow_consumer_not_evicted');
-    if (degradedDeliveryCount !== localConnections)
+    if (degradedDeliveryCount !== localRecipients)
       failures.push('degraded_fanout_crossed_instance');
     if (
       !subscriberFailure.degraded ||
       !subscriberFailure.localDelivery ||
-      recoveryDelivery.deliveries !== policy.connections ||
-      reconnectDelivery.deliveries !== policy.connections
+      recoveryDelivery.deliveries !== firstSpaceRecipients ||
+      reconnectDelivery.deliveries !== firstSpaceRecipients
     )
       failures.push('fanout_recovery_failed');
 
@@ -999,8 +1040,11 @@ async function main(): Promise<void> {
       workload: {
         connections: policy.connections,
         instances: 2,
+        spaces: policy.spaces,
         subscriptionsPerConnection: policy.subscriptionsPerConnection,
+        subscriptionPattern: policy.subscriptionPattern,
         totalSubscriptions: expectedSubscriptions,
+        recipientsPerMeasuredEvent: firstSpaceRecipients,
         warmupEvents: policy.warmupEvents,
         measuredEvents: policy.measuredEvents,
         logicalMeasuredDeliveries: measured.deliveries,
@@ -1023,11 +1067,12 @@ async function main(): Promise<void> {
         rssBytesPerConnection,
         maximumInstanceQueueDepth: maxQueueDepth,
         maximumInstanceQueueBytes: maxQueueBytes,
+        maximumInstanceIndexedSpaces: maxIndexedSpaces,
         clientDuplicateDeliveries: tracker.duplicates,
         duplicateEventsRejected,
         reconnectRecoveryDeliveries: reconnectDelivery.deliveries,
         degradedLocalDeliveries: degradedDeliveryCount,
-        degradedRemoteDeliveries: degradedDeliveryCount - localConnections,
+        degradedRemoteDeliveries: degradedDeliveryCount - localRecipients,
         recoveryDeliveries: recoveryDelivery.deliveries,
         slowConsumer,
         subscriberFailure,
