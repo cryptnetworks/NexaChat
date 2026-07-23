@@ -16,7 +16,43 @@ const MAX_DOCUMENT_BYTES = 256 * 1024;
 const MAX_TOTAL_BYTES = 5 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MANIFEST = '.nexachat-docs-manifest';
-const GENERATED_PAGES = ['Home.md', '_Sidebar.md'];
+const REPOSITORY_ONLY_DOCUMENT =
+  /(?:^|\/)(?:audit|performance-audit)-\d{4}-\d{2}-\d{2}\.md$/u;
+const NAVIGATION = [
+  {
+    groups: ['Architecture'],
+    page: 'Architecture.md',
+    title: 'Architecture',
+    description:
+      'Design decisions, service boundaries, contracts, real-time behavior, and the desktop shell.',
+  },
+  {
+    groups: ['Operations'],
+    page: 'Operations-And-Deployment.md',
+    title: 'Operations and deployment',
+    description:
+      'Local development, production deployment, containers, data services, observability, and recovery.',
+  },
+  {
+    groups: ['Security', 'Privacy'],
+    page: 'Security-And-Privacy.md',
+    title: 'Security and privacy',
+    description:
+      'Threat models, security controls, credential handling, privacy commitments, and data lifecycle guidance.',
+  },
+  {
+    groups: ['Releases'],
+    page: 'Releases-And-Support.md',
+    title: 'Releases and support',
+    description:
+      'Versioning, release validation, upgrades, rollback, artifact integrity, and compatibility policy.',
+  },
+];
+const GENERATED_PAGES = [
+  'Home.md',
+  '_Sidebar.md',
+  ...NAVIGATION.map((entry) => entry.page),
+];
 
 export class WikiExportError extends Error {
   constructor(code) {
@@ -66,6 +102,14 @@ function groupTitle(sourcePath) {
   const group = sourcePath.split('/')[0] ?? '';
   if (!group) fail('invalid_source_group');
   return `${group.slice(0, 1).toUpperCase()}${group.slice(1)}`;
+}
+
+function sourceGroup(sourcePath) {
+  return groupTitle(sourcePath).replace(/\.md$/u, '');
+}
+
+function publishToWiki(sourcePath) {
+  return !REPOSITORY_ONLY_DOCUMENT.test(sourcePath);
 }
 
 async function regularDirectory(path, context) {
@@ -121,7 +165,14 @@ async function collectDocuments(sourceDirectory) {
   return documents;
 }
 
-function rewriteLinks(markdown, sourcePath, pageBySource) {
+function rewriteLinks(
+  markdown,
+  sourcePath,
+  pageBySource,
+  sourcePaths,
+  repository,
+  branch,
+) {
   return markdown.replace(
     /(!?\[[^\]\r\n]*\]\()([^\s)]+)([^)\r\n]*\))/g,
     (match, prefix, destination, suffix) => {
@@ -136,58 +187,118 @@ function rewriteLinks(markdown, sourcePath, pageBySource) {
       const path =
         hashIndex === -1 ? destination : destination.slice(0, hashIndex);
       const anchor = hashIndex === -1 ? '' : destination.slice(hashIndex);
-      if (!path.endsWith('.md')) return match;
       if (isAbsolute(path) || path.includes('\\')) fail('unsafe_document_link');
       const target = posix.normalize(
         posix.join(posix.dirname(sourcePath), path),
       );
-      if (target === '..' || target.startsWith('../')) {
-        fail(`document_link_outside_docs:${sourcePath}`);
+      if (
+        path.endsWith('.md') &&
+        target !== '..' &&
+        !target.startsWith('../')
+      ) {
+        const targetPage = pageBySource.get(target);
+        if (targetPage) {
+          return `${prefix}${targetPage.slice(0, -3)}${anchor}${suffix}`;
+        }
+        if (!sourcePaths.has(target)) {
+          fail(`missing_document_link:${sourcePath}`);
+        }
       }
-      const targetPage = pageBySource.get(target);
-      if (!targetPage) fail(`missing_document_link:${sourcePath}`);
-      return `${prefix}${targetPage.slice(0, -3)}${anchor}${suffix}`;
+
+      const repositoryPath = posix.normalize(
+        posix.join('docs', posix.dirname(sourcePath), path),
+      );
+      if (
+        repositoryPath === '..' ||
+        repositoryPath.startsWith('../') ||
+        repositoryPath.startsWith('/')
+      ) {
+        fail(`document_link_outside_repository:${sourcePath}`);
+      }
+      return `${prefix}https://github.com/${repository}/blob/${branch}/${repositoryPath}${anchor}${suffix}`;
     },
   );
 }
 
-function generatedPage(sourcePath, markdown, pageBySource) {
-  const rewritten = rewriteLinks(markdown, sourcePath, pageBySource).trimEnd();
+function generatedPage(
+  sourcePath,
+  markdown,
+  pageBySource,
+  sourcePaths,
+  repository,
+  branch,
+) {
+  const rewritten = rewriteLinks(
+    markdown,
+    sourcePath,
+    pageBySource,
+    sourcePaths,
+    repository,
+    branch,
+  ).trimEnd();
   return `<!-- Generated from docs/${sourcePath}; edit the repository source, not this wiki page. -->\n\n${rewritten}\n`;
 }
 
 function navigationPages(records, repository, branch) {
-  const grouped = new Map();
-  for (const record of records) {
-    const group = groupTitle(record.sourcePath);
-    const groupRecords = grouped.get(group) ?? [];
-    groupRecords.push(record);
-    grouped.set(group, groupRecords);
-  }
-  const groups = [...grouped.entries()].sort(([left], [right]) =>
-    left.localeCompare(right, 'en'),
+  const recordsBySource = new Map(
+    records.map((record) => [record.sourcePath, record]),
   );
-  const sections = groups
-    .map(
-      ([group, entries]) =>
-        `## ${group}\n\n${entries
-          .map((entry) => `- [${entry.title}](${entry.page.slice(0, -3)})`)
-          .join('\n')}`,
-    )
-    .join('\n\n');
-  const sidebarSections = groups
-    .map(
-      ([group, entries]) =>
-        `### ${group}\n${entries
-          .map((entry) => `- [${entry.title}](${entry.page.slice(0, -3)})`)
-          .join('\n')}`,
-    )
-    .join('\n\n');
+  const pageLink = (record) => `[${record.title}](${record.page.slice(0, -3)})`;
+  const categoryEntries = NAVIGATION.map((category) => ({
+    ...category,
+    records: records.filter((record) =>
+      category.groups.includes(sourceGroup(record.sourcePath)),
+    ),
+  })).filter((category) => category.records.length > 0);
+  const categorizedGroups = new Set(
+    categoryEntries.flatMap((category) => category.groups),
+  );
+  const uncategorized = records.filter(
+    (record) => !categorizedGroups.has(sourceGroup(record.sourcePath)),
+  );
+  const startHere = [
+    'operations/development.md',
+    'operations/production-deployment.md',
+    'operations/backup-and-restore.md',
+    'security/threat-model.md',
+    'releases/support-compatibility.md',
+  ]
+    .map((sourcePath) => recordsBySource.get(sourcePath))
+    .filter(Boolean);
   const sourceUrl = `https://github.com/${repository}/tree/${branch}/docs`;
-  return {
-    'Home.md': `<!-- Generated by tools/wiki/export.mjs. -->\n\n# Nexa Chat documentation\n\nThese pages are published from the repository's [\`docs/\` directory](${sourceUrl}). Edit and review documentation in the main repository; changes made directly to generated wiki pages will be replaced.\n\n${sections}\n`,
-    '_Sidebar.md': `<!-- Generated by tools/wiki/export.mjs. -->\n\n**[Nexa Chat documentation](Home)**\n\n${sidebarSections}\n`,
-  };
+  const pages = new Map();
+  for (const category of categoryEntries) {
+    pages.set(
+      category.page,
+      `<!-- Generated by tools/wiki/export.mjs. -->\n\n# ${category.title}\n\n${category.description}\n\nThese pages are published from [\`docs/\`](${sourceUrl}). Edit their repository source, not this generated index.\n\n## Pages\n\n${category.records.map((record) => `- ${pageLink(record)}`).join('\n')}\n`,
+    );
+  }
+  const homeSections = [
+    startHere.length
+      ? `## Start here\n\n${startHere.map((record) => `- ${pageLink(record)}`).join('\n')}`
+      : '',
+    `## Browse by topic\n\n${categoryEntries
+      .map(
+        (category) =>
+          `- [${category.title}](${category.page.slice(0, -3)}) — ${category.description}`,
+      )
+      .concat(uncategorized.map((record) => `- ${pageLink(record)}`))
+      .join('\n')}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  pages.set(
+    'Home.md',
+    `<!-- Generated by tools/wiki/export.mjs. -->\n\n# NexaChat documentation\n\nDetailed project guidance is published from the repository's [\`docs/\` directory](${sourceUrl}). Edit and review the repository source; direct edits to generated wiki pages are replaced on the next successful publication.\n\n${homeSections}\n`,
+  );
+  pages.set(
+    '_Sidebar.md',
+    `<!-- Generated by tools/wiki/export.mjs. -->\n\n**[NexaChat documentation](Home)**\n\n- [Home](Home)\n${categoryEntries
+      .map((category) => `- [${category.title}](${category.page.slice(0, -3)})`)
+      .concat(uncategorized.map((record) => `- ${pageLink(record)}`))
+      .join('\n')}\n`,
+  );
+  return pages;
 }
 
 function safeManagedPage(value) {
@@ -260,17 +371,25 @@ export async function exportWiki({
   }
 
   const documents = await collectDocuments(source);
+  const publishedDocuments = documents.filter((document) =>
+    publishToWiki(document.sourcePath),
+  );
+  const sourcePaths = new Set(documents.map((document) => document.sourcePath));
   const pageBySource = new Map();
   const caseInsensitivePages = new Set();
-  for (const document of documents) {
+  const reservedPages = new Set(
+    GENERATED_PAGES.map((page) => page.toLocaleLowerCase('en-US')),
+  );
+  for (const document of publishedDocuments) {
     const page = pageSlug(document.sourcePath);
     const folded = page.toLocaleLowerCase('en-US');
+    if (reservedPages.has(folded)) fail('reserved_page_slug');
     if (caseInsensitivePages.has(folded)) fail('duplicate_page_slug');
     caseInsensitivePages.add(folded);
     pageBySource.set(document.sourcePath, page);
   }
 
-  const records = documents
+  const records = publishedDocuments
     .map((document) => ({
       ...document,
       page: pageBySource.get(document.sourcePath),
@@ -281,11 +400,18 @@ export async function exportWiki({
   for (const record of records) {
     generated.set(
       record.page,
-      generatedPage(record.sourcePath, record.markdown, pageBySource),
+      generatedPage(
+        record.sourcePath,
+        record.markdown,
+        pageBySource,
+        sourcePaths,
+        repository,
+        branch,
+      ),
     );
   }
   const navigation = navigationPages(records, repository, branch);
-  for (const page of GENERATED_PAGES) generated.set(page, navigation[page]);
+  for (const [page, contents] of navigation) generated.set(page, contents);
 
   const previous = await previousManifest(destination);
   const current = [...generated.keys()].sort();
@@ -315,7 +441,7 @@ export async function exportWiki({
   );
   return {
     schemaVersion: 1,
-    documents: documents.length,
+    documents: publishedDocuments.length,
     pages: generated.size,
     bytes,
     removedPages: previous.filter((page) => !generated.has(page)).length,

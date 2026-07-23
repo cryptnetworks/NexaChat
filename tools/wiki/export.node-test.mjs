@@ -27,11 +27,19 @@ async function fixture() {
   ]);
   await writeFile(
     resolve(source, 'architecture', 'overview.md'),
-    '# Architecture overview\n\nSee the [runbook](../operations/recovery.md#restart).\n',
+    '# Architecture overview\n\nSee the [runbook](../operations/recovery.md#restart), [security reporting](../../SECURITY.md#private-report), [repository ownership](../../.github/CODEOWNERS), and [benchmark evidence](../operations/performance-audit-2026-01-01.md).\n',
   );
   await writeFile(
     resolve(source, 'operations', 'recovery.md'),
     '# Recovery runbook\n\nExternal [guidance](https://example.test/guide).\n',
+  );
+  await writeFile(
+    resolve(source, 'accessibility.md'),
+    '# Accessibility guide\n\nKeyboard-first interface notes.\n',
+  );
+  await writeFile(
+    resolve(source, 'operations', 'performance-audit-2026-01-01.md'),
+    '# Performance audit\n\nRepository-only benchmark evidence.\n',
   );
   return { root, source, destination };
 }
@@ -60,16 +68,19 @@ test('exports deterministic flat pages, navigation, and rewritten links', async 
     repository: 'cryptnetworks/NexaChat',
   });
   assert.equal(result.schemaVersion, 1);
-  assert.equal(result.documents, 2);
-  assert.equal(result.pages, 4);
+  assert.equal(result.documents, 3);
+  assert.equal(result.pages, 7);
   assert.equal(result.removedPages, 1);
   assert.ok(result.bytes > 0);
   const files = (await readdir(destination)).sort();
   assert.deepEqual(files, [
     '.nexachat-docs-manifest',
+    'Accessibility.md',
     'Architecture-Overview.md',
+    'Architecture.md',
     'Home.md',
     'Manual.md',
+    'Operations-And-Deployment.md',
     'Operations-Recovery.md',
     '_Sidebar.md',
   ]);
@@ -78,11 +89,36 @@ test('exports deterministic flat pages, navigation, and rewritten links', async 
     'utf8',
   );
   assert.match(architecture, /\(Operations-Recovery#restart\)/);
-  assert.doesNotMatch(architecture, /\.\.\/operations/);
   assert.match(
-    await readFile(resolve(destination, 'Home.md'), 'utf8'),
-    /Architecture overview/,
+    architecture,
+    /\(https:\/\/github\.com\/cryptnetworks\/NexaChat\/blob\/main\/SECURITY\.md#private-report\)/,
   );
+  assert.match(
+    architecture,
+    /\(https:\/\/github\.com\/cryptnetworks\/NexaChat\/blob\/main\/\.github\/CODEOWNERS\)/,
+  );
+  assert.match(
+    architecture,
+    /\(https:\/\/github\.com\/cryptnetworks\/NexaChat\/blob\/main\/docs\/operations\/performance-audit-2026-01-01\.md\)/,
+  );
+  assert.ok(!files.includes('Operations-Performance-Audit-2026-01-01.md'));
+  assert.doesNotMatch(architecture, /\.\.\/operations/);
+  const home = await readFile(resolve(destination, 'Home.md'), 'utf8');
+  assert.match(home, /# NexaChat documentation/);
+  assert.match(home, /\[Architecture\]\(Architecture\)/);
+  assert.match(
+    home,
+    /\[Operations and deployment\]\(Operations-And-Deployment\)/,
+  );
+  assert.match(home, /- \[Accessibility guide\]\(Accessibility\)/);
+  assert.match(
+    await readFile(resolve(destination, 'Architecture.md'), 'utf8'),
+    /- \[Architecture overview\]\(Architecture-Overview\)/,
+  );
+  const sidebar = await readFile(resolve(destination, '_Sidebar.md'), 'utf8');
+  assert.match(sidebar, /\[Architecture\]\(Architecture\)/);
+  assert.match(sidebar, /- \[Accessibility guide\]\(Accessibility\)/);
+  assert.doesNotMatch(sidebar, /Architecture overview/);
   assert.equal(
     await readFile(resolve(destination, 'Manual.md'), 'utf8'),
     'Preserve me\n',
