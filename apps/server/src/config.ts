@@ -82,6 +82,7 @@ const keys = new Set([
   'NODE_ENV',
   'NEXA_CONFIG_SCHEMA',
   'DATABASE_URL',
+  'MIGRATION_DATABASE_URL',
   'NEXA_DEPLOYMENT_PROFILE',
   'NEXA_PUBLIC_URL',
   'NEXA_TRUSTED_PROXY_CIDRS',
@@ -176,15 +177,12 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     RUNTIME_CONFIGURATION_SCHEMA_VERSION,
     'NEXA_CONFIG_SCHEMA',
   );
-  const connectionString = required(env, 'DATABASE_URL');
-  const databaseUrl = url(connectionString, 'DATABASE_URL');
-  if (
-    databaseUrl.protocol !== 'postgres:' &&
-    databaseUrl.protocol !== 'postgresql:'
-  )
-    fail('DATABASE_URL', 'must use the postgres or postgresql scheme');
-  if (mode === 'production')
-    validateProductionDatabase(databaseUrl, deploymentProfile);
+  const database = parsePostgresConfig(
+    env,
+    'DATABASE_URL',
+    mode,
+    deploymentProfile,
+  );
   const trustedOrigin = origin(
     required(env, 'NEXA_WEB_ORIGIN'),
     'NEXA_WEB_ORIGIN',
@@ -422,40 +420,7 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
         'NEXA_TRACE_SAMPLE_RATE',
       ),
     },
-    database: {
-      connectionString,
-      maxConnections: int(
-        env.NEXA_DATABASE_POOL_MAX,
-        10,
-        1,
-        50,
-        'NEXA_DATABASE_POOL_MAX',
-      ),
-      connectionTimeoutMs: int(
-        env.NEXA_DATABASE_CONNECT_TIMEOUT_MS,
-        5_000,
-        100,
-        60_000,
-        'NEXA_DATABASE_CONNECT_TIMEOUT_MS',
-      ),
-      idleTimeoutMs: int(
-        env.NEXA_DATABASE_IDLE_TIMEOUT_MS,
-        30_000,
-        1_000,
-        300_000,
-        'NEXA_DATABASE_IDLE_TIMEOUT_MS',
-      ),
-      queryTimeoutMs: int(
-        env.NEXA_DATABASE_QUERY_TIMEOUT_MS,
-        5_000,
-        100,
-        60_000,
-        'NEXA_DATABASE_QUERY_TIMEOUT_MS',
-      ),
-      migrationsDirectory:
-        env.NEXA_MIGRATIONS_DIR ??
-        fileURLToPath(new URL('../migrations', import.meta.url)),
-    },
+    database,
     objectStorage: {
       enabled: objectStorageEnabled,
       ...(objectStorageEnabled
@@ -699,6 +664,34 @@ export function parseRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   };
 }
 
+/** Parses the database credential used exclusively by the migration process.
+ * Runtime processes intentionally cannot fall back to this credential. */
+export function parseMigrationConfig(env: NodeJS.ProcessEnv): PostgresConfig {
+  if (env.DATABASE_URL !== undefined)
+    fail('DATABASE_URL', 'is not accepted by the migration process');
+  const mode = choice(env.NODE_ENV ?? 'development', 'NODE_ENV', [
+    'development',
+    'test',
+    'production',
+  ] as const);
+  const deploymentProfile = choice(
+    env.NEXA_DEPLOYMENT_PROFILE ?? 'standard',
+    'NEXA_DEPLOYMENT_PROFILE',
+    ['standard', 'single-host-private'] as const,
+  );
+  if (mode !== 'production' && deploymentProfile !== 'standard')
+    fail(
+      'NEXA_DEPLOYMENT_PROFILE',
+      'single-host-private is supported only in production',
+    );
+  return parsePostgresConfig(
+    env,
+    'MIGRATION_DATABASE_URL',
+    mode,
+    deploymentProfile,
+  );
+}
+
 export function safeConfigurationDiagnostic(error: unknown) {
   return error instanceof ConfigurationError
     ? { code: error.code, key: error.key, reason: error.reason }
@@ -770,20 +763,74 @@ function origin(value: string, key: string): string {
     fail(key, 'must be an exact HTTP or HTTPS origin without a path');
   return parsed.origin;
 }
+
+function parsePostgresConfig(
+  env: NodeJS.ProcessEnv,
+  connectionKey: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL',
+  mode: RuntimeMode,
+  profile: DeploymentProfile,
+): PostgresConfig {
+  const connectionString = required(env, connectionKey);
+  const databaseUrl = url(connectionString, connectionKey);
+  if (
+    databaseUrl.protocol !== 'postgres:' &&
+    databaseUrl.protocol !== 'postgresql:'
+  )
+    fail(connectionKey, 'must use the postgres or postgresql scheme');
+  if (mode === 'production')
+    validateProductionDatabase(databaseUrl, profile, connectionKey);
+  return {
+    connectionString,
+    maxConnections: int(
+      env.NEXA_DATABASE_POOL_MAX,
+      10,
+      1,
+      50,
+      'NEXA_DATABASE_POOL_MAX',
+    ),
+    connectionTimeoutMs: int(
+      env.NEXA_DATABASE_CONNECT_TIMEOUT_MS,
+      5_000,
+      100,
+      60_000,
+      'NEXA_DATABASE_CONNECT_TIMEOUT_MS',
+    ),
+    idleTimeoutMs: int(
+      env.NEXA_DATABASE_IDLE_TIMEOUT_MS,
+      30_000,
+      1_000,
+      300_000,
+      'NEXA_DATABASE_IDLE_TIMEOUT_MS',
+    ),
+    queryTimeoutMs: int(
+      env.NEXA_DATABASE_QUERY_TIMEOUT_MS,
+      5_000,
+      100,
+      60_000,
+      'NEXA_DATABASE_QUERY_TIMEOUT_MS',
+    ),
+    migrationsDirectory:
+      env.NEXA_MIGRATIONS_DIR ??
+      fileURLToPath(new URL('../migrations', import.meta.url)),
+  };
+}
 function validateProductionDatabase(
   parsed: URL,
   profile: DeploymentProfile,
+  key: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL',
 ): void {
   if (!parsed.username || !parsed.password)
-    fail('DATABASE_URL', 'must include authentication in production');
-  if (parsed.pathname.length <= 1)
-    fail('DATABASE_URL', 'must include a database name');
-  if (parsed.hash) fail('DATABASE_URL', 'must not contain a fragment');
-  validateProductionDatabaseParameters(parsed);
+    fail(key, 'must include authentication in production');
+  if (parsed.pathname.length <= 1) fail(key, 'must include a database name');
+  if (parsed.hash) fail(key, 'must not contain a fragment');
+  validateProductionDatabaseParameters(parsed, key);
   if (isSingleHostDatabase(parsed, profile)) return;
-  validateProductionDatabaseTls(parsed);
+  validateProductionDatabaseTls(parsed, key);
 }
-function validateProductionDatabaseParameters(parsed: URL): void {
+function validateProductionDatabaseParameters(
+  parsed: URL,
+  connectionKey: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL',
+): void {
   const allowed = new Set([
     'sslmode',
     'sslcert',
@@ -792,15 +839,18 @@ function validateProductionDatabaseParameters(parsed: URL): void {
     'sslnegotiation',
   ]);
   const seen = new Set<string>();
-  for (const [key] of parsed.searchParams.entries()) {
-    if (!allowed.has(key))
-      fail('DATABASE_URL', 'contains unsupported query parameters');
-    if (seen.has(key))
-      fail('DATABASE_URL', 'must not contain duplicate query parameters');
-    seen.add(key);
+  for (const [parameter] of parsed.searchParams.entries()) {
+    if (!allowed.has(parameter))
+      fail(connectionKey, 'contains unsupported query parameters');
+    if (seen.has(parameter))
+      fail(connectionKey, 'must not contain duplicate query parameters');
+    seen.add(parameter);
   }
 }
-function validateProductionDatabaseTls(parsed: URL): void {
+function validateProductionDatabaseTls(
+  parsed: URL,
+  connectionKey: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL',
+): void {
   const tlsParameters = new Set([
     'ssl',
     'sslcert',
@@ -817,21 +867,21 @@ function validateProductionDatabaseTls(parsed: URL): void {
         tlsParameters.has(key.toLowerCase()) && key !== key.toLowerCase(),
     )
   )
-    fail('DATABASE_URL', 'TLS parameter names must use lowercase');
+    fail(connectionKey, 'TLS parameter names must use lowercase');
   if (parsed.searchParams.has('uselibpqcompat'))
-    fail('DATABASE_URL', 'must not enable libpq compatibility in production');
+    fail(connectionKey, 'must not enable libpq compatibility in production');
   if (parsed.searchParams.has('ssl'))
-    fail('DATABASE_URL', 'must not combine ssl with sslmode in production');
+    fail(connectionKey, 'must not combine ssl with sslmode in production');
   for (const key of tlsParameters) {
     const values = parsed.searchParams.getAll(key);
     if (values.length > 1)
-      fail('DATABASE_URL', 'must not contain duplicate TLS parameters');
+      fail(connectionKey, 'must not contain duplicate TLS parameters');
     if (key !== 'sslmode' && values.some((value) => !value))
-      fail('DATABASE_URL', 'TLS parameters cannot be empty');
+      fail(connectionKey, 'TLS parameters cannot be empty');
   }
   const sslModes = parsed.searchParams.getAll('sslmode');
   if (sslModes.length !== 1 || sslModes[0] !== 'verify-full')
-    fail('DATABASE_URL', 'must use sslmode=verify-full in production');
+    fail(connectionKey, 'must use sslmode=verify-full in production');
 }
 function isSingleHostDatabase(
   parsed: URL,

@@ -19,6 +19,8 @@ RUN apk add --no-cache --upgrade \
   libxml2=2.13.9-r1 \
   xz-libs=5.8.3-r0 \
   && rm -f /usr/local/bin/gosu
+COPY deploy/postgres/nexa-bootstrap-roles /usr/local/bin/nexa-bootstrap-roles
+RUN chmod 0555 /usr/local/bin/nexa-bootstrap-roles
 USER 70:70
 
 FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS build-dependencies
@@ -40,6 +42,26 @@ RUN npm ci --ignore-scripts
 FROM build-dependencies AS production-build
 COPY . .
 RUN npm run build:production
+
+FROM build-dependencies AS development-runtime
+ENV NODE_ENV=development
+RUN mkdir -p \
+  /workspace/apps/server/src \
+  /workspace/apps/server/migrations \
+  /workspace/apps/web/src \
+  /workspace/apps/web/public \
+  /workspace/packages \
+  && touch \
+  /workspace/apps/server/tsconfig.json \
+  /workspace/apps/server/tsconfig.build.json \
+  /workspace/apps/web/index.html \
+  /workspace/apps/web/tsconfig.json \
+  /workspace/apps/web/vite.config.ts \
+  /workspace/tsconfig.base.json \
+  && chown -R node:node /workspace
+USER node
+EXPOSE 3000 5173
+STOPSIGNAL SIGTERM
 
 FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS server-dependencies
 ENV NODE_ENV=production
@@ -64,6 +86,7 @@ WORKDIR /app/server
 COPY --from=server-dependencies --chown=node:node /app/node_modules /app/node_modules
 COPY --from=production-build --chown=node:node /workspace/apps/server/dist-production/ ./
 COPY --chown=node:node apps/server/migrations/ ./migrations/
+COPY --chown=node:node LICENSE NOTICE /usr/share/licenses/nexa-chat/
 RUN rm -rf /usr/local/lib/node_modules/npm \
   /usr/local/lib/node_modules/corepack \
   /usr/local/bin/npm \
@@ -162,6 +185,7 @@ LABEL org.opencontainers.image.title="NexaChat edge" \
 RUN find /usr/share/nginx/html -mindepth 1 -maxdepth 1 -delete
 COPY --from=production-build --chown=nginx:nginx /workspace/apps/web/dist/ /usr/share/nginx/html/
 COPY --chown=nginx:nginx deploy/nginx/ /etc/nginx/
+COPY --chown=nginx:nginx LICENSE NOTICE /usr/share/licenses/nexa-chat/
 
 USER nginx
 EXPOSE 8443
@@ -170,6 +194,8 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget --quiet --spider --no-check-certificate https://127.0.0.1:8443/health/live || exit 1
 ENTRYPOINT ["nginx"]
 CMD ["-g", "daemon off;"]
+
+FROM edge-runtime AS web-runtime
 
 FROM edge-runtime AS edge-cloudflare-runtime
 COPY --chown=nginx:nginx deploy/nginx-cloudflare/nginx.conf /etc/nginx/nginx.conf

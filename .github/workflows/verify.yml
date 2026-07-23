@@ -49,6 +49,7 @@ jobs:
       - run: npm run verify:security-policy
       - run: npm run verify:backup-policy
       - run: npm run verify:cloudflare-policy
+      - run: npm run verify:container-policy
       - run: npm test
       - name: Install accessibility test browser
         run: npx playwright install --with-deps chromium
@@ -59,6 +60,8 @@ jobs:
       - name: Enforce deterministic web bundle budgets
         run: npm run test:bundle-budget
       - run: docker compose config --quiet
+      - name: Validate development application Compose model
+        run: docker compose -f docker-compose.yml -f compose.development.yml config --quiet
       - name: Validate production Compose model
         env:
           NEXA_SECRET_DIR: /tmp/nexa-chat-ci-secrets

@@ -1,0 +1,114 @@
+#!/bin/sh
+set -eu
+
+read_secret() {
+  value=$(cat "$1")
+  case "$value" in
+    ''|*[!A-Za-z0-9_-]*)
+      echo 'database role secret is invalid' >&2
+      exit 1
+      ;;
+  esac
+  printf '%s' "$value"
+}
+
+owner_url=$(cat "${DATABASE_OWNER_URL_FILE:?DATABASE_OWNER_URL_FILE is required}")
+migration_password=$(read_secret "${NEXA_MIGRATION_PASSWORD_FILE:?NEXA_MIGRATION_PASSWORD_FILE is required}")
+runtime_password=$(read_secret "${NEXA_RUNTIME_PASSWORD_FILE:?NEXA_RUNTIME_PASSWORD_FILE is required}")
+backup_password=$(read_secret "${NEXA_BACKUP_PASSWORD_FILE:?NEXA_BACKUP_PASSWORD_FILE is required}")
+
+if [ "$migration_password" = "$runtime_password" ] || \
+  [ "$migration_password" = "$backup_password" ] || \
+  [ "$runtime_password" = "$backup_password" ]; then
+  echo 'database role secrets must be distinct' >&2
+  exit 1
+fi
+
+exec psql "$owner_url" -X --set=ON_ERROR_STOP=1 \
+  --set=migration_password="$migration_password" \
+  --set=runtime_password="$runtime_password" \
+  --set=backup_password="$backup_password" <<'SQL'
+SELECT pg_advisory_lock(1318611193);
+
+SELECT 'CREATE ROLE nexa_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nexa_migrator')
+\gexec
+SELECT 'CREATE ROLE nexa_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nexa_app')
+\gexec
+SELECT 'CREATE ROLE nexa_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nexa_backup')
+\gexec
+
+ALTER ROLE nexa_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'migration_password';
+ALTER ROLE nexa_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'runtime_password';
+ALTER ROLE nexa_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'backup_password';
+
+SELECT format('ALTER DATABASE %I OWNER TO nexa_migrator', current_database())
+\gexec
+ALTER SCHEMA public OWNER TO nexa_migrator;
+
+SELECT format(
+  'ALTER %s %I.%I OWNER TO nexa_migrator',
+  CASE c.relkind
+    WHEN 'S' THEN 'SEQUENCE'
+    WHEN 'v' THEN 'VIEW'
+    WHEN 'm' THEN 'MATERIALIZED VIEW'
+    WHEN 'f' THEN 'FOREIGN TABLE'
+    ELSE 'TABLE'
+  END,
+  n.nspname,
+  c.relname
+)
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+  AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+\gexec
+SELECT format('ALTER FUNCTION %s OWNER TO nexa_migrator', p.oid::regprocedure)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public'
+  AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+\gexec
+SELECT format('ALTER TYPE %I.%I OWNER TO nexa_migrator', n.nspname, t.typname)
+FROM pg_type t
+JOIN pg_namespace n ON n.oid = t.typnamespace
+WHERE n.nspname = 'public'
+  AND t.typowner = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+  AND t.typtype IN ('b', 'c', 'd', 'e', 'r')
+\gexec
+
+SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO nexa_migrator, nexa_app, nexa_backup', current_database())
+\gexec
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+REVOKE CREATE ON SCHEMA public FROM nexa_app, nexa_backup;
+GRANT USAGE ON SCHEMA public TO nexa_app, nexa_backup;
+GRANT USAGE, CREATE ON SCHEMA public TO nexa_migrator;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nexa_app;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO nexa_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO nexa_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO nexa_backup;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO nexa_backup;
+DO $$
+BEGIN
+  IF to_regclass('public.nexa_schema_migrations') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE nexa_schema_migrations FROM nexa_app;
+  END IF;
+END $$;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO nexa_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO nexa_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO nexa_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public GRANT SELECT ON TABLES TO nexa_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexa_migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO nexa_backup;
+SQL

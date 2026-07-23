@@ -290,6 +290,7 @@ export interface Page<T> {
 export interface ListPage {
   limit: number;
   cursor?: string;
+  direction?: 'forward' | 'backward';
 }
 
 export interface Persistence {
@@ -3024,15 +3025,23 @@ export class InMemoryPersistence implements Persistence {
         .sort(
           (a, b) =>
             a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-        )
-        .filter((v) => `${v.createdAt}:${v.id}` > after(p.cursor));
-      const items = values.slice(0, p.limit);
-      const last = items.at(-1);
+        );
+      const pageCursor = after(p.cursor);
+      const backward = p.direction === 'backward';
+      const matching = backward
+        ? values.filter(
+            (v) => !p.cursor || `${v.createdAt}:${v.id}` < pageCursor,
+          )
+        : values.filter((v) => `${v.createdAt}:${v.id}` > pageCursor);
+      const items = backward
+        ? matching.slice(Math.max(0, matching.length - p.limit))
+        : matching.slice(0, p.limit);
+      const boundary = backward ? items.at(0) : items.at(-1);
       return {
         items,
         nextCursor:
-          values.length > p.limit && last
-            ? cursor(`${last.createdAt}:${last.id}`)
+          matching.length > p.limit && boundary
+            ? cursor(`${boundary.createdAt}:${boundary.id}`)
             : null,
       };
     },

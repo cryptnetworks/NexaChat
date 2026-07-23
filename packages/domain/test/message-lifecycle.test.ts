@@ -166,6 +166,34 @@ describe('message lifecycle', () => {
     ).toBe(5);
   });
 
+  it('returns the newest authorized page in chronological order when paging backward', async () => {
+    const { service, owner, space } = await fixture();
+    for (let index = 0; index < 5; index += 1)
+      await service.postMessage(
+        space.id,
+        owner.id,
+        `message ${String(index)}`,
+        `request-200${String(index)}`,
+      );
+    const all = await service.listMessages(space.id, owner.id, { limit: 5 });
+    const latest = await service.listMessages(space.id, owner.id, {
+      limit: 2,
+      direction: 'backward',
+    });
+    expect(latest.items).toEqual(all.items.slice(-2));
+    if (!latest.nextCursor) throw new Error('expected older cursor');
+    const older = await service.listMessages(space.id, owner.id, {
+      limit: 3,
+      cursor: latest.nextCursor,
+      direction: 'backward',
+    });
+    expect(older.items).toEqual(all.items.slice(0, 3));
+    expect(
+      new Set([...latest.items, ...older.items].map((message) => message.id))
+        .size,
+    ).toBe(5);
+  });
+
   it('enforces authorship, active membership, and stale edit protection', async () => {
     const { service, owner, member, outsider, space } = await fixture();
     const message = await service.postMessage(

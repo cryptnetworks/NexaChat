@@ -150,6 +150,22 @@ a:focus-visible,
 .messages {
   padding: 32px;
   overflow-y: auto;
+  overflow-anchor: auto;
+}
+.history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 32px;
+  border-bottom: 1px solid #263141;
+}
+.history-controls p {
+  flex: 1 1 14rem;
+  min-height: 1.5em;
+  margin: 0;
+  color: #aab4c3;
+  font-size: 13px;
 }
 .messages article {
   display: flex;
@@ -296,7 +312,8 @@ input {
   }
   header,
   .messages,
-  .invitations {
+  .invitations,
+  .history-controls {
     padding-left: 20px;
     padding-right: 20px;
   }

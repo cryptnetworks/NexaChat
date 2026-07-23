@@ -90,6 +90,7 @@ export const pageQuerySchema = z
       .max(256)
       .regex(/^[A-Za-z0-9_-]+$/)
       .optional(),
+    direction: z.enum(['forward', 'backward']).optional(),
   })
   .strict();
 const auditCursor = z
