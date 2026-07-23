@@ -11,6 +11,7 @@ import {
   recoveryMethodIdSchema,
   recoveryMethodSchema,
   recoveryMethodVerifySchema,
+  recoveryOperatorLockSchema,
   recoveryRequestSchema,
   sessionHandleSchema,
   updateProfileSchema,
@@ -49,6 +50,8 @@ export function registerAuthRoutes(
       await recovery.requestRecovery({
         username: input.username,
         source: request.clientAddress,
+        idempotencyKey:
+          input.idempotencyKey ?? idempotencyKeyHeader(request) ?? request.id,
       });
     } catch (error) {
       if (!(error instanceof RecoveryError)) throw error;
@@ -64,6 +67,8 @@ export function registerAuthRoutes(
       token: input.token,
       newPassword: input.newPassword,
       correlationId: request.id,
+      idempotencyKey:
+        input.idempotencyKey ?? idempotencyKeyHeader(request) ?? request.id,
     });
     return reply.code(204).send();
   });
@@ -167,6 +172,56 @@ export function registerAuthRoutes(
       const authenticated = await authenticateMutation(request, runtime);
       const { id } = recoveryMethodIdSchema.parse(request.params);
       await recovery.revokeMethod(authenticated.account.id, id);
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/admin/accounts/:id/recovery-lock',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      const input = recoveryOperatorLockSchema.parse(request.body);
+      await recovery.operatorLock({
+        actorId: authenticated.account.id,
+        accountId: id,
+        locked: input.locked,
+        authenticatedAt: authenticated.session.recentAuthAt,
+        correlationId: request.id,
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/admin/accounts/:id/recovery-invalidate',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      await recovery.operatorInvalidate({
+        actorId: authenticated.account.id,
+        accountId: id,
+        authenticatedAt: authenticated.session.recentAuthAt,
+        correlationId: request.id,
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/admin/accounts/:id/recovery-revoke',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      await recovery.operatorRevoke({
+        actorId: authenticated.account.id,
+        accountId: id,
+        authenticatedAt: authenticated.session.recentAuthAt,
+        correlationId: request.id,
+      });
       return reply.code(204).send();
     },
   );
@@ -357,6 +412,11 @@ export async function authenticateMutation(
 function enforceOrigin(request: FastifyRequest, config: AuthHttpConfig): void {
   if (request.headers.origin !== config.trustedOrigin)
     throw new HttpSecurityError('csrf_rejected');
+}
+
+function idempotencyKeyHeader(request: FastifyRequest): string | undefined {
+  const value = request.headers['idempotency-key'];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function enforceCsrf(request: FastifyRequest): void {

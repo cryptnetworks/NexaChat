@@ -53,6 +53,7 @@ import type {
   CredentialSecurityEvent,
   RecoveryAccount,
   RecoveryChallenge,
+  RecoveryIdempotencyRecord,
   RecoveryMethod,
   RecoverySecurityEvent,
   RecoveryStore,
@@ -69,7 +70,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 46;
+export const CURRENT_SCHEMA_VERSION = 47;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -1454,6 +1455,96 @@ export class PostgresRecoveryStore implements RecoveryStore {
     );
   }
 
+  async findRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+  ) {
+    const result = await this.db.query<RecoveryIdempotencyRow>(
+      `SELECT id,scope,idempotency_key,request_fingerprint,state,challenge_id,
+       created_at,expires_at,completed_at,version
+       FROM account_recovery_idempotency
+       WHERE scope=$1 AND idempotency_key=$2`,
+      [scope, idempotencyKey],
+    );
+    return result.rows[0] ? mapRecoveryIdempotency(result.rows[0]) : undefined;
+  }
+
+  async createRecoveryIdempotency(record: RecoveryIdempotencyRecord) {
+    const result = await this.db.query(
+      `INSERT INTO account_recovery_idempotency
+       (id,scope,idempotency_key,request_fingerprint,state,challenge_id,
+        created_at,expires_at,completed_at,version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (scope,idempotency_key) DO NOTHING`,
+      [
+        record.id,
+        record.scope,
+        record.idempotencyKey,
+        record.requestFingerprint,
+        record.state,
+        record.challengeId,
+        record.createdAt,
+        record.expiresAt,
+        record.completedAt,
+        record.version,
+      ],
+    );
+    return result.rowCount === 1;
+  }
+
+  async completeRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+    expectedVersion: number,
+    challengeId: string | null,
+    completedAt: string,
+  ) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_idempotency
+       SET state='succeeded',challenge_id=$4,completed_at=$5,version=version+1
+       WHERE scope=$1 AND idempotency_key=$2 AND version=$3 AND state='pending'
+         AND expires_at>$5`,
+      [scope, idempotencyKey, expectedVersion, challengeId, completedAt],
+    );
+    return result.rowCount === 1;
+  }
+
+  async assertRecoveryOperator(actorId: string) {
+    const result = await this.db.query(
+      `SELECT 1 FROM instance_operators io
+       JOIN accounts a ON a.id=io.account_id
+       WHERE io.account_id=$1 AND io.recovery_control AND a.status='active'`,
+      [actorId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async revokeAllMethods(accountId: string) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_methods
+       SET state='revoked',destination_ciphertext='',version=version+1
+       WHERE account_id=$1 AND state<>'revoked'`,
+      [accountId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async expireChallenges(now: string, limit: number) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_challenges
+       SET state='expired',version=version+1
+       WHERE id IN (
+         SELECT id FROM account_recovery_challenges
+         WHERE state='pending' AND expires_at<=$1
+         ORDER BY expires_at,id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )`,
+      [now, limit],
+    );
+    return result.rowCount ?? 0;
+  }
+
   async findChallengeByTokenHash(tokenHash: string) {
     const result = await this.db.query<RecoveryChallengeRow>(
       `SELECT id,account_id,method_id,purpose,token_hash,epoch,state,attempts,
@@ -1539,7 +1630,7 @@ export class PostgresRecoveryStore implements RecoveryStore {
     const result = await this.db.query<RecoveryMethodRow>(
       `SELECT id,account_id,kind,destination_ciphertext,destination_digest,
        state,created_at,last_verified_at,version
-       FROM account_recovery_methods WHERE account_id=$1 AND id=$2`,
+       FROM account_recovery_methods WHERE account_id=$1 AND id=$2 FOR UPDATE`,
       [accountId, methodId],
     );
     return result.rows[0] ? mapRecoveryMethod(result.rows[0]) : undefined;
@@ -1634,15 +1725,16 @@ export class PostgresRecoveryStore implements RecoveryStore {
        (id,actor_id,community_id,invitation_id,action,outcome,occurred_at,
         event_version,actor_type,scope_type,scope_id,target_type,target_id,
         reason_code,correlation_id,retention_until)
-       VALUES ($1,$2,NULL,NULL,$3,$4,$5,1,'account','instance',NULL,
-        'none',NULL,NULL,$6,$5::timestamptz + interval '7 years')`,
+       VALUES ($1,$2,NULL,NULL,$3,$4,$5,2,'account','instance',NULL,
+        'account',$7,NULL,$6,$5::timestamptz + interval '7 years')`,
       [
         event.id,
-        event.accountId,
+        event.actorId ?? event.accountId,
         event.action,
         event.outcome,
         event.occurredAt,
         event.correlationId,
+        event.accountId,
       ],
     );
   }
@@ -1927,6 +2019,18 @@ type RecoveryChallengeRow = {
   used_at: Date | null;
   version: number;
 };
+type RecoveryIdempotencyRow = {
+  id: string;
+  scope: RecoveryIdempotencyRecord['scope'];
+  idempotency_key: string;
+  request_fingerprint: string;
+  state: RecoveryIdempotencyRecord['state'];
+  challenge_id: string | null;
+  created_at: Date;
+  expires_at: Date;
+  completed_at: Date | null;
+  version: number;
+};
 type RecoveryMethodRow = {
   id: string;
   account_id: string;
@@ -1995,6 +2099,20 @@ const mapRecoveryChallenge = (
   expiresAt: row.expires_at.toISOString(),
   createdAt: row.created_at.toISOString(),
   usedAt: row.used_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapRecoveryIdempotency = (
+  row: RecoveryIdempotencyRow,
+): RecoveryIdempotencyRecord => ({
+  id: row.id,
+  scope: row.scope,
+  idempotencyKey: row.idempotency_key,
+  requestFingerprint: row.request_fingerprint,
+  state: row.state,
+  challengeId: row.challenge_id,
+  createdAt: row.created_at.toISOString(),
+  expiresAt: row.expires_at.toISOString(),
+  completedAt: row.completed_at?.toISOString() ?? null,
   version: row.version,
 });
 const mapRecoveryMethod = (row: RecoveryMethodRow): RecoveryMethod => ({

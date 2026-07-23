@@ -63,7 +63,7 @@ Preflight requires:
 - a detached-signature-verified artifact for the exact commit, version,
   channel, platform, and architecture;
 - a supported source version/channel or a genuinely empty clean install;
-- an advisory-locked database plan at or below schema 46 and configuration
+- an advisory-locked database plan at or below schema 47 and configuration
   schema 1 with unknown settings rejected;
 - for existing data, a backup no more than 24 hours old whose PostgreSQL and
   object data were actually restore-tested together under a bounded opaque ID;

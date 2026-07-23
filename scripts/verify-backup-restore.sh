@@ -145,6 +145,29 @@ INSERT INTO accounts (id, display_name, created_at, updated_at)
 VALUES
   ('00000000-0000-4000-8000-000000000001', 'Backup Owner', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('00000000-0000-4000-8000-000000000002', 'Backup Member', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO account_recovery_methods
+  (id, account_id, kind, destination_ciphertext, destination_digest, state,
+   created_at, last_verified_at, version)
+VALUES
+  ('a0000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000001', 'email',
+   'backup-restore-encrypted-destination-fixture', repeat('c', 64), 'verified',
+   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1);
+INSERT INTO account_recovery_challenges
+  (id, account_id, purpose, token_hash, epoch, state, attempts, max_attempts,
+   expires_at, created_at, version)
+VALUES
+  ('b0000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000001', 'account_recovery', repeat('d', 64),
+   1, 'pending', 0, 5, CURRENT_TIMESTAMP + interval '1 hour', CURRENT_TIMESTAMP, 1);
+INSERT INTO account_recovery_idempotency
+  (id, scope, idempotency_key, request_fingerprint, state, challenge_id,
+   created_at, expires_at, completed_at, version)
+VALUES
+  ('c0000000-0000-4000-8000-000000000001', 'recovery.request',
+   'backup-restore-request-1', repeat('e', 64), 'succeeded',
+   'b0000000-0000-4000-8000-000000000001', CURRENT_TIMESTAMP,
+   CURRENT_TIMESTAMP + interval '1 hour', CURRENT_TIMESTAMP, 2);
 INSERT INTO communities (id, owner_id, name)
 VALUES ('10000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001', 'Backup Community');
 INSERT INTO memberships (id, community_id, account_id, status, created_at, updated_at)
@@ -252,6 +275,9 @@ expect_rejection restore_requires_recovery_mode "${compose[@]}" run --rm restore
 database_match="$("${compose[@]}" exec -T postgres psql --username nexa --dbname nexa --tuples-only --no-align --command "SELECT (SELECT count(*) FROM accounts) = 2 AND (SELECT count(*) FROM communities) = 1 AND (SELECT count(*) FROM memberships) = 2 AND (SELECT count(*) FROM spaces) = 1 AND (SELECT count(*) FROM messages WHERE body = 'restore verification message') = 1;")"
 [[ "$database_match" == t ]] || fail 'representative PostgreSQL data did not match'
 
+recovery_match="$("${compose[@]}" exec -T postgres psql --username nexa --dbname nexa --tuples-only --no-align --command 'SELECT (SELECT count(*) FROM account_recovery_methods WHERE destination_digest = repeat($$c$$, 64) AND state = $$verified$$) = 1 AND (SELECT count(*) FROM account_recovery_challenges WHERE token_hash = repeat($$d$$, 64) AND state = $$pending$$) = 1 AND (SELECT count(*) FROM account_recovery_idempotency WHERE idempotency_key = $$backup-restore-request-1$$ AND state = $$succeeded$$) = 1;')"
+[[ "$recovery_match" == t ]] || fail 'restored account recovery state did not match'
+
 audit_query="SELECT (SELECT count(*) FROM audit_events) = 1
   AND (SELECT count(*) FROM audit_checkpoints) = 1
   AND (SELECT bool_and(previous_hash = repeat('0', 64)
@@ -279,7 +305,7 @@ const client=new S3Client({endpoint:process.env.S3_ENDPOINT,region:process.env.S
 
 elapsed="$(( $(date +%s) - started_at ))"
 if [[ -n "${NEXA_BACKUP_EVIDENCE_FILE:-}" ]]; then
-  printf '{"status":"passed","schemaVersion":45,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
+  printf '{"status":"passed","schemaVersion":47,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"recoveryMethods":1,"recoveryChallenges":1,"recoveryIdempotency":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
 fi
 for value in "$postgres_password" "$migration_password" "$runtime_password" "$backup_database_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
   if grep -Fq "$value" "$logs_file"; then fail 'sensitive value appeared in verification logs'; fi

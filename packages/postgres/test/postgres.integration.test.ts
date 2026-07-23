@@ -818,13 +818,29 @@ integration('PostgreSQL authorization persistence', () => {
     const issued = await recovery.requestRecovery({
       username: 'RecoveryUser',
       source: '127.0.0.1',
+      idempotencyKey: 'postgres-recovery-request-1',
+    });
+    const replayed = await recovery.requestRecovery({
+      username: 'RecoveryUser',
+      source: 'different-source',
+      idempotencyKey: 'postgres-recovery-request-1',
     });
     if (!issued.token) throw new Error('recovery token missing');
+    expect(replayed.token).toBeUndefined();
     await recovery.completeRecovery({
       token: issued.token,
       newPassword: 'new password',
       correlationId: randomUUID(),
+      idempotencyKey: 'postgres-recovery-complete-1',
     });
+    await expect(
+      recovery.completeRecovery({
+        token: issued.token,
+        newPassword: 'new password',
+        correlationId: randomUUID(),
+        idempotencyKey: 'postgres-recovery-complete-1',
+      }),
+    ).resolves.toBeUndefined();
     const account = await pool.query(
       'SELECT credential_version,recovery_epoch FROM accounts WHERE id=$1',
       [accountId],
@@ -839,10 +855,43 @@ integration('PostgreSQL authorization persistence', () => {
     );
     expect(challenge.rows[0]).toMatchObject({ state: 'used', epoch: 1 });
     const audit = await pool.query(
-      "SELECT action FROM audit_events WHERE actor_id=$1 AND action='account.recovery.complete'",
+      `SELECT action,event_version,previous_hash,event_hash,target_id,
+              event_hash = encode(digest(concat_ws('|',
+                previous_hash, event_version::text, id::text, actor_type,
+                COALESCE(actor_id::text, service_id, ''), scope_type,
+                COALESCE(scope_id::text, ''), target_type, COALESCE(target_id::text, ''),
+                action, outcome, COALESCE(reason_code, ''), correlation_id::text,
+                to_char(retention_until AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+              ), 'sha256'), 'hex') AS hash_vector_valid
+       FROM audit_events WHERE actor_id=$1 AND action='account.recovery.complete'`,
       [accountId],
     );
     expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]).toMatchObject({
+      action: 'account.recovery.complete',
+      event_version: 2,
+      target_id: accountId,
+      hash_vector_valid: true,
+    });
+    const idempotency = await pool.query(
+      `SELECT scope,state,challenge_id FROM account_recovery_idempotency
+       WHERE idempotency_key IN ('postgres-recovery-request-1','postgres-recovery-complete-1')
+       ORDER BY scope`,
+    );
+    expect(idempotency.rows).toHaveLength(2);
+    expect(idempotency.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scope: 'recovery.request',
+          state: 'succeeded',
+        }),
+        expect.objectContaining({
+          scope: 'recovery.complete',
+          state: 'succeeded',
+        }),
+      ]),
+    );
   });
 });
 

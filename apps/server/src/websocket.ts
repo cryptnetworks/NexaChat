@@ -68,6 +68,7 @@ export interface WebsocketHub {
     accountId: string,
     message: Extract<WebsocketServerMessage, { type: 'notification_read' }>,
   ): void;
+  invalidateAccountSessions?(accountId: string): Promise<void>;
   ready(): Promise<void>;
   close(): Promise<void>;
   snapshot?(): { connections: number; subscriptions: number };
@@ -899,11 +900,25 @@ export function attachWebsocketHub(
         instanceId?: unknown;
         spaceId?: unknown;
         accountId?: unknown;
+        kind?: unknown;
         message?: unknown;
         event?: unknown;
       };
       if (parsed.instanceId === instanceId) return;
       if (typeof parsed.accountId === 'string') {
+        if (parsed.kind === 'session_invalidation') {
+          if (!/^[0-9a-f-]{36}$/iu.test(parsed.accountId)) return;
+          for (const [socket, state] of connections) {
+            if (state.actorId !== parsed.accountId) continue;
+            safeSend(socket, state, {
+              version: 1,
+              type: 'error',
+              error: 'unauthenticated',
+            });
+            socket.close(1008, 'session invalidated');
+          }
+          return;
+        }
         const message = websocketServerMessageSchema.parse(parsed.message);
         if (message.type !== 'notification_read') return;
         if (!remember(message.state.eventId)) return;
@@ -959,6 +974,24 @@ export function attachWebsocketHub(
     );
   }
 
+  async function publishSessionInvalidation(accountId: string): Promise<void> {
+    if (!options.coordination) return;
+    try {
+      await options.coordination.publish(
+        'realtime:events',
+        JSON.stringify({
+          instanceId,
+          kind: 'session_invalidation',
+          accountId,
+        }),
+      );
+    } catch (error) {
+      fanoutState = 'degraded';
+      metrics.increment('realtime_fanout_degraded');
+      throw error;
+    }
+  }
+
   return {
     ready: () => subscriptionsReady,
     broadcast(spaceId, rawEvent) {
@@ -975,6 +1008,20 @@ export function attachWebsocketHub(
         if (state.actorId === accountId)
           sendSerialized(socket, state, serialized);
       publishFanout(JSON.stringify({ instanceId, accountId, message }));
+    },
+    async invalidateAccountSessions(accountId) {
+      if (!/^[0-9a-f-]{36}$/iu.test(accountId))
+        throw new Error('invalid_account_id');
+      for (const [socket, state] of connections) {
+        if (state.actorId !== accountId) continue;
+        safeSend(socket, state, {
+          version: 1,
+          type: 'error',
+          error: 'unauthenticated',
+        });
+        socket.close(1008, 'session invalidated');
+      }
+      await publishSessionInvalidation(accountId);
     },
     async close() {
       if (draining) return;

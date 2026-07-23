@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   FixedWindowRateLimiter,
+  DistributedRecoveryRateLimiter,
   RecoveryError,
   RecoveryService,
   type AuthSession,
   type RecoveryAccount,
   type RecoveryChallenge,
+  type RecoveryIdempotencyRecord,
   type RecoveryMethod,
   type RecoverySecurityEvent,
   type RecoveryStore,
@@ -23,6 +25,8 @@ class Store implements RecoveryStore {
   sessions = new Map<string, AuthSession>();
   challenges = new Map<string, RecoveryChallenge>();
   methods = new Map<string, RecoveryMethod>();
+  idempotency = new Map<string, RecoveryIdempotencyRecord>();
+  operatorIds = new Set<string>();
   events: RecoverySecurityEvent[] = [];
   private tail = Promise.resolve();
 
@@ -39,6 +43,73 @@ class Store implements RecoveryStore {
   createChallenge(challenge: RecoveryChallenge) {
     this.challenges.set(challenge.id, challenge);
     return Promise.resolve();
+  }
+  findRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+  ) {
+    return Promise.resolve(this.idempotency.get(`${scope}:${idempotencyKey}`));
+  }
+  createRecoveryIdempotency(record: RecoveryIdempotencyRecord) {
+    const key = `${record.scope}:${record.idempotencyKey}`;
+    if (this.idempotency.has(key)) return Promise.resolve(false);
+    this.idempotency.set(key, record);
+    return Promise.resolve(true);
+  }
+  completeRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+    expectedVersion: number,
+    challengeId: string | null,
+    completedAt: string,
+  ) {
+    const key = `${scope}:${idempotencyKey}`;
+    const value = this.idempotency.get(key);
+    if (
+      !value ||
+      value.version !== expectedVersion ||
+      value.state !== 'pending'
+    )
+      return Promise.resolve(false);
+    this.idempotency.set(key, {
+      ...value,
+      state: 'succeeded',
+      challengeId,
+      completedAt,
+      version: value.version + 1,
+    });
+    return Promise.resolve(true);
+  }
+  assertRecoveryOperator(actorId: string) {
+    return Promise.resolve(this.operatorIds.has(actorId));
+  }
+  revokeAllMethods(accountId: string) {
+    let count = 0;
+    for (const [id, value] of this.methods) {
+      if (value.accountId !== accountId || value.state === 'revoked') continue;
+      this.methods.set(id, {
+        ...value,
+        state: 'revoked',
+        destinationCiphertext: '',
+        version: value.version + 1,
+      });
+      count += 1;
+    }
+    return Promise.resolve(count);
+  }
+  expireChallenges(now: string, limit: number) {
+    let count = 0;
+    for (const [id, value] of this.challenges) {
+      if (count >= limit || value.state !== 'pending' || value.expiresAt > now)
+        continue;
+      this.challenges.set(id, {
+        ...value,
+        state: 'expired',
+        version: value.version + 1,
+      });
+      count += 1;
+    }
+    return Promise.resolve(count);
   }
   findChallengeByTokenHash(tokenHash: string) {
     return Promise.resolve(
@@ -260,6 +331,64 @@ describe('RecoveryService', () => {
     expect(result.token).toHaveLength(43);
   });
 
+  it('keeps unknown, suspended, and locked requests shape-identical', async () => {
+    const { service, store } = fixture();
+    const suspended = account();
+    suspended.id = '00000000-0000-4000-8000-000000000002';
+    suspended.username = 'suspended';
+    suspended.normalizedUsername = 'suspended';
+    suspended.status = 'suspended';
+    const locked = account();
+    locked.id = '00000000-0000-4000-8000-000000000003';
+    locked.username = 'locked';
+    locked.normalizedUsername = 'locked';
+    locked.recoveryLocked = true;
+    store.accounts.set(suspended.id, suspended);
+    store.accounts.set(locked.id, locked);
+    const outcomes = await Promise.all(
+      ['missing', 'suspended', 'locked'].map((username, index) =>
+        service.requestRecovery({
+          username,
+          source: 'enumeration-test',
+          idempotencyKey: `enumeration-request-${String(index)}`,
+        }),
+      ),
+    );
+    expect(outcomes).toEqual([
+      { accepted: true },
+      { accepted: true },
+      { accepted: true },
+    ]);
+  });
+
+  it('hashes distributed flood keys and bounds the local bucket count', async () => {
+    const keys: string[] = [];
+    const limiter = new DistributedRecoveryRateLimiter(
+      {
+        increment: (key) => {
+          keys.push(key);
+          return Promise.resolve({ count: 1 });
+        },
+      },
+      10,
+      1_000,
+      2,
+    );
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        limiter.consume(
+          [`source-${String(index)}`, 'private-identifier'],
+          new Date(),
+        ),
+      ),
+    );
+    expect(keys).toHaveLength(20);
+    expect(keys.every((key) => /^recovery:[0-9a-f]{64}$/u.test(key))).toBe(
+      true,
+    );
+    expect(keys.some((key) => key.includes('private-identifier'))).toBe(false);
+  });
+
   it('allows one completion winner and revokes every session', async () => {
     const { service, store } = fixture();
     const issued = await service.requestRecovery({
@@ -309,6 +438,47 @@ describe('RecoveryService', () => {
     ).rejects.toBeInstanceOf(RecoveryError);
   });
 
+  it('persists restart-safe idempotency outcomes and rejects key reuse conflicts', async () => {
+    const { service, store } = fixture();
+    const first = await service.requestRecovery({
+      username: 'recoverable',
+      source: 'test',
+      idempotencyKey: 'recovery-request-1',
+    });
+    const replay = await service.requestRecovery({
+      username: 'recoverable',
+      source: 'different-source',
+      idempotencyKey: 'recovery-request-1',
+    });
+    expect(first.token).toHaveLength(43);
+    expect(replay.token).toBeUndefined();
+    expect(store.challenges.size).toBe(1);
+
+    if (!first.token) throw new Error('test token missing');
+    await service.completeRecovery({
+      token: first.token,
+      newPassword: 'new password 1',
+      correlationId: '00000000-0000-4000-8000-000000000013',
+      idempotencyKey: 'recovery-complete-1',
+    });
+    await expect(
+      service.completeRecovery({
+        token: first.token,
+        newPassword: 'new password 1',
+        correlationId: '00000000-0000-4000-8000-000000000014',
+        idempotencyKey: 'recovery-complete-1',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.completeRecovery({
+        token: first.token,
+        newPassword: 'different password',
+        correlationId: '00000000-0000-4000-8000-000000000015',
+        idempotencyKey: 'recovery-complete-1',
+      }),
+    ).rejects.toBeInstanceOf(RecoveryError);
+  });
+
   it('keeps method enrollment pending until the matching token verifies', async () => {
     const { service, store } = fixture();
     const started = await service.startMethod({
@@ -333,5 +503,97 @@ describe('RecoveryService', () => {
     expect(store.events.map((event) => event.action)).toContain(
       'account.recovery.method.verify',
     );
+  });
+
+  it('serializes replacement against the verified method and binds its purpose', async () => {
+    const { service, store } = fixture();
+    const oldMethod: RecoveryMethod = {
+      id: '00000000-0000-4000-8000-000000000098',
+      accountId: account().id,
+      kind: 'email',
+      destinationCiphertext: 'old-encrypted-ref',
+      destinationDigest: 'c'.repeat(64),
+      state: 'verified',
+      createdAt: '2025-12-31T00:00:00.000Z',
+      lastVerifiedAt: '2025-12-31T00:00:00.000Z',
+      version: 2,
+    };
+    store.methods.set(oldMethod.id, oldMethod);
+    const result = await service.replaceMethod({
+      accountId: account().id,
+      oldMethodId: oldMethod.id,
+      kind: 'phone',
+      destinationCiphertext: 'new-encrypted-ref',
+      destinationDigest: 'd'.repeat(64),
+    });
+    expect(store.methods.get(oldMethod.id)?.state).toBe('verified');
+    expect(
+      [...store.challenges.values()].find(
+        (challenge) => challenge.methodId === result.method.id,
+      )?.purpose,
+    ).toBe('method_replacement');
+  });
+
+  it('requires a provisioned recent-auth operator for bounded controls', async () => {
+    const { service, store, clock } = fixture();
+    store.operatorIds.add(account().id);
+    const started = await service.startMethod({
+      accountId: account().id,
+      kind: 'email',
+      destinationCiphertext: 'encrypted-ref',
+      destinationDigest: 'b'.repeat(64),
+    });
+    await expect(
+      service.operatorLock({
+        actorId: account().id,
+        accountId: account().id,
+        locked: true,
+        authenticatedAt: '2025-12-31T23:00:00.000Z',
+        correlationId: '00000000-0000-4000-8000-000000000016',
+      }),
+    ).rejects.toBeInstanceOf(RecoveryError);
+    await service.operatorLock({
+      actorId: account().id,
+      accountId: account().id,
+      locked: true,
+      authenticatedAt: clock.now().toISOString(),
+      correlationId: '00000000-0000-4000-8000-000000000017',
+    });
+    expect(store.accounts.get(account().id)?.recoveryLocked).toBe(true);
+    expect(
+      [...store.challenges.values()].some(
+        (challenge) =>
+          challenge.methodId === started.method.id &&
+          challenge.state === 'pending',
+      ),
+    ).toBe(false);
+    await expect(
+      service.requestRecovery({
+        username: account().username,
+        source: 'test',
+        idempotencyKey: 'operator-locked-request',
+      }),
+    ).resolves.toEqual({ accepted: true });
+  });
+
+  it('handles the expiry boundary and bounded cleanup deterministically', async () => {
+    const { service, store, clock } = fixture();
+    const issued = await service.requestRecovery({
+      username: account().username,
+      source: 'test',
+      idempotencyKey: 'expiry-boundary-request',
+    });
+    if (!issued.token) throw new Error('test token missing');
+    clock.value = new Date('2026-01-01T00:30:00.000Z');
+    await expect(
+      service.completeRecovery({
+        token: issued.token,
+        newPassword: 'expired password',
+        correlationId: '00000000-0000-4000-8000-000000000018',
+        idempotencyKey: 'expiry-boundary-complete',
+      }),
+    ).rejects.toBeInstanceOf(RecoveryError);
+    await expect(service.expireChallenges(1)).resolves.toBe(1);
+    expect([...store.challenges.values()][0]?.state).toBe('expired');
   });
 });

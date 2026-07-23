@@ -9,14 +9,14 @@
     "version": "0.1.0",
     "httpVersion": 1,
     "realtimeVersion": 1,
-    "databaseSchema": 46,
+    "databaseSchema": 47,
     "configurationSchema": 1
   },
   "target": {
     "version": "0.1.0",
     "httpVersion": 1,
     "realtimeVersion": 1,
-    "databaseSchema": 46,
+    "databaseSchema": 47,
     "configurationSchema": 1
   },
   "topology": {

@@ -72,7 +72,10 @@ export const authSessionSchema = z.object({
   current: z.boolean(),
 });
 export const recoveryRequestSchema = z
-  .object({ username: usernameSchema })
+  .object({
+    username: usernameSchema,
+    idempotencyKey: z.string().min(8).max(128).optional(),
+  })
   .strict();
 export const recoveryCompleteSchema = z
   .object({
@@ -81,6 +84,7 @@ export const recoveryCompleteSchema = z
       .length(43)
       .regex(/^[A-Za-z0-9_-]+$/),
     newPassword: passwordSchema,
+    idempotencyKey: z.string().min(8).max(128).optional(),
   })
   .strict();
 export const recoveryMethodKindSchema = z.enum([
@@ -114,6 +118,9 @@ export const recoveryMethodVerifySchema = z
   })
   .strict();
 export const recoveryMethodIdSchema = z.object({ id }).strict();
+export const recoveryOperatorLockSchema = z
+  .object({ locked: z.boolean() })
+  .strict();
 export const sessionHandleSchema = z
   .object({ handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/) })
   .strict();
@@ -722,7 +729,7 @@ export const invitationPreviewSchema = z.object({
 const auditHash = z.string().regex(/^[0-9a-f]{64}$/);
 export const auditEventSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id,
     actorType: z.enum(['account', 'service']),
     actorId: z.string().min(3).max(128),

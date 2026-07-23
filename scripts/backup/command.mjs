@@ -31,7 +31,7 @@ import {
 } from './object-archive.mjs';
 
 const MANIFEST_VERSION = 1;
-const CURRENT_SCHEMA_VERSION = 45;
+const CURRENT_SCHEMA_VERSION = 47;
 const COMPONENTS = ['postgres.dump.enc', 'objects.archive.enc'];
 const TABLES = [
   'accounts',
@@ -47,6 +47,11 @@ const TABLES = [
   'community_ownership_versions',
   'invitations',
   'audit_events',
+  'account_recovery_methods',
+  'account_recovery_challenges',
+  'recovery_delivery_requests',
+  'account_recovery_idempotency',
+  'instance_operators',
 ];
 
 function fail(code) {
@@ -501,10 +506,14 @@ async function restore(config, values, directory) {
     restoreProcess.stdin,
     values.operatorKey,
   );
-  await Promise.all([
+  const restoreResults = await Promise.allSettled([
     restoreDatabase,
     successful(restoreProcess, 'postgres_restore_failed', true),
   ]);
+  const restoreFailure = restoreResults.find(
+    (result) => result.status === 'rejected',
+  );
+  if (restoreFailure?.status === 'rejected') throw restoreFailure.reason;
   const restored = await databaseState(values.databaseUrl);
   if (
     JSON.stringify(restored.counts) !==
