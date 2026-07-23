@@ -143,6 +143,10 @@ cases. Visibility in a client is never authorization.
 - **Resource controls:** credential storage has 20 fixed slots and 2 KiB records;
   notification copy and deep links are bounded. Single-instance and in-process
   locks serialize access.
+- **Dependency integrity:** the exact Cargo lock and platform SBOM are part of
+  the native trust boundary. The current Linux GTK3 chain carries the public
+  medium GLib advisory recorded in #210; no supported Linux artifact is
+  release-ready until that path has acceptable native evidence or is removed.
 - **Audit and telemetry:** native operations avoid secret-bearing logs. Server
   notification checkpoints remain the delivery record.
 - **Failure behavior:** locked, missing, denied, corrupt, or unsupported credential
@@ -599,6 +603,7 @@ inaccessible source is rendered as unavailable without leaking its prior text.
 | TM-06 | Informational | Blocked on #83-#85       | The private object adapter is not an attachment feature. Do not ship upload or download until quarantine, scanning, isolated delivery, retention, and cleanup are complete.     |
 | TM-07 | Informational | Open, #35 and #187-#189  | Recovery and verification are not implemented. Do not add reset tokens or delivery channels outside the reviewed design.                                                        |
 | TM-08 | Low           | Platform trust           | Desktop keyrings reduce persistence exposure but cannot protect secrets from a compromised operating system or native process. Require platform evidence before support claims. |
+| TM-09 | Medium        | Open, #210               | The Linux desktop Cargo graph contains a public medium GLib memory-safety advisory plus unmaintained transitive crates. Remove or narrowly disposition it with native evidence. |
 
 No unresolved critical or high-severity vulnerability was identified in the
 2026-07-22 review. A new finding at that level must use private vulnerability
