@@ -449,6 +449,7 @@ export class Telemetry {
       'realtime_stale_connection',
       'realtime_subscription_changed',
       'realtime_delivery',
+      'realtime_payload_serialized',
     ]);
     const allowedOutcomes = new Set([
       'observed',
@@ -468,6 +469,9 @@ export class Telemetry {
       'shutdown',
       'policy',
       'internal',
+      'account',
+      'control',
+      'event',
     ]);
     return {
       increment: (name, labels = {}) => {
@@ -812,6 +816,7 @@ export class Telemetry {
           'realtime_stale_connection',
           'realtime_subscription_changed',
           'realtime_delivery',
+          'realtime_payload_serialized',
           'other',
         ]),
         outcome: new Set([
@@ -831,6 +836,9 @@ export class Telemetry {
           'shutdown',
           'policy',
           'internal',
+          'account',
+          'control',
+          'event',
           'other',
         ]),
       },

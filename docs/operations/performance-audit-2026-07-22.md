@@ -98,6 +98,50 @@ The production web build contains one 282.22 kB JavaScript asset (81.45 kB
 gzip), one 4.48 kB CSS asset (1.63 kB gzip), and a 0.44 kB HTML entry. The
 bundle gate uses byte-accurate values rather than these rounded build labels.
 
+## Optimization result: shared realtime serialization
+
+The first ranked bottleneck was addressed by validating each immutable
+realtime delivery once, serializing it once, computing its encoded size once,
+and reusing that representation for every local recipient. Per-connection open
+state, buffered-byte limits, queue accounting, send completion, error handling,
+and slow-consumer closure remain independent. Account-scoped fanout reuses the
+same representation only after its existing message validation; cross-instance
+space delivery still reauthorizes every local subscriber before disclosure.
+
+The before and after results below are medians across three complete executions
+of the same 60-connection, two-instance, 180-subscription, 100-event workload on
+the baseline host. Each execution produced 6,000 logical deliveries and injected
+duplicate cross-instance publication. No benchmark-only production behavior was
+introduced.
+
+| Measurement                    |        Baseline | Shared serialization | Change |
+| ------------------------------ | --------------: | -------------------: | -----: |
+| Delivery p50                   |        85.91 ms |             44.83 ms | -47.8% |
+| Delivery p95                   |       109.74 ms |             56.15 ms | -48.8% |
+| Delivery p99                   |       114.24 ms |             58.92 ms | -48.4% |
+| Delivery throughput            | 50,869 events/s |      98,027 events/s | +92.7% |
+| Single-core process CPU        |         141.05% |              139.74% |  -0.9% |
+| Peak RSS                       |   208,060,416 B |        170,409,984 B | -18.1% |
+| Incremental RSS per connection |     1,421,585 B |            757,760 B | -46.7% |
+| Connection p95                 |         9.75 ms |              9.88 ms |  +1.2% |
+| Reconnect p95                  |         5.27 ms |              5.28 ms |  +0.3% |
+
+Baseline delivery p95 ranged from 109.23 to 110.10 ms with a 0.33%
+coefficient of variation. The optimized result ranged from 55.35 to 67.86 ms
+with a 9.57% coefficient of variation; even the slowest optimized execution
+remained below the fastest baseline execution. Optimized throughput ranged from
+81,058 to 99,464 deliveries/s. All executions produced zero client duplicate
+deliveries, rejected 112 injected duplicates, recovered after reconnect and
+fanout degradation, delivered locally during subscriber failure, and closed the
+controlled slow consumer with code 1013.
+
+The follow-up CPU profile no longer showed repeated per-recipient datetime and
+union validation among its prominent self-samples. Socket writes and the shared
+`sendSerialized` path remain visible, so recipient lookup and transport work are
+the next realtime candidates. The change was retained because tail latency,
+throughput, and memory all improved materially without an error, authorization,
+or backpressure regression.
+
 ## Ranked bottleneck inventory
 
 | Rank | Component                                 | Evidence                                                                                                                                                                                       | User/resource impact                                                                                                                    | Proposed remediation                                                                                                     | Risk        |
