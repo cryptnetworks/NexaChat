@@ -11,7 +11,6 @@ import {
   PostgresPresenceVisibility,
   PostgresMemberStatusStore,
   createPostgresPool,
-  migratePostgres,
   readMigrations,
   verifyPostgresSchema,
   MigrationError,
@@ -62,11 +61,6 @@ export async function initializeDatabase(
   });
   let expectedMigrations: Awaited<ReturnType<typeof readMigrations>>;
   try {
-    await migratePostgres(pool, config.migrationsDirectory, (migration) => {
-      process.stdout.write(
-        `${JSON.stringify({ event: 'migration.applied', ...migration })}\n`,
-      );
-    });
     expectedMigrations = await readMigrations(config.migrationsDirectory);
     await verifyPostgresSchema(pool, expectedMigrations);
     telemetry?.postgres('migration', 'success', Date.now() - startedAt);

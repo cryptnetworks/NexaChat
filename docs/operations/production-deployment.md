@@ -66,16 +66,22 @@ identity.
 Create a host directory owned by the deployment administrator with mode
 `0700`. These exact files are required:
 
-| File                | Consumer                  | Contents                                        |
-| ------------------- | ------------------------- | ----------------------------------------------- |
-| `postgres_password` | PostgreSQL                | URL-safe random password                        |
-| `database_url`      | migration job and server  | `postgresql://nexa:PASSWORD@postgres:5432/nexa` |
-| `valkey_password`   | Valkey                    | URL-safe random password                        |
-| `redis_url`         | migration job and server  | `redis://default:PASSWORD@valkey:6379`          |
-| `s3_access_key`     | SeaweedFS and application | URL-safe bucket-scoped application access key   |
-| `s3_secret_key`     | SeaweedFS and application | URL-safe bucket-scoped application secret       |
-| `tls_cert.pem`      | edge                      | full certificate chain in PEM form              |
-| `tls_key.pem`       | edge                      | matching unencrypted private key in PEM form    |
+| File                        | Consumer                       | Contents                                                   |
+| --------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `postgres_password`         | PostgreSQL bootstrap only      | URL-safe random password for the initial `nexa` owner      |
+| `database_owner_url`        | `database-bootstrap` only      | `postgresql://nexa:PASSWORD@postgres:5432/nexa`            |
+| `database_migrator_password`| `database-bootstrap` only      | URL-safe password for `nexa_migrator`                      |
+| `migration_database_url`    | migration job and restore job  | `postgresql://nexa_migrator:PASSWORD@postgres:5432/nexa`   |
+| `database_runtime_password` | `database-bootstrap` only      | URL-safe password for `nexa_app`                           |
+| `runtime_database_url`      | server only                    | `postgresql://nexa_app:PASSWORD@postgres:5432/nexa`        |
+| `database_backup_password`  | `database-bootstrap` only      | URL-safe password for `nexa_backup`                        |
+| `backup_database_url`       | backup job only                | `postgresql://nexa_backup:PASSWORD@postgres:5432/nexa`     |
+| `valkey_password`           | Valkey                         | URL-safe random password                                   |
+| `redis_url`                 | migration job and server       | `redis://default:PASSWORD@valkey:6379`                     |
+| `s3_access_key`             | SeaweedFS and application      | URL-safe bucket-scoped application access key              |
+| `s3_secret_key`             | SeaweedFS and application      | URL-safe bucket-scoped application secret                  |
+| `tls_cert.pem`              | edge                           | full certificate chain in PEM form                         |
+| `tls_key.pem`               | edge                           | matching unencrypted private key in PEM form               |
 
 Generate independent credentials. This example deliberately limits generated
 characters to the unambiguous URL-safe set used by startup validation:
@@ -87,14 +93,23 @@ sudo sh -c '
   directory=/etc/nexa-chat/secrets
   umask 077
   postgres_password=$(openssl rand -hex 32)
+  migration_password=$(openssl rand -hex 32)
+  runtime_password=$(openssl rand -hex 32)
+  backup_password=$(openssl rand -hex 32)
   valkey_password=$(openssl rand -hex 32)
   printf "%s\n" "$postgres_password" > "$directory/postgres_password"
-  printf "postgresql://nexa:%s@postgres:5432/nexa\n" "$postgres_password" > "$directory/database_url"
+  printf "postgresql://nexa:%s@postgres:5432/nexa\n" "$postgres_password" > "$directory/database_owner_url"
+  printf "%s\n" "$migration_password" > "$directory/database_migrator_password"
+  printf "postgresql://nexa_migrator:%s@postgres:5432/nexa\n" "$migration_password" > "$directory/migration_database_url"
+  printf "%s\n" "$runtime_password" > "$directory/database_runtime_password"
+  printf "postgresql://nexa_app:%s@postgres:5432/nexa\n" "$runtime_password" > "$directory/runtime_database_url"
+  printf "%s\n" "$backup_password" > "$directory/database_backup_password"
+  printf "postgresql://nexa_backup:%s@postgres:5432/nexa\n" "$backup_password" > "$directory/backup_database_url"
   printf "%s\n" "$valkey_password" > "$directory/valkey_password"
   printf "redis://default:%s@valkey:6379\n" "$valkey_password" > "$directory/redis_url"
   printf "nexaapp%s\n" "$(openssl rand -hex 8)" > "$directory/s3_access_key"
   openssl rand -hex 32 > "$directory/s3_secret_key"
-  unset postgres_password valkey_password
+  unset postgres_password migration_password runtime_password backup_password valkey_password
 '
 sudo install -m 0444 /path/to/fullchain.pem /etc/nexa-chat/secrets/tls_cert.pem
 sudo install -m 0444 /path/to/private-key.pem /etc/nexa-chat/secrets/tls_key.pem
@@ -243,19 +258,29 @@ the relevant provider/migration validation, recreate server/edge, and verify an
 authenticated durable request. Rotate one dependency at a time.
 
 `POSTGRES_PASSWORD_FILE` initializes only a new volume; changing that file does
-not change the existing `nexa` role. Prefer creating a replacement least-privilege
-role, or authenticate as an administrator and apply `ALTER ROLE`, before
-atomically replacing both `postgres_password` and `database_url`. Keep the old
-credential available for rollback until the migration job and durable request
-pass. For Valkey, stop writers, atomically replace both `valkey_password` and
-`redis_url`, recreate Valkey and server, verify, and retain the old pair until
-completion. Never print values while comparing or rotating them.
+not change the existing `nexa` owner. The owner URL is mounted only by the
+one-shot role bootstrap job. That job transfers application-schema ownership to
+`nexa_migrator`, grants the server role data access without DDL or migration
+history writes, and grants the backup role read access only. It is safe to rerun
+after a controlled credential rotation.
+
+Rotate one database role at a time. Stop the consumers of that role, generate a
+replacement password, atomically replace its password file and matching URL,
+run `database-bootstrap`, then restart and verify only the relevant consumer:
+`migrate` for `nexa_migrator`, server plus a durable request for `nexa_app`, or
+the encrypted backup verification for `nexa_backup`. Restore the previous pair
+while it remains valid if the verification fails. Keep the owner credentials
+restricted to recovery and role administration; do not mount them into the
+server, migration, backup, or restore jobs. For Valkey, stop writers,
+atomically replace both `valkey_password` and `redis_url`, recreate Valkey and
+server, verify, and retain the old pair until completion. Never print values
+while comparing or rotating them.
 
 ## Recovery and troubleshooting
 
 - `migrate` failure: keep the server stopped, inspect only structured migration
-  events, verify the database URL file and migration checksums, then rerun. Do
-  not bypass the completion dependency.
+  events, verify `migration_database_url`, the role-bootstrap completion, and
+  migration checksums, then rerun. Do not bypass the completion dependency.
 - object-storage startup failure: verify the bucket name and both S3 identity
   files. The identity is intentionally limited to the configured bucket.
 - edge unhealthy: validate the certificate/key pair and permissions, then use

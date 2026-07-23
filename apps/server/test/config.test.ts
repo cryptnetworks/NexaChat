@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ConfigurationError,
+  parseMigrationConfig,
   parseRuntimeConfig,
   safeConfigurationDiagnostic,
 } from '../src/config.js';
@@ -21,6 +22,26 @@ const production = {
 };
 
 describe('runtime configuration', () => {
+  it('requires a dedicated migration credential and never falls back to the runtime credential', () => {
+    const migration = parseMigrationConfig({
+      NODE_ENV: 'production',
+      NEXA_DEPLOYMENT_PROFILE: 'single-host-private',
+      MIGRATION_DATABASE_URL:
+        'postgresql://nexa_migrator:password@postgres:5432/nexa',
+    });
+    expect(migration.connectionString).toContain('nexa_migrator');
+    expect(() =>
+      parseMigrationConfig({
+        ...development,
+        MIGRATION_DATABASE_URL:
+          'postgresql://nexa_migrator:password@localhost:5432/nexa',
+      }),
+    ).toThrow(expect.objectContaining({ key: 'DATABASE_URL' }));
+    expect(() => parseMigrationConfig({ NODE_ENV: 'production' })).toThrow(
+      expect.objectContaining({ key: 'MIGRATION_DATABASE_URL' }),
+    );
+  });
+
   it('parses valid development and production settings', () => {
     expect(parseRuntimeConfig(development).mode).toBe('development');
     const config = parseRuntimeConfig(production);
