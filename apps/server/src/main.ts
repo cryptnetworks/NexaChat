@@ -222,6 +222,12 @@ async function start(): Promise<void> {
         : {}),
       memberStatus: database.experience.memberStatus,
     });
+    const currentApp = app;
+    database.auth.recovery?.setSessionInvalidationPublisher(
+      (accountId) =>
+        currentApp.websocketHub?.invalidateAccountSessions?.(accountId) ??
+        Promise.resolve(),
+    );
     await app.websocketHub.ready();
     database.experience.notificationReadState.setPublisher({
       publish(state) {

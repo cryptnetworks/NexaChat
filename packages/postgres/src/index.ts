@@ -51,6 +51,12 @@ import type {
   AuthSession,
   AuthStore,
   CredentialSecurityEvent,
+  RecoveryAccount,
+  RecoveryChallenge,
+  RecoveryIdempotencyRecord,
+  RecoveryMethod,
+  RecoverySecurityEvent,
+  RecoveryStore,
 } from '@nexa/auth';
 import {
   AuthorizationService,
@@ -64,7 +70,7 @@ import {
   type ScopedDecision,
 } from '@nexa/authorization';
 
-export const CURRENT_SCHEMA_VERSION = 45;
+export const CURRENT_SCHEMA_VERSION = 47;
 const MIGRATION_LOCK_ID = 1_318_611_193;
 
 export interface PostgresConfig {
@@ -1231,6 +1237,7 @@ export class PostgresAuthStore implements AuthStore {
     const result = await this.authQueryable.query<AuthAccountRow>(
       `UPDATE accounts SET password_hash = $3,
          credential_version = credential_version + 1,
+         recovery_epoch = recovery_epoch + 1,
          updated_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND status = 'active' AND credential_version = $2
        RETURNING ${AUTH_ACCOUNT_FIELDS}`,
@@ -1243,6 +1250,7 @@ export class PostgresAuthStore implements AuthStore {
     await this.authQueryable.query(
       `UPDATE accounts SET password_hash = $2,
        credential_version = credential_version + 1,
+       recovery_epoch = recovery_epoch + 1,
        updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [id, passwordHash],
     );
@@ -1393,6 +1401,362 @@ export class PostgresAuthStore implements AuthStore {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export class PostgresRecoveryStore implements RecoveryStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly db: Pool | PoolClient = pool,
+  ) {}
+
+  async findAccountByNormalizedUsername(username: string) {
+    const result = await this.db.query<RecoveryAccountRow>(
+      `SELECT ${RECOVERY_ACCOUNT_FIELDS} FROM accounts
+       WHERE normalized_username=$1 AND password_hash IS NOT NULL`,
+      [username],
+    );
+    return result.rows[0] ? mapRecoveryAccount(result.rows[0]) : undefined;
+  }
+
+  async findAccountById(id: string) {
+    const result = await this.db.query<RecoveryAccountRow>(
+      `SELECT ${RECOVERY_ACCOUNT_FIELDS} FROM accounts
+       WHERE id=$1 AND password_hash IS NOT NULL FOR UPDATE`,
+      [id],
+    );
+    return result.rows[0] ? mapRecoveryAccount(result.rows[0]) : undefined;
+  }
+
+  async createChallenge(challenge: RecoveryChallenge): Promise<void> {
+    await this.db.query(
+      `INSERT INTO account_recovery_challenges
+       (id,account_id,method_id,purpose,token_hash,epoch,state,attempts,
+        max_attempts,expires_at,created_at,used_at,version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [
+        challenge.id,
+        challenge.accountId,
+        challenge.methodId,
+        challenge.purpose,
+        challenge.tokenHash,
+        challenge.epoch,
+        challenge.state,
+        challenge.attempts,
+        challenge.maxAttempts,
+        challenge.expiresAt,
+        challenge.createdAt,
+        challenge.usedAt,
+        challenge.version,
+      ],
+    );
+  }
+
+  async findRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+  ) {
+    const result = await this.db.query<RecoveryIdempotencyRow>(
+      `SELECT id,scope,idempotency_key,request_fingerprint,state,challenge_id,
+       created_at,expires_at,completed_at,version
+       FROM account_recovery_idempotency
+       WHERE scope=$1 AND idempotency_key=$2`,
+      [scope, idempotencyKey],
+    );
+    return result.rows[0] ? mapRecoveryIdempotency(result.rows[0]) : undefined;
+  }
+
+  async createRecoveryIdempotency(record: RecoveryIdempotencyRecord) {
+    const result = await this.db.query(
+      `INSERT INTO account_recovery_idempotency
+       (id,scope,idempotency_key,request_fingerprint,state,challenge_id,
+        created_at,expires_at,completed_at,version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (scope,idempotency_key) DO NOTHING`,
+      [
+        record.id,
+        record.scope,
+        record.idempotencyKey,
+        record.requestFingerprint,
+        record.state,
+        record.challengeId,
+        record.createdAt,
+        record.expiresAt,
+        record.completedAt,
+        record.version,
+      ],
+    );
+    return result.rowCount === 1;
+  }
+
+  async completeRecoveryIdempotency(
+    scope: RecoveryIdempotencyRecord['scope'],
+    idempotencyKey: string,
+    expectedVersion: number,
+    challengeId: string | null,
+    completedAt: string,
+  ) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_idempotency
+       SET state='succeeded',challenge_id=$4,completed_at=$5,version=version+1
+       WHERE scope=$1 AND idempotency_key=$2 AND version=$3 AND state='pending'
+         AND expires_at>$5`,
+      [scope, idempotencyKey, expectedVersion, challengeId, completedAt],
+    );
+    return result.rowCount === 1;
+  }
+
+  async assertRecoveryOperator(actorId: string) {
+    const result = await this.db.query(
+      `SELECT 1 FROM instance_operators io
+       JOIN accounts a ON a.id=io.account_id
+       WHERE io.account_id=$1 AND io.recovery_control AND a.status='active'`,
+      [actorId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async revokeAllMethods(accountId: string) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_methods
+       SET state='revoked',destination_ciphertext='',version=version+1
+       WHERE account_id=$1 AND state<>'revoked'`,
+      [accountId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async expireChallenges(now: string, limit: number) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_challenges
+       SET state='expired',version=version+1
+       WHERE id IN (
+         SELECT id FROM account_recovery_challenges
+         WHERE state='pending' AND expires_at<=$1
+         ORDER BY expires_at,id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )`,
+      [now, limit],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async findChallengeByTokenHash(tokenHash: string) {
+    const result = await this.db.query<RecoveryChallengeRow>(
+      `SELECT id,account_id,method_id,purpose,token_hash,epoch,state,attempts,
+       max_attempts,expires_at,created_at,used_at,version
+       FROM account_recovery_challenges WHERE token_hash=$1`,
+      [tokenHash],
+    );
+    return result.rows[0] ? mapRecoveryChallenge(result.rows[0]) : undefined;
+  }
+
+  async consumeChallenge(id: string, expectedVersion: number, now: string) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_challenges
+       SET state='used',used_at=$3,attempts=attempts+1,version=version+1
+       WHERE id=$1 AND version=$2 AND state='pending'
+         AND expires_at>$3 AND attempts<max_attempts`,
+      [id, expectedVersion, now],
+    );
+    return result.rowCount === 1;
+  }
+
+  async updateChallengeState(
+    id: string,
+    expectedVersion: number,
+    state: 'expired' | 'invalidated',
+  ) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_challenges SET state=$3,version=version+1
+       WHERE id=$1 AND version=$2 AND state='pending'`,
+      [id, expectedVersion, state],
+    );
+    return result.rowCount === 1;
+  }
+
+  async changeCredentials(
+    accountId: string,
+    expectedCredentialVersion: number,
+    passwordHash: string,
+  ) {
+    const result = await this.db.query<RecoveryAccountRow>(
+      `UPDATE accounts SET password_hash=$3,credential_version=credential_version+1,
+       recovery_epoch=recovery_epoch+1,updated_at=CURRENT_TIMESTAMP
+       WHERE id=$1 AND credential_version=$2 AND status='active'
+       RETURNING ${RECOVERY_ACCOUNT_FIELDS}`,
+      [accountId, expectedCredentialVersion, passwordHash],
+    );
+    return result.rows[0] ? mapRecoveryAccount(result.rows[0]) : undefined;
+  }
+
+  async revokeAllSessions(accountId: string, revokedAt: string) {
+    const result = await this.db.query(
+      `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$2)
+       WHERE account_id=$1 AND revoked_at IS NULL`,
+      [accountId, revokedAt],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async createMethod(method: RecoveryMethod) {
+    const result = await this.db.query<RecoveryMethodRow>(
+      `INSERT INTO account_recovery_methods
+       (id,account_id,kind,destination_ciphertext,destination_digest,state,
+        created_at,last_verified_at,version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING id,account_id,kind,destination_ciphertext,destination_digest,
+       state,created_at,last_verified_at,version`,
+      [
+        method.id,
+        method.accountId,
+        method.kind,
+        method.destinationCiphertext,
+        method.destinationDigest,
+        method.state,
+        method.createdAt,
+        method.lastVerifiedAt,
+        method.version,
+      ],
+    );
+    return mapRecoveryMethod(requiredRow(result.rows));
+  }
+
+  async findMethod(accountId: string, methodId: string) {
+    const result = await this.db.query<RecoveryMethodRow>(
+      `SELECT id,account_id,kind,destination_ciphertext,destination_digest,
+       state,created_at,last_verified_at,version
+       FROM account_recovery_methods WHERE account_id=$1 AND id=$2 FOR UPDATE`,
+      [accountId, methodId],
+    );
+    return result.rows[0] ? mapRecoveryMethod(result.rows[0]) : undefined;
+  }
+
+  async listMethods(accountId: string) {
+    const result = await this.db.query<RecoveryMethodRow>(
+      `SELECT id,account_id,kind,destination_ciphertext,destination_digest,
+       state,created_at,last_verified_at,version
+       FROM account_recovery_methods WHERE account_id=$1
+       ORDER BY created_at DESC,id DESC LIMIT 20`,
+      [accountId],
+    );
+    return result.rows.map(mapRecoveryMethod);
+  }
+
+  async verifyMethod(
+    accountId: string,
+    methodId: string,
+    expectedVersion: number,
+    verifiedAt: string,
+  ) {
+    const result = await this.db.query<RecoveryMethodRow>(
+      `UPDATE account_recovery_methods SET state='verified',last_verified_at=$4,
+       version=version+1 WHERE account_id=$1 AND id=$2 AND version=$3
+       AND state='pending'
+       RETURNING id,account_id,kind,destination_ciphertext,destination_digest,
+       state,created_at,last_verified_at,version`,
+      [accountId, methodId, expectedVersion, verifiedAt],
+    );
+    return result.rows[0] ? mapRecoveryMethod(result.rows[0]) : undefined;
+  }
+
+  async revokeMethod(
+    accountId: string,
+    methodId: string,
+    expectedVersion: number,
+  ) {
+    const result = await this.db.query<RecoveryMethodRow>(
+      `UPDATE account_recovery_methods SET state='revoked',
+       destination_ciphertext='',version=version+1
+       WHERE account_id=$1 AND id=$2 AND version=$3 AND state<>'revoked'
+       RETURNING id,account_id,kind,destination_ciphertext,destination_digest,
+       state,created_at,last_verified_at,version`,
+      [accountId, methodId, expectedVersion],
+    );
+    return result.rows[0] ? mapRecoveryMethod(result.rows[0]) : undefined;
+  }
+
+  async updateRecoveryLock(accountId: string, locked: boolean) {
+    const result = await this.db.query(
+      `UPDATE accounts SET recovery_locked=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+      [accountId, locked],
+    );
+    return result.rowCount === 1;
+  }
+
+  async invalidateChallenges(accountId: string, epoch: number) {
+    const result = await this.db.query(
+      `UPDATE account_recovery_challenges SET state='invalidated',version=version+1
+       WHERE account_id=$1 AND state='pending' AND epoch<$2`,
+      [accountId, epoch],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async recordSecurityEvent(event: RecoverySecurityEvent): Promise<void> {
+    const notificationType =
+      event.action === 'account.recovery.request'
+        ? 'recovery_requested'
+        : event.action === 'account.recovery.complete'
+          ? 'credentials_recovered'
+          : event.action === 'account.recovery.method.verify'
+            ? 'method_verified'
+            : event.action === 'account.recovery.method.revoke'
+              ? 'method_revoked'
+              : 'recovery_state_changed';
+    await this.db.query(
+      `INSERT INTO security_notifications
+       (id,account_id,notification_type,correlation_id,occurred_at,expires_at)
+       VALUES ($1,$2,$3,$4,$5,$5::timestamptz + interval '90 days')`,
+      [
+        event.id,
+        event.accountId,
+        notificationType,
+        event.correlationId,
+        event.occurredAt,
+      ],
+    );
+    await this.db.query(
+      `INSERT INTO audit_events
+       (id,actor_id,community_id,invitation_id,action,outcome,occurred_at,
+        event_version,actor_type,scope_type,scope_id,target_type,target_id,
+        reason_code,correlation_id,retention_until)
+       VALUES ($1,$2,NULL,NULL,$3,$4,$5,2,'account','instance',NULL,
+        'account',$7,NULL,$6,$5::timestamptz + interval '7 years')`,
+      [
+        event.id,
+        event.actorId ?? event.accountId,
+        event.action,
+        event.outcome,
+        event.occurredAt,
+        event.correlationId,
+        event.accountId,
+      ],
+    );
+  }
+
+  async transaction<T>(work: (store: RecoveryStore) => Promise<T>): Promise<T> {
+    if (this.db !== this.pool) return work(this);
+    const client = await this.pool.connect();
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+          const result = await work(
+            new PostgresRecoveryStore(this.pool, client),
+          );
+          await client.query('COMMIT');
+          return result;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          if (!isSerializationFailure(error) || attempt === 2) throw error;
+        }
+      }
+      throw new Error('recovery_transaction_retry_exhausted');
     } finally {
       client.release();
     }
@@ -1606,6 +1970,7 @@ const AUTH_ACCOUNT_FIELDS =
   'id, username, normalized_username, display_name, password_hash, status, credential_version, profile_version, avatar_object_key, avatar_media_type, avatar_byte_length, avatar_sha256, created_at, updated_at';
 const AUTH_SESSION_FIELDS =
   'id, public_handle, account_id, token_hash, credential_version, created_at, last_seen_at, recent_auth_at, expires_at, idle_expires_at, revoked_at';
+const RECOVERY_ACCOUNT_FIELDS = `${AUTH_ACCOUNT_FIELDS}, recovery_epoch, recovery_locked`;
 type AuthAccountRow = {
   id: string;
   username: string;
@@ -1634,6 +1999,48 @@ type AuthSessionRow = {
   expires_at: Date;
   idle_expires_at: Date;
   revoked_at: Date | null;
+};
+type RecoveryAccountRow = AuthAccountRow & {
+  recovery_epoch: number;
+  recovery_locked: boolean;
+};
+type RecoveryChallengeRow = {
+  id: string;
+  account_id: string;
+  method_id: string | null;
+  purpose: RecoveryChallenge['purpose'];
+  token_hash: string;
+  epoch: number;
+  state: RecoveryChallenge['state'];
+  attempts: number;
+  max_attempts: number;
+  expires_at: Date;
+  created_at: Date;
+  used_at: Date | null;
+  version: number;
+};
+type RecoveryIdempotencyRow = {
+  id: string;
+  scope: RecoveryIdempotencyRecord['scope'];
+  idempotency_key: string;
+  request_fingerprint: string;
+  state: RecoveryIdempotencyRecord['state'];
+  challenge_id: string | null;
+  created_at: Date;
+  expires_at: Date;
+  completed_at: Date | null;
+  version: number;
+};
+type RecoveryMethodRow = {
+  id: string;
+  account_id: string;
+  kind: RecoveryMethod['kind'];
+  destination_ciphertext: string;
+  destination_digest: string;
+  state: RecoveryMethod['state'];
+  created_at: Date;
+  last_verified_at: Date | null;
+  version: number;
 };
 const mapAuthAccount = (row: AuthAccountRow): AuthAccount => ({
   id: row.id,
@@ -1671,6 +2078,53 @@ const mapAuthSession = (row: AuthSessionRow): AuthSession => ({
   expiresAt: row.expires_at.toISOString(),
   idleExpiresAt: row.idle_expires_at.toISOString(),
   revokedAt: row.revoked_at?.toISOString() ?? null,
+});
+const mapRecoveryAccount = (row: RecoveryAccountRow): RecoveryAccount => ({
+  ...mapAuthAccount(row),
+  recoveryEpoch: row.recovery_epoch,
+  recoveryLocked: row.recovery_locked,
+});
+const mapRecoveryChallenge = (
+  row: RecoveryChallengeRow,
+): RecoveryChallenge => ({
+  id: row.id,
+  accountId: row.account_id,
+  methodId: row.method_id,
+  purpose: row.purpose,
+  tokenHash: row.token_hash,
+  epoch: row.epoch,
+  state: row.state,
+  attempts: row.attempts,
+  maxAttempts: row.max_attempts,
+  expiresAt: row.expires_at.toISOString(),
+  createdAt: row.created_at.toISOString(),
+  usedAt: row.used_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapRecoveryIdempotency = (
+  row: RecoveryIdempotencyRow,
+): RecoveryIdempotencyRecord => ({
+  id: row.id,
+  scope: row.scope,
+  idempotencyKey: row.idempotency_key,
+  requestFingerprint: row.request_fingerprint,
+  state: row.state,
+  challengeId: row.challenge_id,
+  createdAt: row.created_at.toISOString(),
+  expiresAt: row.expires_at.toISOString(),
+  completedAt: row.completed_at?.toISOString() ?? null,
+  version: row.version,
+});
+const mapRecoveryMethod = (row: RecoveryMethodRow): RecoveryMethod => ({
+  id: row.id,
+  accountId: row.account_id,
+  kind: row.kind,
+  destinationCiphertext: row.destination_ciphertext,
+  destinationDigest: row.destination_digest,
+  state: row.state,
+  createdAt: row.created_at.toISOString(),
+  lastVerifiedAt: row.last_verified_at?.toISOString() ?? null,
+  version: row.version,
 });
 
 type AccountRow = { id: string; display_name: string };

@@ -19,6 +19,7 @@ import {
   DistributedRequestRateLimiter,
   type RequestRateLimiter,
 } from '../src/rate-limit.js';
+import type { EphemeralCoordination } from '@nexa/coordination';
 import { Telemetry } from '../src/telemetry.js';
 import { attachWebsocketHub, type WebsocketLimits } from '../src/websocket.js';
 
@@ -127,7 +128,10 @@ describe('secure real WebSocket integration', () => {
     await app.close();
   });
 
-  function attach(presence?: PresenceService) {
+  function attach(
+    presence?: PresenceService,
+    coordination?: EphemeralCoordination,
+  ) {
     app.websocketHub = attachWebsocketHub(app.server, service, {
       auth,
       trustedOrigin: origin,
@@ -135,6 +139,7 @@ describe('secure real WebSocket integration', () => {
       limits,
       metrics: telemetry.websocketMetrics(),
       rateLimiter: rateLimiter ?? app.requestRateLimiter,
+      ...(coordination ? { coordination } : {}),
       ...(presence ? { presence } : {}),
     });
   }
@@ -313,6 +318,54 @@ describe('secure real WebSocket integration', () => {
     });
     first.close(1000);
     second.close(1000);
+  });
+
+  it('disconnects every local session on recovery invalidation', async () => {
+    const owner = await identity('recovery-invalidation');
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    const closeEvent = closed(socket);
+    await app.websocketHub?.invalidateAccountSessions?.(owner.account.id);
+    await expect(closeEvent).resolves.toBe(1008);
+  });
+
+  it('disconnects remote sessions from the allowlisted coordination event', async () => {
+    const owner = await identity('remote-recovery-invalidation');
+    const listeners: ((value: string) => void)[] = [];
+    const coordination = {
+      verify: vi.fn().mockResolvedValue(undefined),
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined),
+      setIfAbsent: vi.fn().mockResolvedValue(true),
+      increment: vi.fn().mockResolvedValue({ count: 1, ttlSeconds: 10 }),
+      delete: vi.fn().mockResolvedValue(true),
+      publish: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi
+        .fn()
+        .mockImplementation(
+          (_channel: string, listener: (value: string) => void) => {
+            listeners.push(listener);
+            return Promise.resolve(() => Promise.resolve());
+          },
+        ),
+      close: vi.fn().mockResolvedValue(undefined),
+    } satisfies EphemeralCoordination;
+    await app.websocketHub?.close();
+    attach(undefined, coordination);
+    await app.websocketHub?.ready();
+    const socket = connect(owner.session.token);
+    await opened(socket);
+    const closeEvent = closed(socket);
+    const listener = listeners[0];
+    if (!listener) throw new Error('fanout listener missing');
+    listener(
+      JSON.stringify({
+        instanceId: 'remote-instance',
+        kind: 'session_invalidation',
+        accountId: owner.account.id,
+      }),
+    );
+    await expect(closeEvent).resolves.toBe(1008);
   });
 
   it('validates and serializes one fanout payload once for every local recipient', async () => {

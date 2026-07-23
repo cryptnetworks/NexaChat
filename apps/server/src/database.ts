@@ -158,7 +158,7 @@ export async function initializeDatabase(
       mentions,
     },
     ...(authentication
-      ? { auth: createAuthRuntime(pool, authentication) }
+      ? { auth: createAuthRuntime(pool, authentication, coordination) }
       : {}),
   };
 }

@@ -81,5 +81,6 @@ conditional updates are authoritative under concurrency.
 Operational recovery is forward-only: restore the required dependency, confirm
 `/health/ready`, and retry only according to the metadata above. Audit migration
 0007 and later audit extensions are forward-only; older applications must
-explicitly support schema version 45 before rollback. Clients that depend on
-version-1 audit records are part of compatibility review.
+explicitly support the deployed database schema before rollback. Clients that
+depend on version-1 audit records must accept the version-2 recovery records
+introduced by the current release.

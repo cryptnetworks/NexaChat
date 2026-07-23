@@ -7,7 +7,7 @@
   "sameVersionRecovery": true,
   "database": {
     "minimumSourceSchema": 0,
-    "targetSchema": 45,
+    "targetSchema": 47,
     "migrationMode": "transactional-forward-only",
     "rollbackMode": "verified-backup-restore-only"
   },

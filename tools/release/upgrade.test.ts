@@ -21,7 +21,7 @@ describe('supported upgrade policy', () => {
     const policy = await loadUpgradePolicy();
     expect(policy).toMatchObject({
       targetVersion: '0.1.0',
-      database: { targetSchema: 45 },
+      database: { targetSchema: 47 },
       configuration: { targetSchema: 1 },
     });
   });
@@ -93,7 +93,7 @@ describe('supported upgrade policy', () => {
   it('rejects an ahead database without attempting a downgrade', async () => {
     const policy = await loadUpgradePolicy();
     const evidence = await fixture('preflight-valid.json');
-    evidence.databaseSchema = 46;
+    evidence.databaseSchema = 48;
     expect(evaluatePreflight(policy, evidence).failures).toContain(
       'database_schema_ahead',
     );

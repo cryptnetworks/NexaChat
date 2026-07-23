@@ -78,7 +78,7 @@
     "httpVersions": [1],
     "realtimeVersions": [1],
     "configurationVersions": [1],
-    "databaseSchema": 45,
+    "databaseSchema": 47,
     "breakingVersionNoticeDays": 180
   },
   "compatibility": {
@@ -92,7 +92,7 @@
     "rollingUpgrade": {
       "sourceVersion": "0.1.0",
       "targetVersion": "0.1.0",
-      "databaseSchema": 45,
+      "databaseSchema": 47,
       "configurationSchema": 1,
       "httpVersion": 1,
       "realtimeVersion": 1,
