@@ -275,6 +275,7 @@ describe('secure real WebSocket integration', () => {
     );
     expect(metrics).toContain('state="connections"');
     expect(metrics).toContain('state="subscriptions"');
+    expect(metrics).toContain('state="indexed_spaces"');
     expect(metrics).toContain('state="queue"');
     expect(metrics).toContain('nexa_websocket_delivery_duration_seconds_count');
     expect(metrics).not.toContain(owner.account.id);
@@ -716,6 +717,9 @@ describe('secure real WebSocket integration', () => {
       expect(metrics).toContain('nexa_websocket_state{state="connections"} 0');
       expect(metrics).toContain(
         'nexa_websocket_state{state="subscriptions"} 0',
+      );
+      expect(metrics).toContain(
+        'nexa_websocket_state{state="indexed_spaces"} 0',
       );
     });
   });

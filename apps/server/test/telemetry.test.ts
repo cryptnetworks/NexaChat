@@ -299,6 +299,9 @@ describe('bounded metric labels', () => {
 
     expect(rendered).toContain('nexa_websocket_state{state="connections"} 0');
     expect(rendered).toContain('nexa_websocket_state{state="subscriptions"} 0');
+    expect(rendered).toContain(
+      'nexa_websocket_state{state="indexed_spaces"} 0',
+    );
     expect(rendered).toContain('nexa_websocket_state{state="queue"} 0');
   });
 });

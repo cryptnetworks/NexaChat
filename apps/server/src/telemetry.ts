@@ -216,7 +216,12 @@ export class Telemetry {
     );
     for (const state of ['active', 'queued', 'failed'])
       this.metrics.gauge('nexa_background_jobs', 0, { state });
-    for (const state of ['connections', 'subscriptions', 'queue'])
+    for (const state of [
+      'connections',
+      'subscriptions',
+      'indexed_spaces',
+      'queue',
+    ])
       this.metrics.gauge('nexa_websocket_state', 0, { state });
   }
 
@@ -491,9 +496,11 @@ export class Telemetry {
                 ? 'connections'
                 : name === 'realtime_subscriptions'
                   ? 'subscriptions'
-                  : name === 'realtime_outbound_queue_bytes'
-                    ? 'queue'
-                    : 'other',
+                  : name === 'realtime_indexed_spaces'
+                    ? 'indexed_spaces'
+                    : name === 'realtime_outbound_queue_bytes'
+                      ? 'queue'
+                      : 'other',
           });
         });
       },
@@ -845,10 +852,16 @@ export class Telemetry {
     });
     this.metrics.define('nexa_websocket_state', {
       type: 'gauge',
-      help: 'Current WebSocket connection and subscription state.',
+      help: 'Current WebSocket connection and bounded subscription index state.',
       labelNames: ['state'],
       allowed: {
-        state: new Set(['connections', 'subscriptions', 'queue', 'other']),
+        state: new Set([
+          'connections',
+          'subscriptions',
+          'indexed_spaces',
+          'queue',
+          'other',
+        ]),
       },
     });
     this.metrics.define('nexa_websocket_delivery_duration_seconds', {

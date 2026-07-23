@@ -2,7 +2,9 @@ export interface RealtimeCapacityPolicy {
   id: 'ci' | 'soak';
   description: string;
   connections: number;
+  spaces: number;
   subscriptionsPerConnection: number;
+  subscriptionPattern: 'all' | 'striped';
   warmupEvents: number;
   measuredEvents: number;
   reconnectConnections: number;
@@ -24,7 +26,9 @@ const profiles: readonly RealtimeCapacityPolicy[] = [
     description:
       'Bounded two-instance regression profile on one host and one Node.js process',
     connections: 60,
+    spaces: 3,
     subscriptionsPerConnection: 3,
+    subscriptionPattern: 'all',
     warmupEvents: 10,
     measuredEvents: 100,
     reconnectConnections: 30,
@@ -44,7 +48,9 @@ const profiles: readonly RealtimeCapacityPolicy[] = [
     description:
       'Release-candidate two-instance Valkey profile with sustained delivery and reconnect load',
     connections: 1_000,
+    spaces: 8,
     subscriptionsPerConnection: 8,
+    subscriptionPattern: 'all',
     warmupEvents: 100,
     measuredEvents: 6_000,
     reconnectConnections: 500,
@@ -96,6 +102,17 @@ export function realtimeCapacityPolicy(
     32,
     'NEXA_RT_SUBSCRIPTIONS',
   );
+  const spaces = boundedInteger(
+    env.NEXA_RT_SPACES,
+    selected.spaces,
+    subscriptionsPerConnection,
+    1_000,
+    'NEXA_RT_SPACES',
+  );
+  const subscriptionPattern =
+    env.NEXA_RT_SUBSCRIPTION_PATTERN ?? selected.subscriptionPattern;
+  if (subscriptionPattern !== 'all' && subscriptionPattern !== 'striped')
+    throw new Error('NEXA_RT_SUBSCRIPTION_PATTERN must be all or striped');
   const warmupEvents = boundedInteger(
     env.NEXA_RT_WARMUP_EVENTS,
     selected.warmupEvents,
@@ -129,7 +146,9 @@ export function realtimeCapacityPolicy(
   return {
     ...selected,
     connections,
+    spaces,
     subscriptionsPerConnection,
+    subscriptionPattern,
     warmupEvents,
     measuredEvents,
     reconnectConnections,
