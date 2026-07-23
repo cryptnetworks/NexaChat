@@ -149,12 +149,19 @@ jobs:
           npm run test:resilience:integration
 
       - name: Enforce API performance budgets
-        run: npm run test:performance
+        env:
+          NEXA_PERF_DATABASE_URL: postgresql://nexa:ci-only-password@127.0.0.1:5432/nexa
+        run: |
+          mkdir -p candidate-evidence/source
+          npm run test:performance -- --output=candidate-evidence/source/api-performance.json
+          npm run test:performance:postgres -- --output=candidate-evidence/source/postgres-performance.json
+          npm run test:server-endurance:release -- --output=candidate-evidence/source/server-endurance.json
+          npm run test:bundle-budget -- --output=candidate-evidence/source/web-bundle.json
 
       - name: Exercise real-time capacity and replica coordination
         run: |
-          npm run test:realtime-capacity
-          npm run test:realtime-capacity:valkey
+          npm run test:realtime-capacity -- --output=candidate-evidence/source/realtime-local.json
+          npm run test:realtime-capacity:valkey -- --output=candidate-evidence/source/realtime-valkey.json
 
       - name: Verify clean install and dependency recovery
         run: npm run verify:clean-env

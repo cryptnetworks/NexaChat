@@ -56,6 +56,8 @@ jobs:
         run: npm run test:accessibility
       - run: npm run test:update-recovery
       - run: npm run build
+      - name: Enforce deterministic web bundle budgets
+        run: npm run test:bundle-budget
       - run: docker compose config --quiet
       - name: Validate production Compose model
         env:
