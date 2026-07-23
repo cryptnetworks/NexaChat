@@ -1,8 +1,36 @@
 name: Backup restore verification
 on:
   pull_request:
+    paths:
+      - '.github/workflows/backup-restore.yml'
+      - '.dockerignore'
+      - '.node-version'
+      - 'Dockerfile'
+      - 'apps/server/**'
+      - 'compose.production.yml'
+      - 'deploy/backup/**'
+      - 'package-lock.json'
+      - 'package.json'
+      - 'packages/**'
+      - 'scripts/backup/**'
+      - 'scripts/verify-backup-policy.mjs'
+      - 'scripts/verify-backup-restore.sh'
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/backup-restore.yml'
+      - '.dockerignore'
+      - '.node-version'
+      - 'Dockerfile'
+      - 'apps/server/**'
+      - 'compose.production.yml'
+      - 'deploy/backup/**'
+      - 'package-lock.json'
+      - 'package.json'
+      - 'packages/**'
+      - 'scripts/backup/**'
+      - 'scripts/verify-backup-policy.mjs'
+      - 'scripts/verify-backup-restore.sh'
   schedule:
     - cron: '41 5 * * 1'
   workflow_dispatch:
@@ -20,8 +48,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with: { node-version: 24, cache: npm }
-      - run: npm ci --ignore-scripts
+        with: { node-version: 24 }
       - run: npm run verify:backup-policy
       - name: Back up, destroy, restore, and compare disposable data
         env:

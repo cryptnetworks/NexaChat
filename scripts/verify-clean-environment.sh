@@ -7,9 +7,26 @@ server_pid=''
 log_file="$(mktemp "${TMPDIR:-/tmp}/nexa-chat-clean-verify.XXXXXX")"
 port_offset=$(( $$ % 500 ))
 server_port=$(( 31000 + port_offset ))
-postgres_port=$(( 55000 + port_offset ))
-valkey_port=$(( 56000 + port_offset ))
-s3_port=$(( 57000 + port_offset ))
+
+published_port() {
+  local endpoint
+  local port
+  endpoint="$(docker compose -p "$project" port "$1" "$2")"
+  endpoint="${endpoint%%$'\n'*}"
+  port="${endpoint##*:}"
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    echo "clean_environment_error: no published port for $1:$2" >&2
+    return 1
+  fi
+  printf '%s' "$port"
+}
+
+expect_published_port() {
+  if [[ "$(published_port "$1" "$2")" != "$3" ]]; then
+    echo "clean_environment_error: published port changed for $1:$2" >&2
+    return 1
+  fi
+}
 
 process_exited() {
   local pid="$1"
@@ -93,26 +110,37 @@ bash scripts/check-toolchain.sh
 npm ci --ignore-scripts
 docker compose config --quiet
 
-export POSTGRES_PUBLISHED_PORT="$postgres_port"
-export VALKEY_PUBLISHED_PORT="$valkey_port"
-export S3_PUBLISHED_PORT="$s3_port"
-export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
+export POSTGRES_PUBLISHED_PORT=20000-20499
+export VALKEY_PUBLISHED_PORT=21000-21499
+export S3_PUBLISHED_PORT=22000-22499
 export NEXA_SERVER_PORT="$server_port"
 export NEXA_SERVER_HOST=127.0.0.1
 export NEXA_WEB_ORIGIN=http://localhost:5173
 export NEXA_SECURE_COOKIES=false
 export NODE_ENV=development
 export NEXA_COORDINATION_ENABLED=true
-export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export NEXA_OBJECT_STORAGE_ENABLED=true
 export NEXA_OBJECT_STORAGE_CREATE_BUCKET=true
-export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
 export S3_ACCESS_KEY='nexa-local'
 export S3_SECRET_KEY='change-this-local-secret'
 export S3_BUCKET='nexa-observability-verify'
 export S3_REGION='us-east-1'
 
 docker compose -p "$project" up -d --wait postgres redis object-storage
+postgres_port="$(published_port postgres 5432)"
+valkey_port="$(published_port redis 6379)"
+s3_port="$(published_port object-storage 8333)"
+docker compose -p "$project" down --remove-orphans >/dev/null
+export POSTGRES_PUBLISHED_PORT="$postgres_port"
+export VALKEY_PUBLISHED_PORT="$valkey_port"
+export S3_PUBLISHED_PORT="$s3_port"
+docker compose -p "$project" up -d --wait postgres redis object-storage
+expect_published_port postgres 5432 "$postgres_port"
+expect_published_port redis 6379 "$valkey_port"
+expect_published_port object-storage 8333 "$s3_port"
+export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
+export REDIS_URL="redis://127.0.0.1:${valkey_port}"
+export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
 npm run migrate
 node --import tsx apps/server/src/main.ts > "$log_file" 2>&1 &
 server_pid="$!"
@@ -127,19 +155,22 @@ docker compose -p "$project" stop postgres >/dev/null
 expect_status 503 'dependency outage'
 expect_body '/health/live' '{"status":"ok"}'
 expect_body '/health/startup' '{"status":"started"}'
-docker compose -p "$project" up -d --wait postgres >/dev/null
+docker compose -p "$project" start postgres >/dev/null
+expect_published_port postgres 5432 "$postgres_port"
 expect_status 200 'dependency recovery'
 
 docker compose -p "$project" stop redis >/dev/null
 expect_status 200 'coordination degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait redis >/dev/null
+docker compose -p "$project" start redis >/dev/null
+expect_published_port redis 6379 "$valkey_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 docker compose -p "$project" stop object-storage >/dev/null
 expect_status 200 'object storage degradation'
 expect_body '/health/ready' '{"status":"degraded"}'
-docker compose -p "$project" up -d --wait object-storage >/dev/null
+docker compose -p "$project" start object-storage >/dev/null
+expect_published_port object-storage 8333 "$s3_port"
 expect_body '/health/ready' '{"status":"ready"}'
 
 kill -TERM "$server_pid"
