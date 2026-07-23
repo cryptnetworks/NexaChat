@@ -24,6 +24,32 @@ x-development-runtime: &development-runtime
       limits: { cpus: '2.00', memory: 2G, pids: 200 }
       reservations: { cpus: '0.10', memory: 128M }
 
+x-server-source-volumes: &server-source-volumes
+  - type: bind
+    source: ./apps/server/src
+    target: /workspace/apps/server/src
+    read_only: true
+  - type: bind
+    source: ./apps/server/migrations
+    target: /workspace/apps/server/migrations
+    read_only: true
+  - type: bind
+    source: ./apps/server/tsconfig.json
+    target: /workspace/apps/server/tsconfig.json
+    read_only: true
+  - type: bind
+    source: ./apps/server/tsconfig.build.json
+    target: /workspace/apps/server/tsconfig.build.json
+    read_only: true
+  - type: bind
+    source: ./packages
+    target: /workspace/packages
+    read_only: true
+  - type: bind
+    source: ./tsconfig.base.json
+    target: /workspace/tsconfig.base.json
+    read_only: true
+
 services:
   postgres:
     ports: !reset []
@@ -33,6 +59,18 @@ services:
 
   object-storage:
     ports: !reset []
+
+  migrate:
+    <<: *development-runtime
+    working_dir: /workspace/apps/server
+    command: [node, ../../node_modules/tsx/dist/cli.mjs, src/migrate.ts]
+    environment:
+      NODE_ENV: development
+      NEXA_CONFIG_SCHEMA: '1'
+      MIGRATION_DATABASE_URL: postgresql://nexa:local-development-password@postgres:5432/nexa
+    volumes: *server-source-volumes
+    depends_on:
+      postgres: { condition: service_healthy }
 
   server:
     <<: *development-runtime
@@ -68,35 +106,12 @@ services:
         published: '${NEXA_DEVELOPMENT_SERVER_PORT:-3000}'
         host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
         protocol: tcp
-    volumes:
-      - type: bind
-        source: ./apps/server/src
-        target: /workspace/apps/server/src
-        read_only: true
-      - type: bind
-        source: ./apps/server/migrations
-        target: /workspace/apps/server/migrations
-        read_only: true
-      - type: bind
-        source: ./apps/server/tsconfig.json
-        target: /workspace/apps/server/tsconfig.json
-        read_only: true
-      - type: bind
-        source: ./apps/server/tsconfig.build.json
-        target: /workspace/apps/server/tsconfig.build.json
-        read_only: true
-      - type: bind
-        source: ./packages
-        target: /workspace/packages
-        read_only: true
-      - type: bind
-        source: ./tsconfig.base.json
-        target: /workspace/tsconfig.base.json
-        read_only: true
+    volumes: *server-source-volumes
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       object-storage: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     healthcheck:
       test:
         [

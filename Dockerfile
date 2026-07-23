@@ -44,8 +44,7 @@ COPY . .
 RUN npm run build:production
 
 FROM build-dependencies AS development-runtime
-ENV NODE_ENV=development \
-  NEXA_DEV_CACHE_DIR=/tmp/nexa-vite-cache
+ENV NODE_ENV=development
 RUN mkdir -p \
   /workspace/apps/server/src \
   /workspace/apps/server/migrations \

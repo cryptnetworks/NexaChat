@@ -206,11 +206,11 @@ until required initialization and the schema check complete. Optional Valkey or
 storage loss produces documented degradation without turning liveness into a
 dependency test.
 
-Production uses one `migrate` service from the exact server image. It waits for
-provider health, applies ordered migrations under PostgreSQL advisory locking,
-and must complete successfully before the server starts. Replicas do not race
-startup migration. Migration failure leaves the application unready; do not
-bypass the completion condition or edit applied migration history.
+Both Compose models use one `migrate` service from the server image. It waits
+for PostgreSQL health, applies ordered migrations under PostgreSQL advisory
+locking, and must complete successfully before the server starts. Replicas do
+not race startup migration. Migration failure leaves the application unready;
+do not bypass the completion condition or edit applied migration history.
 
 The server receives `SIGTERM`, rejects new work, marks readiness unavailable,
 drains admitted HTTP and WebSocket work, and closes providers within its bounded
