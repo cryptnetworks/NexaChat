@@ -178,11 +178,51 @@ from 11.23 to 11.42 seconds (+1.7%). Both versions therefore exceeded the normal
 retained rather than hidden by raising the threshold. The optimized run remains
 bounded and the ordinary workload passes every browser budget.
 
-The visible message page itself is still not capped because evicting accessible
-history without incremental-history controls would change user behavior and
-screen-reader ordering. That separate design requires pagination, scroll
-anchoring, focus behavior, and authorization-aware reconciliation before it is
-safe to implement.
+The visible message page was not capped at this point because evicting
+accessible history without incremental-history controls would have changed user
+behavior and screen-reader ordering. The following change adds the required
+pagination, scroll anchoring, focus behavior, and authorization-aware
+reconciliation.
+
+## Optimization result: bounded accessible message history
+
+Message history now uses an authorized `direction=backward` cursor: the initial
+page is the newest 100 messages in chronological order and each cursor moves
+only toward older authorized messages. PostgreSQL uses the existing
+`(space_id, created_at DESC, id DESC)` history index for this traversal; the
+in-memory adapter and the HTTP contract use the same stable ordering. The web
+client retains at most 200 rendered messages, anchors scrolling when an older
+page is prepended, exposes keyboard-operable older/latest controls with a
+status announcement, and reloads the latest authorized window after reconnect
+or a detected sequence gap. A removed resource clears the pending data rather
+than retaining a stale private page.
+
+Accepted realtime deliveries are coalesced for a frame in ordinary traffic.
+The pending queue is capped at 512; a full queue flushes immediately. Batch
+merges deduplicate by stable message identifier and sort once by the existing
+timestamp/identifier key before keeping the selected 200-message window. This
+prevents both a burst-sized pending queue and a per-message React state update
+from becoming unbounded. Sequence validation, duplicate rejection, gap
+reconciliation, and the rate-limited live announcement remain before or beside
+the batching path rather than being bypassed.
+
+The finalized production-browser gate used one warmup and five measured fresh
+Chromium 149 contexts on the stated Apple M4 Pro host. It passed every checked
+budget: p95 cold readiness was 52.90 ms, history render 108.83 ms, 100 realtime
+insertions 74.51 ms, and 2,000 realtime updates 797.13 ms. Retained JavaScript
+heap growth p95 was 12,695,078 bytes; DOM node growth was 31, listener growth
+was zero, no long tasks were recorded, and every pre- and post-update snapshot
+contained exactly 200 rendered messages. The production JavaScript asset was
+286.51 kB (82.55 kB gzip). These figures are a passing repeatable gate on this
+host, not a comparative latency claim against the preceding noisy runs.
+
+The deterministic state test also applies 50,000 mixed create/update/tombstone
+records and proves the 200-item identifier-unique bound. A five-context browser
+transport fixture at that volume was attempted with 512-event pacing, but its
+Playwright worker remained CPU-bound beyond the configured exploratory window
+and was stopped without a report. It is therefore not release-capacity evidence
+and remains a follow-up for a dedicated browser/load runner; no threshold was
+raised and no successful 50,000-event browser measurement is claimed.
 
 ## Ranked bottleneck inventory
 

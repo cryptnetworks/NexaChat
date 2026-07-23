@@ -1275,6 +1275,7 @@ export function buildApp(
           await service.listMessages(request.params.spaceId, actorId, {
             limit: input.limit,
             ...(input.cursor ? { cursor: input.cursor } : {}),
+            ...(input.direction ? { direction: input.direction } : {}),
           }),
         ),
       );

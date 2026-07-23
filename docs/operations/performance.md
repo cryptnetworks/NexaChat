@@ -92,19 +92,24 @@ the WebSocket peer are deterministic local fixtures so the report isolates
 client startup, rendering, validation, and state-management work. It records
 cold and warm interface readiness, a 100-message history render, 100 realtime
 insertions, 2,000 realtime updates, main-thread and layout work, long tasks,
-DOM and listener counts, and JavaScript heap change.
+DOM and listener counts, JavaScript heap change, and the maximum rendered
+message count. The client keeps a 200-message live window; older history is
+loaded through authorized backward cursor pages instead of retaining an
+unbounded accessible DOM.
 
 The command is retained for local and manual release evidence rather than the
 pull-request workflow. Chromium installation and repeated browser timing are
 both costly and noisy on shared hosted runners; the deterministic bundle gate
 remains the fast per-pull-request client regression check.
 
-For an explicit long-session stress comparison,
-`NEXA_BROWSER_UPDATE_CYCLES` may increase the update cycles from the default 20
-to a bounded value from 1 through 200. The normal latency and memory budgets
-still apply, so a stress run that exceeds a normal-user threshold remains a
-reported failure while its machine-readable result is retained. Do not raise a
-budget merely to make the stress workload pass.
+For an explicit long-session stress comparison, `NEXA_BROWSER_INSERTED_MESSAGES`
+may increase insertions through 50,000, `NEXA_BROWSER_UPDATE_CYCLES` may increase
+updates from the default 20 through 200, and `NEXA_BROWSER_EVENT_BATCH_SIZE`
+controls deterministic synthetic transport pacing from 1 through 512 events.
+The default is 512, matching the client’s bounded pending-delivery queue. The
+normal latency and memory budgets still apply, so a stress run that exceeds a
+normal-user threshold remains a reported failure while its machine-readable
+result is retained. Do not raise a budget merely to make a stress workload pass.
 
 The implementation-backed baseline, objectives, bottleneck ranking, and
 environment limitations are recorded in
