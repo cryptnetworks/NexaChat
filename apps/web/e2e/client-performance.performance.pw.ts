@@ -23,7 +23,27 @@ const repetitions = 6;
 const warmupRuns = 1;
 const historyMessages = 100;
 const insertedMessages = 100;
-const updateCycles = 20;
+function boundedEnvironmentInteger(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer`);
+  const value = Number(raw);
+  if (value < minimum || value > maximum)
+    throw new Error(`${name} is outside its safe bounds`);
+  return value;
+}
+
+const updateCycles = boundedEnvironmentInteger(
+  'NEXA_BROWSER_UPDATE_CYCLES',
+  20,
+  1,
+  200,
+);
 
 const ids = {
   account: uuid(1),

@@ -99,6 +99,13 @@ pull-request workflow. Chromium installation and repeated browser timing are
 both costly and noisy on shared hosted runners; the deterministic bundle gate
 remains the fast per-pull-request client regression check.
 
+For an explicit long-session stress comparison,
+`NEXA_BROWSER_UPDATE_CYCLES` may increase the update cycles from the default 20
+to a bounded value from 1 through 200. The normal latency and memory budgets
+still apply, so a stress run that exceeds a normal-user threshold remains a
+reported failure while its machine-readable result is retained. Do not raise a
+budget merely to make the stress workload pass.
+
 The implementation-backed baseline, objectives, bottleneck ranking, and
 environment limitations are recorded in
 [`performance-audit-2026-07-22.md`](performance-audit-2026-07-22.md).
