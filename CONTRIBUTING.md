@@ -23,3 +23,9 @@ plus the complete disposable restore verification.
 Branches use `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `chore/`, or `security/` plus a short description. Commits use Conventional Commits such as `feat(server): add community creation`.
 
 Pull requests explain the problem and solution, security/privacy/migration/accessibility/operational effects, and a test plan. Visible changes include screenshots. Architecture changes use an ADR. Report vulnerabilities through the process in `SECURITY.md`, not a public issue.
+
+`main` is protected: submit a pull request, address review feedback, and wait
+for the required current checks and independent approval. Do not request or use
+an administrator exemption to bypass those controls. Sensitive paths and the
+emergency-control process are documented in
+[`docs/security/repository-controls.md`](docs/security/repository-controls.md).
