@@ -69,9 +69,11 @@ jobs:
           docker compose config --quiet
           docker compose -f docker-compose.yml -f compose.development.yml --profile applications config --quiet
           docker compose -f compose.production.yml config --quiet
-      - name: Build production server and web images
+      - name: Build Node toolchain and production images
         run: |
           mkdir -p "$RUNNER_TEMP/container-evidence/build-metadata"
+          docker build --pull --target node-toolchain \
+            --tag nexa-chat-node-toolchain:container-verification .
           docker build --pull --target server-runtime \
             --metadata-file "$RUNNER_TEMP/container-evidence/build-metadata/server-runtime.json" \
             --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat \
@@ -84,31 +86,45 @@ jobs:
             --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" \
             --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" \
             --tag nexa-chat-web:container-verification .
+          docker build --pull --target backup-runtime \
+            --metadata-file "$RUNNER_TEMP/container-evidence/build-metadata/backup-runtime.json" \
+            --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat \
+            --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" \
+            --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" \
+            --tag nexa-chat-backup:container-verification .
           node scripts/verify-build-metadata.mjs \
             "$RUNNER_TEMP/container-evidence/build-metadata" \
             "$NEXA_IMAGE_REVISION" "$NEXA_IMAGE_VERSION" \
-            server-runtime web-runtime
+            server-runtime web-runtime backup-runtime
       - name: Verify application image contents and size
         run: |
+          docker run --rm --entrypoint node nexa-chat-node-toolchain:container-verification -e \
+            "const expected = { tar: '7.5.19', undici: '6.27.0', 'brace-expansion': '5.0.7' }; for (const [name, version] of Object.entries(expected)) { const actual = require('/usr/local/lib/node_modules/npm/node_modules/' + name + '/package.json').version; if (actual !== version) throw new Error(name + ' must be ' + version + '; found ' + actual); console.log(name + '=' + actual); }"
           test "$(docker image inspect --format '{{.Config.User}}' nexa-chat-server:container-verification)" != root
           test "$(docker image inspect --format '{{.Config.User}}' nexa-chat-web:container-verification)" != root
+          test "$(docker image inspect --format '{{.Config.User}}' nexa-chat-backup:container-verification)" != root
           docker run --rm --entrypoint /bin/sh nexa-chat-server:container-verification -c \
-            'test -r /usr/share/licenses/nexa-chat/LICENSE && test -r /usr/share/licenses/nexa-chat/NOTICE && ! command -v npm && ! test -e /app/server/src'
+            'test -r /usr/share/licenses/nexa-chat/LICENSE && test -r /usr/share/licenses/nexa-chat/NOTICE && ! command -v npm && ! test -e /usr/local/lib/node_modules/npm && ! test -e /app/server/src'
           docker run --rm --entrypoint /bin/sh nexa-chat-web:container-verification -c \
             'test -r /usr/share/licenses/nexa-chat/LICENSE && test -r /usr/share/licenses/nexa-chat/NOTICE && ! command -v npm && ! test -e /workspace'
+          docker run --rm --entrypoint /bin/sh nexa-chat-backup:container-verification -c \
+            '! command -v npm && ! test -e /usr/local/lib/node_modules/npm'
           server_id="$(docker image inspect --format '{{.Id}}' nexa-chat-server:container-verification)"
           server_size="$(docker image inspect --format '{{.Size}}' nexa-chat-server:container-verification)"
           web_id="$(docker image inspect --format '{{.Id}}' nexa-chat-web:container-verification)"
           web_size="$(docker image inspect --format '{{.Size}}' nexa-chat-web:container-verification)"
-          printf '{"schemaVersion":1,"revision":"%s","images":[{"name":"nexa-chat-server","id":"%s","sizeBytes":%s},{"name":"nexa-chat-web","id":"%s","sizeBytes":%s}]}\n' \
-            "$NEXA_IMAGE_REVISION" "$server_id" "$server_size" "$web_id" "$web_size" \
+          backup_id="$(docker image inspect --format '{{.Id}}' nexa-chat-backup:container-verification)"
+          backup_size="$(docker image inspect --format '{{.Size}}' nexa-chat-backup:container-verification)"
+          printf '{"schemaVersion":1,"revision":"%s","images":[{"name":"nexa-chat-server","id":"%s","sizeBytes":%s},{"name":"nexa-chat-web","id":"%s","sizeBytes":%s},{"name":"nexa-chat-backup","id":"%s","sizeBytes":%s}]}\n' \
+            "$NEXA_IMAGE_REVISION" "$server_id" "$server_size" "$web_id" "$web_size" "$backup_id" "$backup_size" \
             > "$RUNNER_TEMP/container-evidence/application-images.json"
       - name: Scan application images and generate SBOMs
         run: |
           bash scripts/scan-production-images.sh \
             "$RUNNER_TEMP/container-evidence/image-reports" \
             nexa-chat-server:container-verification \
-            nexa-chat-web:container-verification
+            nexa-chat-web:container-verification \
+            nexa-chat-backup:container-verification
       - name: Verify containerized development topology
         run: bash scripts/verify-development-containers.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
