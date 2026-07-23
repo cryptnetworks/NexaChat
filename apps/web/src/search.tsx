@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { safeInternalHref } from './links.js';
 
 function HighlightedText(props: {
   text: string;
@@ -42,16 +43,23 @@ export function MessageSearchResults(props: {
             : `${String(props.results.length)} results.`}
       </p>
       <ol>
-        {props.results.map((result) => (
-          <li key={result.id}>
-            <a href={result.href} aria-label={result.label}>
-              <HighlightedText
-                text={result.excerpt}
-                ranges={result.highlights}
-              />
-            </a>
-          </li>
-        ))}
+        {props.results.map((result) => {
+          const href = safeInternalHref(result.href);
+          const content = (
+            <HighlightedText text={result.excerpt} ranges={result.highlights} />
+          );
+          return (
+            <li key={result.id}>
+              {href ? (
+                <a href={href} aria-label={result.label}>
+                  {content}
+                </a>
+              ) : (
+                content
+              )}
+            </li>
+          );
+        })}
       </ol>
     </section>
   );

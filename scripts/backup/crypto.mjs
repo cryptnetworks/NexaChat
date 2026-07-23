@@ -33,6 +33,40 @@ async function writeChunk(destination, chunk) {
   }
 }
 
+function finishDestination(destination) {
+  if (destination.writableFinished) return Promise.resolve();
+  if (destination.destroyed || destination.closed) {
+    return Promise.reject(new Error('destination_closed_before_finish'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      destination.off('finish', onFinish);
+      destination.off('close', onClose);
+      destination.off('error', onError);
+    };
+    const settle = (complete, value) => {
+      cleanup();
+      complete(value);
+    };
+    const onFinish = () => settle(resolve);
+    const onClose = () => {
+      if (destination.writableFinished) settle(resolve);
+      else settle(reject, new Error('destination_closed_before_finish'));
+    };
+    const onError = (error) => settle(reject, error);
+
+    destination.once('finish', onFinish);
+    destination.once('close', onClose);
+    destination.once('error', onError);
+    try {
+      destination.end();
+    } catch (error) {
+      settle(reject, error);
+    }
+  });
+}
+
 export async function encryptStream(source, destination, operatorKey) {
   const salt = randomBytes(SALT_BYTES);
   const nonce = randomBytes(NONCE_BYTES);
@@ -48,9 +82,7 @@ export async function encryptStream(source, destination, operatorKey) {
     }
     await writeChunk(destination, cipher.final());
     await writeChunk(destination, cipher.getAuthTag());
-    const destinationFinished = once(destination, 'finish');
-    destination.end();
-    await destinationFinished;
+    await finishDestination(destination);
   } catch (error) {
     destination.destroy();
     throw error;
@@ -93,9 +125,7 @@ export async function decryptStream(source, destination, operatorKey) {
     }
     decipher.setAuthTag(buffered);
     await writeChunk(destination, decipher.final());
-    const destinationFinished = once(destination, 'finish');
-    destination.end();
-    await destinationFinished;
+    await finishDestination(destination);
   } catch (error) {
     destination.destroy();
     throw error;

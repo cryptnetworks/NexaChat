@@ -5,6 +5,19 @@ export type LinkSegment =
   | { type: 'text'; value: string }
   | { type: 'link'; value: string; href: string; label: string };
 
+const internalNavigationOrigin = 'https://nexa.invalid';
+
+export function safeInternalHref(value: string): string | undefined {
+  if (!value.startsWith('/') || value.startsWith('//')) return undefined;
+  try {
+    const parsed = new URL(value, internalNavigationOrigin);
+    if (parsed.origin !== internalNavigationOrigin) return undefined;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Pure client-side parsing: this function never fetches a destination. */
 export function safeLinkSegments(value: string): LinkSegment[] {
   const result: LinkSegment[] = [];

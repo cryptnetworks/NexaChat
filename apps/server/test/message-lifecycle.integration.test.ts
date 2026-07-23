@@ -101,4 +101,42 @@ describe('message lifecycle HTTP boundary', () => {
     expect(invalid.statusCode).toBe(400);
     await app.close();
   });
+
+  it('returns one creation and one replay for concurrent duplicate requests', async () => {
+    const service = new CommunityService(new InMemoryPersistence());
+    const owner = await service.createAccount('Owner');
+    const community = await service.createCommunity(owner.id, 'Community');
+    const space = await service.createTextSpace(community.id, owner.id, 'chat');
+    const app = buildApp(service);
+    const broadcast = vi.fn();
+    app.websocketHub = {
+      broadcast,
+      broadcastAccount: vi.fn(),
+      ready: () => Promise.resolve(),
+      close: () => Promise.resolve(),
+    };
+    const request = {
+      method: 'POST' as const,
+      url: `/v1/spaces/${space.id}/messages`,
+      payload: {
+        authorId: owner.id,
+        body: 'same',
+        idempotencyKey: 'request-http-concurrent-0001',
+      },
+    };
+
+    const responses = await Promise.all([
+      app.inject(request),
+      app.inject(request),
+    ]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([
+      200, 201,
+    ]);
+    expect(
+      new Set(responses.map((response) => response.json<{ id: string }>().id))
+        .size,
+    ).toBe(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
 });

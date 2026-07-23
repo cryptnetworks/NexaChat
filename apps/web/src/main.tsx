@@ -20,7 +20,7 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
-import { publicRequestError } from './http.js';
+import { jsonMutationHeaders, publicRequestError } from './http.js';
 import {
   accessibleTimestamp,
   createRateLimitedAnnouncer,
@@ -36,7 +36,7 @@ type Message = RealtimeEnvelope['payload']['message'];
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -60,7 +60,7 @@ async function get<T>(path: string): Promise<T> {
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'PATCH',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -74,7 +74,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 async function mutate(path: string, body: unknown): Promise<void> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)

@@ -847,10 +847,28 @@ export class FixedWindowRateLimiter implements RateLimiter {
   constructor(
     private readonly limit: number,
     private readonly windowMs: number,
-  ) {}
+    private readonly maxBuckets = 10_000,
+  ) {
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new Error('Rate limit must be a positive safe integer');
+    if (!Number.isSafeInteger(windowMs) || windowMs < 1)
+      throw new Error('Rate-limit window must be a positive safe integer');
+    if (!Number.isSafeInteger(maxBuckets) || maxBuckets < 1)
+      throw new Error(
+        'Rate-limit bucket capacity must be a positive safe integer',
+      );
+  }
   consume(keys: string[], now: Date): Promise<boolean> {
     const timestamp = now.getTime();
-    const entries = keys.map((key) => {
+    const uniqueKeys = [...new Set(keys)];
+    let newBuckets = uniqueKeys.filter((key) => !this.buckets.has(key)).length;
+    if (this.buckets.size + newBuckets > this.maxBuckets) {
+      this.removeExpired(timestamp);
+      newBuckets = uniqueKeys.filter((key) => !this.buckets.has(key)).length;
+      if (this.buckets.size + newBuckets > this.maxBuckets)
+        return Promise.resolve(false);
+    }
+    const entries = uniqueKeys.map((key) => {
       const current = this.buckets.get(key);
       return !current || timestamp - current.startsAt >= this.windowMs
         ? { key, value: { count: 0, startsAt: timestamp } }
@@ -861,6 +879,11 @@ export class FixedWindowRateLimiter implements RateLimiter {
     for (const { key, value } of entries)
       this.buckets.set(key, { ...value, count: value.count + 1 });
     return Promise.resolve(true);
+  }
+
+  private removeExpired(timestamp: number): void {
+    for (const [key, value] of this.buckets)
+      if (timestamp - value.startsAt >= this.windowMs) this.buckets.delete(key);
   }
 }
 

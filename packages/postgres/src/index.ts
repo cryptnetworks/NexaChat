@@ -2135,6 +2135,12 @@ function messageRepository(db: Queryable): Persistence['messages'] {
   const fields =
     'id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, deleted_at, version';
   return {
+    async lockIdempotency(authorId, spaceId, key) {
+      await db.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+        [JSON.stringify([authorId, spaceId, key])],
+      );
+    },
     async create(message) {
       const result = await db.query<MessageRow>(
         `INSERT INTO messages

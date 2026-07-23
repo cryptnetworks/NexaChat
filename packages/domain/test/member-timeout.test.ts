@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { CommunityService, InMemoryPersistence } from '../src/index.js';
+import {
+  CommunityService,
+  InMemoryPersistence,
+  type AuthorizationGateway,
+} from '../src/index.js';
 
-async function fixture() {
+async function fixture(authorization?: AuthorizationGateway) {
   const persistence = new InMemoryPersistence();
-  const service = new CommunityService(persistence);
+  const service = new CommunityService(persistence, authorization);
   const owner = await service.createAccount('Owner');
   const member = await service.createAccount('Member');
   const community = await service.createCommunity(owner.id, 'Community');
@@ -53,6 +57,31 @@ describe('member timeouts', () => {
         randomUUID(),
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('remains authoritative when a scoped authorization gateway is active', async () => {
+    const authorization: AuthorizationGateway = {
+      enforce: () => Promise.resolve(),
+      assertCanModerate: () => Promise.resolve(),
+    };
+    const { service, owner, member, community, space } =
+      await fixture(authorization);
+    await service.timeoutMember(
+      owner.id,
+      community.id,
+      member.id,
+      60,
+      'Repeated disruption',
+      'timeout-authorization-gateway',
+      randomUUID(),
+    );
+
+    await expect(
+      service.listMessages(space.id, member.id, { limit: 10 }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(
+      service.authorizeSpaceSubscription(space.id, member.id),
+    ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
   it('protects the sole owner and bounds reasons and duration', async () => {

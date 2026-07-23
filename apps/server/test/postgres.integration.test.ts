@@ -223,7 +223,10 @@ integration('PostgreSQL-backed API', () => {
       database.readiness,
       {
         service: {
-          authenticate: vi.fn(),
+          authenticate: vi.fn().mockResolvedValue({
+            account: { id: owner.id },
+            session: { id: randomUUID() },
+          }),
         } as never,
         config: {
           trustedOrigin: runtimeConfig.authentication.trustedOrigin,
@@ -249,7 +252,10 @@ integration('PostgreSQL-backed API', () => {
         method: 'POST',
         url: `/v1/spaces/${space.id}/messages`,
         headers: {
+          cookie: 'nexa_session=trace-session-token',
+          origin: 'http://localhost:5173',
           traceparent: `00-${traceId}-${parentSpanId}-01`,
+          'x-nexa-csrf': '1',
         },
         payload: {
           authorId: owner.id,
