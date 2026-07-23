@@ -326,7 +326,7 @@ services:
     image: ${NEXA_EDGE_IMAGE:-nexa-chat-edge}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
     build:
       context: .
-      target: edge-runtime
+      target: web-runtime
       args:
         NEXA_IMAGE_SOURCE: ${NEXA_IMAGE_SOURCE:-https://github.com/cryptnetworks/NexaChat}
         NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}

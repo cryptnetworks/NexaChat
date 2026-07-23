@@ -1,0 +1,120 @@
+name: Container application verification
+on:
+  pull_request:
+    paths:
+      - .dockerignore
+      - Dockerfile
+      - compose.development.yml
+      - compose.production.yml
+      - docker-compose.yml
+      - deploy/**
+      - apps/server/runtime/package-lock.json
+      - apps/server/runtime/package.json
+      - apps/web/vite.config.ts
+      - package-lock.json
+      - package.json
+      - scripts/scan-production-images.sh
+      - scripts/verify-build-metadata.mjs
+      - scripts/verify-container-policy.mjs
+      - scripts/verify-development-containers.sh
+      - docs/operations/container-applications.md
+  push:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - Dockerfile
+      - compose.development.yml
+      - compose.production.yml
+      - docker-compose.yml
+      - deploy/**
+      - apps/server/runtime/package-lock.json
+      - apps/server/runtime/package.json
+      - apps/web/vite.config.ts
+      - package-lock.json
+      - package.json
+      - scripts/scan-production-images.sh
+      - scripts/verify-build-metadata.mjs
+      - scripts/verify-container-policy.mjs
+      - scripts/verify-development-containers.sh
+      - docs/operations/container-applications.md
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: container-verification-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  application-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BUILDX_METADATA_PROVENANCE: max
+      NEXA_IMAGE_REVISION: ${{ github.sha }}
+      NEXA_IMAGE_VERSION: container-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - run: npm run verify:container-policy
+      - name: Validate development and production Compose models
+        env:
+          NEXA_SECRET_DIR: /tmp/nexa-chat-container-secrets
+          NEXA_PUBLIC_ORIGIN: https://chat.example.test
+          NEXA_IMAGE_TAG: container-verification
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f compose.development.yml --profile applications config --quiet
+          docker compose -f compose.production.yml config --quiet
+      - name: Build production server and web images
+        run: |
+          mkdir -p "$RUNNER_TEMP/container-evidence/build-metadata"
+          docker build --pull --target server-runtime \
+            --metadata-file "$RUNNER_TEMP/container-evidence/build-metadata/server-runtime.json" \
+            --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat \
+            --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" \
+            --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" \
+            --tag nexa-chat-server:container-verification .
+          docker build --pull --target web-runtime \
+            --metadata-file "$RUNNER_TEMP/container-evidence/build-metadata/web-runtime.json" \
+            --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat \
+            --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" \
+            --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" \
+            --tag nexa-chat-web:container-verification .
+          node scripts/verify-build-metadata.mjs \
+            "$RUNNER_TEMP/container-evidence/build-metadata" \
+            "$NEXA_IMAGE_REVISION" "$NEXA_IMAGE_VERSION" \
+            server-runtime web-runtime
+      - name: Verify application image contents and size
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' nexa-chat-server:container-verification)" != root
+          test "$(docker image inspect --format '{{.Config.User}}' nexa-chat-web:container-verification)" != root
+          docker run --rm --entrypoint /bin/sh nexa-chat-server:container-verification -c \
+            'test -r /usr/share/licenses/nexa-chat/LICENSE && test -r /usr/share/licenses/nexa-chat/NOTICE && ! command -v npm && ! test -e /app/server/src'
+          docker run --rm --entrypoint /bin/sh nexa-chat-web:container-verification -c \
+            'test -r /usr/share/licenses/nexa-chat/LICENSE && test -r /usr/share/licenses/nexa-chat/NOTICE && ! command -v npm && ! test -e /workspace'
+          server_id="$(docker image inspect --format '{{.Id}}' nexa-chat-server:container-verification)"
+          server_size="$(docker image inspect --format '{{.Size}}' nexa-chat-server:container-verification)"
+          web_id="$(docker image inspect --format '{{.Id}}' nexa-chat-web:container-verification)"
+          web_size="$(docker image inspect --format '{{.Size}}' nexa-chat-web:container-verification)"
+          printf '{"schemaVersion":1,"revision":"%s","images":[{"name":"nexa-chat-server","id":"%s","sizeBytes":%s},{"name":"nexa-chat-web","id":"%s","sizeBytes":%s}]}\n' \
+            "$NEXA_IMAGE_REVISION" "$server_id" "$server_size" "$web_id" "$web_size" \
+            > "$RUNNER_TEMP/container-evidence/application-images.json"
+      - name: Scan application images and generate SBOMs
+        run: |
+          bash scripts/scan-production-images.sh \
+            "$RUNNER_TEMP/container-evidence/image-reports" \
+            nexa-chat-server:container-verification \
+            nexa-chat-web:container-verification
+      - name: Verify containerized development topology
+        run: bash scripts/verify-development-containers.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: container-applications-${{ github.sha }}
+          path: ${{ runner.temp }}/container-evidence
+          if-no-files-found: warn
+          retention-days: 30

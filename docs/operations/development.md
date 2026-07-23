@@ -14,6 +14,15 @@ development processes in the foreground. Stop the processes with Ctrl-C;
 
 Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. Provider ports bind to loopback by default; do not widen `NEXA_DEVELOPMENT_BIND_ADDRESS` on an untrusted network. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
 
+The base Compose file intentionally runs providers only and publishes them to
+loopback. For an entirely containerized application stack, run `npm run
+dev:containers`; the `compose.development.yml` override adds the server and web
+processes while removing provider host ports. Use `npm run dev:containers:down`
+to stop that project without deleting its durable volumes. Source edits are
+read-only bind mounts, dependencies stay in the image, and only bounded cache
+and temporary paths are writable. The complete target, configuration, and
+platform matrix is in the [application container guide](container-applications.md).
+
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness,
 `/health/startup` reports completed initialization, and `/health/ready` returns
 `200` only when PostgreSQL is reachable and its schema matches this build.
@@ -101,7 +110,8 @@ A production backup must consistently cover PostgreSQL and object storage, encry
 
 Run containers as non-root with read-only filesystems where possible, terminate TLS at a maintained proxy, restrict service ports to a private network, rotate secrets, set explicit quotas, collect OpenTelemetry logs/metrics/traces without message content, and handle `SIGTERM` gracefully. Kubernetes is not required.
 
-The initial Compose file is for development services only. The production
-profile, migration automation, image scanning, SBOMs, and provenance checks are
+The base Compose file is for development providers only; the opt-in development
+override adds containerized application processes. The production profile,
+migration automation, image scanning, SBOMs, and provenance checks are
 documented separately. Artifact signing and release publication remain distinct,
 explicitly authorized operations.

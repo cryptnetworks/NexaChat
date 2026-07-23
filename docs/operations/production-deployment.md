@@ -29,6 +29,13 @@ and object-storage endpoints. PostgreSQL is likewise restricted to the exact
 private service name in this profile. Do not attach unrelated containers to
 either production network.
 
+The [application container guide](container-applications.md) is the shared
+reference for build targets, image responsibilities, configuration ownership,
+platform scope, and CI evidence. This runbook remains authoritative for the
+single-host production procedure. The `web-runtime` target is the explicit web
+artifact; the Compose service and compatibility image variable retain the
+established `edge` name.
+
 Every long-running service has a read-only root filesystem, drops all Linux
 capabilities, prevents privilege escalation, bounds processes/CPU/memory/open
 files, rotates local logs, and has an explicit healthcheck and stop deadline.

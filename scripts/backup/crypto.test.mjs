@@ -45,6 +45,21 @@ class PrematureCloseDestination extends EventEmitter {
   destroy() {}
 }
 
+class EndedPipeDestination extends EventEmitter {
+  writableEnded = false;
+
+  write() {
+    return true;
+  }
+
+  end() {
+    this.writableEnded = true;
+    this.emit('close');
+  }
+
+  destroy() {}
+}
+
 async function transformWithSynchronousFinish(input, operation, key) {
   const output = new SynchronousFinishDestination();
   await operation(Readable.from([input]), output, key);
@@ -99,6 +114,17 @@ describe('backup component encryption', () => {
         key,
       ),
     ).rejects.toThrow('destination_closed_before_finish');
+  });
+
+  it('accepts a destination that closes after its input ends', async () => {
+    const key = randomBytes(32);
+    await expect(
+      encryptStream(
+        Readable.from([Buffer.from('finished pipe input')]),
+        new EndedPipeDestination(),
+        key,
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it('rejects altered ciphertext and the wrong key', async () => {
