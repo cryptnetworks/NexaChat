@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 
 const proxyTarget =
   process.env.NEXA_DEV_PROXY_TARGET ?? 'http://localhost:3000';
+const cacheDir = process.env.NEXA_DEV_CACHE_DIR;
 const parsedProxyTarget = new URL(proxyTarget);
 if (
   !['http:', 'https:'].includes(parsedProxyTarget.protocol) ||
@@ -15,7 +16,7 @@ if (
   throw new Error('NEXA_DEV_PROXY_TARGET must be an HTTP origin');
 
 export default defineConfig({
-  cacheDir: process.env.NEXA_DEV_CACHE_DIR,
+  ...(cacheDir === undefined ? {} : { cacheDir }),
   plugins: [react()],
   server: {
     strictPort: true,
