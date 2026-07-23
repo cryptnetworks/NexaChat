@@ -70,6 +70,19 @@ function opened(socket: WebSocket): Promise<void> {
   });
 }
 
+function admission(socket: WebSocket): Promise<'opened' | 'rejected'> {
+  return new Promise((resolve) => {
+    socket.once('open', () => {
+      resolve('opened');
+    });
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume();
+      resolve('rejected');
+    });
+    socket.once('error', () => {});
+  });
+}
+
 function closed(socket: WebSocket): Promise<number> {
   return new Promise((resolve) => socket.once('close', resolve));
 }
@@ -301,6 +314,38 @@ describe('secure real WebSocket integration', () => {
     second.close(1000);
   });
 
+  it('validates and serializes one fanout payload once for every local recipient', async () => {
+    const owner = await identity('shared-serialization');
+    const community = await service.createCommunity(
+      owner.account.id,
+      'Shared serialization',
+    );
+    const space = await service.createTextSpace(
+      community.id,
+      owner.account.id,
+      'shared',
+    );
+    const first = connect(owner.session.token);
+    const second = connect(owner.session.token);
+    await Promise.all([opened(first), opened(second)]);
+    await Promise.all([
+      subscribe(first, space.id),
+      subscribe(second, space.id),
+    ]);
+    const firstDelivery = nextMessage(first);
+    const secondDelivery = nextMessage(second);
+    app.websocketHub?.broadcast(
+      space.id,
+      envelope(space.id, owner.account.id, 'shared payload'),
+    );
+    await Promise.all([firstDelivery, secondDelivery]);
+    expect(telemetry.metrics.render()).toContain(
+      'nexa_websocket_events_total{event="realtime_payload_serialized",outcome="event"} 1',
+    );
+    first.close(1000);
+    second.close(1000);
+  });
+
   it('returns coarse presence without exposing expiry or activity details', async () => {
     await app.websocketHub?.close();
     const targetId = randomUUID();
@@ -525,9 +570,14 @@ describe('secure real WebSocket integration', () => {
       owner.account.id,
       'second',
     );
-    const socket = connect(owner.session.token);
-    await opened(socket);
-    await expectUpgradeRejected(connect(owner.session.token), 403);
+    const contenders = [
+      connect(owner.session.token),
+      connect(owner.session.token),
+    ];
+    const outcomes = await Promise.all(contenders.map(admission));
+    expect([...outcomes].sort()).toEqual(['opened', 'rejected']);
+    const socket = contenders[outcomes.indexOf('opened')];
+    if (!socket) throw new Error('admitted socket missing');
     await subscribe(socket, first.id);
     const requestId = randomUUID();
     socket.send(

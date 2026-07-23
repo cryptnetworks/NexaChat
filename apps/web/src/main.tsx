@@ -1,4 +1,11 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  StrictMode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   websocketServerMessageSchema,
@@ -20,7 +27,7 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
-import { publicRequestError } from './http.js';
+import { jsonMutationHeaders, publicRequestError } from './http.js';
 import {
   accessibleTimestamp,
   createRateLimitedAnnouncer,
@@ -30,13 +37,16 @@ import {
   publishSessionSignal,
   subscribeSessionSignals,
 } from './session-sync.js';
+import { maximumLiveMessages, mergeMessageWindow } from './message-window.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
+type MessagePage = { items: Message[]; nextCursor: string | null };
+const maximumPendingRealtimeMessages = 512;
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -47,8 +57,8 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function get<T>(path: string): Promise<T> {
-  const response = await fetch(path);
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, signal ? { signal } : undefined);
   if (!response.ok)
     throw publicRequestError(
       response.status,
@@ -57,10 +67,24 @@ async function get<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function messageHistoryPath(
+  spaceId: string,
+  accountId: string,
+  cursor?: string,
+): string {
+  const query = new URLSearchParams({
+    actorId: accountId,
+    direction: 'backward',
+    limit: '100',
+  });
+  if (cursor) query.set('cursor', cursor);
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/messages?${query.toString()}`;
+}
+
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'PATCH',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -74,7 +98,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 async function mutate(path: string, body: unknown): Promise<void> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -125,6 +149,10 @@ function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [historyMode, setHistoryMode] = useState<'latest' | 'older'>('latest');
+  const [historyStatus, setHistoryStatus] = useState('');
+  const [newerMessagesAvailable, setNewerMessagesAvailable] = useState(false);
   const [inviteToken] = useState(() => invitationTokenFromHash(location.hash));
   const [invitePreview, setInvitePreview] =
     useState<InvitationPreviewResponse>();
@@ -143,6 +171,14 @@ function App() {
     sequence: 0,
     seenEventIds: new Set<string>(),
   });
+  const pendingRealtimeMessages = useRef<Message[]>([]);
+  const realtimeFlushFrame = useRef<number | null>(null);
+  const historyRequest = useRef(0);
+  const historyModeRef = useRef<'latest' | 'older'>('latest');
+  const manualHistoryController = useRef<AbortController | null>(null);
+  const messagesViewport = useRef<HTMLDivElement>(null);
+  const restoreScrollOffset = useRef<number | null>(null);
+  const scrollToLatest = useRef(false);
 
   useEffect(() => {
     if (inviteToken)
@@ -156,6 +192,19 @@ function App() {
     setCommunity(undefined);
     setSpace(undefined);
     setMessages([]);
+    setOlderCursor(null);
+    setHistoryMode('latest');
+    historyModeRef.current = 'latest';
+    setHistoryStatus('');
+    setNewerMessagesAvailable(false);
+    historyRequest.current += 1;
+    if (realtimeFlushFrame.current !== null) {
+      cancelAnimationFrame(realtimeFlushFrame.current);
+      realtimeFlushFrame.current = null;
+    }
+    pendingRealtimeMessages.current = [];
+    manualHistoryController.current?.abort();
+    manualHistoryController.current = null;
     setAuthState('signed-out');
     setAuthStatus(message);
   }, []);
@@ -254,6 +303,26 @@ function App() {
   }, [space]);
 
   useEffect(() => {
+    historyModeRef.current = historyMode;
+  }, [historyMode]);
+
+  useLayoutEffect(() => {
+    const viewport = messagesViewport.current;
+    if (!viewport) return;
+    if (restoreScrollOffset.current !== null) {
+      viewport.scrollTop = Math.max(
+        0,
+        viewport.scrollHeight - restoreScrollOffset.current,
+      );
+      restoreScrollOffset.current = null;
+    }
+    if (scrollToLatest.current) {
+      viewport.scrollTop = viewport.scrollHeight;
+      scrollToLatest.current = false;
+    }
+  }, [messages]);
+
+  useEffect(() => {
     if (!loading && restoreBeginFocus.current) {
       restoreBeginFocus.current = false;
       beginButton.current?.focus();
@@ -279,25 +348,49 @@ function App() {
   useEffect(() => {
     if (!profile || !account || !space) return;
     let active = true;
+    const controller = new AbortController();
+    manualHistoryController.current?.abort();
+    const request = ++historyRequest.current;
     setLoadingHistory(true);
     setError('');
-    void get<{ items: Message[] }>(
-      `/v1/spaces/${space.id}/messages?actorId=${encodeURIComponent(account.id)}`,
+    void get<MessagePage>(
+      messageHistoryPath(space.id, account.id),
+      controller.signal,
     )
       .then((page) => {
-        if (active) setMessages(page.items);
+        if (!active || request !== historyRequest.current) return;
+        setMessages(mergeMessageWindow([], page.items));
+        setOlderCursor(page.nextCursor);
+        setHistoryMode('latest');
+        historyModeRef.current = 'latest';
+        setHistoryStatus(
+          page.nextCursor
+            ? `Showing the latest ${String(page.items.length)} messages. Older messages are available.`
+            : `Showing ${String(page.items.length)} messages.`,
+        );
+        setNewerMessagesAvailable(false);
+        scrollToLatest.current = true;
       })
       .catch((reason: unknown) => {
-        if (active)
+        if (
+          active &&
+          request === historyRequest.current &&
+          !controller.signal.aborted
+        )
           setError(
             reason instanceof Error ? reason.message : 'Unable to load history',
           );
       })
       .finally(() => {
-        if (active) setLoadingHistory(false);
+        if (active && request === historyRequest.current)
+          setLoadingHistory(false);
       });
     return () => {
       active = false;
+      controller.abort();
+      manualHistoryController.current?.abort();
+      manualHistoryController.current = null;
+      historyRequest.current += 1;
     };
   }, [account, profile, space]);
 
@@ -306,13 +399,72 @@ function App() {
     let active = true;
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
+    let reconcileController: AbortController | undefined;
     let attempts = 0;
 
+    const flushRealtimeMessages = () => {
+      realtimeFlushFrame.current = null;
+      const pending = pendingRealtimeMessages.current;
+      pendingRealtimeMessages.current = [];
+      if (!active || pending.length === 0) return;
+      if (historyModeRef.current === 'older') {
+        setNewerMessagesAvailable(true);
+        setMessages((current) =>
+          mergeMessageWindow(
+            current,
+            pending.filter((message) =>
+              current.some(
+                (currentMessage) => currentMessage.id === message.id,
+              ),
+            ),
+            'oldest',
+          ),
+        );
+      } else setMessages((current) => mergeMessageWindow(current, pending));
+    };
+
+    const queueRealtimeMessage = (message: Message) => {
+      pendingRealtimeMessages.current.push(message);
+      if (
+        pendingRealtimeMessages.current.length >= maximumPendingRealtimeMessages
+      ) {
+        if (realtimeFlushFrame.current !== null) {
+          cancelAnimationFrame(realtimeFlushFrame.current);
+          realtimeFlushFrame.current = null;
+        }
+        flushRealtimeMessages();
+        return;
+      }
+      if (realtimeFlushFrame.current !== null) return;
+      realtimeFlushFrame.current = requestAnimationFrame(flushRealtimeMessages);
+    };
+
     const reconcile = async () => {
-      const page = await get<{ items: Message[] }>(
-        `/v1/spaces/${space.id}/messages?actorId=${encodeURIComponent(account.id)}`,
-      );
-      if (active) setMessages(page.items);
+      reconcileController?.abort();
+      reconcileController = new AbortController();
+      const request = ++historyRequest.current;
+      setLoadingHistory(true);
+      try {
+        const page = await get<MessagePage>(
+          messageHistoryPath(space.id, account.id),
+          reconcileController.signal,
+        );
+        if (!active || request !== historyRequest.current) return;
+        setMessages(mergeMessageWindow([], page.items));
+        setOlderCursor(page.nextCursor);
+        setHistoryMode('latest');
+        historyModeRef.current = 'latest';
+        setHistoryStatus(
+          page.nextCursor
+            ? `History reconciled. Older messages are available.`
+            : 'History reconciled.',
+        );
+        setNewerMessagesAvailable(false);
+        scrollToLatest.current = true;
+      } finally {
+        if (active && request === historyRequest.current)
+          setLoadingHistory(false);
+      }
     };
 
     const connect = () => {
@@ -320,6 +472,7 @@ function App() {
       const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
       socket = new WebSocket(`${protocol}://${location.host}/v1/realtime`);
       socket.onopen = () => {
+        const reconnecting = attempts > 0;
         attempts = 0;
         socket?.send(
           JSON.stringify({
@@ -329,9 +482,10 @@ function App() {
             spaceId: space.id,
           }),
         );
-        void reconcile().catch(() => {
-          setError('Unable to reconcile history');
-        });
+        if (reconnecting)
+          void reconcile().catch(() => {
+            if (active) setError('Unable to reconcile history');
+          });
       };
       socket.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
@@ -353,20 +507,11 @@ function App() {
           if (!accepted.accepted) return;
           if (accepted.gap)
             void reconcile().catch(() => {
-              setError('Unable to recover missed messages');
+              if (active) setError('Unable to recover missed messages');
             });
           const envelope = realtimeEnvelopeSchema.parse(next.event);
-          setMessages((current) => {
-            const message = envelope.payload.message;
-            const withoutCurrent = current.filter(
-              (item) => item.id !== message.id,
-            );
-            return [...withoutCurrent, message].sort(
-              (a, b) =>
-                a.createdAt.localeCompare(b.createdAt) ||
-                a.id.localeCompare(b.id),
-            );
-          });
+          const message = envelope.payload.message;
+          queueRealtimeMessage(message);
           realtimeAnnouncer.current ??= createRateLimitedAnnouncer(
             setRealtimeAnnouncement,
           );
@@ -378,6 +523,18 @@ function App() {
           if (control.data.error === 'unauthenticated') {
             endLocalSession('Your session ended. Sign in again.');
             publishSessionSignal('signed_out');
+          } else if (control.data.error === 'unavailable') {
+            historyRequest.current += 1;
+            if (realtimeFlushFrame.current !== null) {
+              cancelAnimationFrame(realtimeFlushFrame.current);
+              realtimeFlushFrame.current = null;
+            }
+            pendingRealtimeMessages.current = [];
+            setMessages([]);
+            setOlderCursor(null);
+            setNewerMessagesAvailable(false);
+            setSpace(undefined);
+            setError('This text space is no longer available.');
           } else
             setError(`Realtime connection rejected (${control.data.error})`);
         }
@@ -399,9 +556,96 @@ function App() {
     return () => {
       active = false;
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconcileController?.abort();
+      if (realtimeFlushFrame.current !== null) {
+        cancelAnimationFrame(realtimeFlushFrame.current);
+        realtimeFlushFrame.current = null;
+      }
+      pendingRealtimeMessages.current = [];
       socket?.close(1000, 'space changed');
     };
   }, [account, endLocalSession, profile, space]);
+
+  async function loadOlderHistory() {
+    if (!account || !space || !olderCursor || loadingHistory) return;
+    const viewport = messagesViewport.current;
+    if (viewport)
+      restoreScrollOffset.current = viewport.scrollHeight - viewport.scrollTop;
+    manualHistoryController.current?.abort();
+    const controller = new AbortController();
+    manualHistoryController.current = controller;
+    const request = ++historyRequest.current;
+    setLoadingHistory(true);
+    setError('');
+    try {
+      const page = await get<MessagePage>(
+        messageHistoryPath(space.id, account.id, olderCursor),
+        controller.signal,
+      );
+      if (request !== historyRequest.current) return;
+      setMessages((current) =>
+        mergeMessageWindow(current, page.items, 'oldest'),
+      );
+      setOlderCursor(page.nextCursor);
+      setHistoryMode('older');
+      historyModeRef.current = 'older';
+      setHistoryStatus(
+        page.nextCursor
+          ? `Showing an earlier window of at most ${String(maximumLiveMessages)} messages. More history is available.`
+          : `Showing the earliest available window of at most ${String(maximumLiveMessages)} messages.`,
+      );
+    } catch (reason) {
+      if (!controller.signal.aborted && request === historyRequest.current)
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : 'Unable to load older history',
+        );
+    } finally {
+      if (request === historyRequest.current) setLoadingHistory(false);
+      if (manualHistoryController.current === controller)
+        manualHistoryController.current = null;
+    }
+  }
+
+  async function showLatestMessages() {
+    if (!account || !space || loadingHistory) return;
+    manualHistoryController.current?.abort();
+    const controller = new AbortController();
+    manualHistoryController.current = controller;
+    const request = ++historyRequest.current;
+    setLoadingHistory(true);
+    setError('');
+    try {
+      const page = await get<MessagePage>(
+        messageHistoryPath(space.id, account.id),
+        controller.signal,
+      );
+      if (request !== historyRequest.current) return;
+      setMessages(mergeMessageWindow([], page.items));
+      setOlderCursor(page.nextCursor);
+      setHistoryMode('latest');
+      historyModeRef.current = 'latest';
+      setHistoryStatus(
+        page.nextCursor
+          ? `Showing the latest ${String(page.items.length)} messages. Older messages are available.`
+          : `Showing ${String(page.items.length)} messages.`,
+      );
+      setNewerMessagesAvailable(false);
+      scrollToLatest.current = true;
+    } catch (reason) {
+      if (!controller.signal.aborted && request === historyRequest.current)
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : 'Unable to load latest messages',
+        );
+    } finally {
+      if (request === historyRequest.current) setLoadingHistory(false);
+      if (manualHistoryController.current === controller)
+        manualHistoryController.current = null;
+    }
+  }
 
   async function begin() {
     try {
@@ -439,7 +683,7 @@ function App() {
     }
   }
 
-  async function send(form: React.FormEvent<HTMLFormElement>) {
+  async function send(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     const formElement = form.currentTarget;
     const data = new FormData(formElement);
@@ -459,7 +703,7 @@ function App() {
     }
   }
 
-  async function createInvite(form: React.FormEvent<HTMLFormElement>) {
+  async function createInvite(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     if (!account || !community) return;
     setInviteStatus('Creating invitation…');
@@ -493,7 +737,7 @@ function App() {
     }
   }
 
-  async function saveProfile(event: React.FormEvent<HTMLFormElement>) {
+  async function saveProfile(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile) return;
     const data = new FormData(event.currentTarget);
@@ -522,7 +766,7 @@ function App() {
     }
   }
 
-  async function changePassword(event: React.FormEvent<HTMLFormElement>) {
+  async function changePassword(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -556,7 +800,7 @@ function App() {
     }
   }
 
-  async function registerAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function registerAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setAuthBusy(true);
@@ -579,7 +823,7 @@ function App() {
     }
   }
 
-  async function loginAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function loginAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -1005,7 +1249,34 @@ function App() {
             </div>
           ) : (
             <>
-              <div className="messages" aria-busy={loadingHistory}>
+              <div className="history-controls">
+                <button
+                  type="button"
+                  onClick={() => void loadOlderHistory()}
+                  disabled={!olderCursor || loadingHistory}
+                >
+                  {loadingHistory ? 'Loading history…' : 'Load older messages'}
+                </button>
+                {(historyMode === 'older' || newerMessagesAvailable) && (
+                  <button
+                    type="button"
+                    onClick={() => void showLatestMessages()}
+                    disabled={loadingHistory}
+                  >
+                    {newerMessagesAvailable
+                      ? 'Show latest messages'
+                      : 'Return to latest messages'}
+                  </button>
+                )}
+                <p role="status" aria-live="polite" aria-atomic="true">
+                  {historyStatus}
+                </p>
+              </div>
+              <div
+                ref={messagesViewport}
+                className="messages"
+                aria-busy={loadingHistory}
+              >
                 {loadingHistory && <p className="empty">Loading history…</p>}
                 {!loadingHistory && messages.length === 0 && (
                   <p className="empty">

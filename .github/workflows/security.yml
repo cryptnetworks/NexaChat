@@ -64,7 +64,7 @@ jobs:
           docker build --target server-runtime --metadata-file "$RUNNER_TEMP/build-metadata/server-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-server:security .
           docker build --target edge-runtime --metadata-file "$RUNNER_TEMP/build-metadata/edge-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-edge:security .
           docker build --target object-storage-runtime --metadata-file "$RUNNER_TEMP/build-metadata/object-storage-runtime.json" --build-arg NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat --build-arg NEXA_IMAGE_REVISION="$NEXA_IMAGE_REVISION" --build-arg NEXA_IMAGE_VERSION="$NEXA_IMAGE_VERSION" --tag nexa-chat-object-storage:security .
-          docker pull valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+          docker pull valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
       - name: Validate build provenance
         run: node scripts/verify-build-metadata.mjs "$RUNNER_TEMP/build-metadata" "$NEXA_IMAGE_REVISION" "$NEXA_IMAGE_VERSION"
       - name: Scan production images and validate image SBOMs
@@ -75,7 +75,7 @@ jobs:
             nexa-chat-object-storage:security \
             nexa-chat-postgres:security \
             nexa-chat-backup:security \
-            valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+            valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

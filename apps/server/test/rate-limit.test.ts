@@ -310,6 +310,8 @@ function fakeCoordination() {
     setIfAbsent: vi.fn().mockResolvedValue(true),
     increment,
     delete: vi.fn().mockResolvedValue(false),
+    publish: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockResolvedValue(() => Promise.resolve()),
     close: vi.fn().mockResolvedValue(undefined),
   };
   return { coordination, increment };

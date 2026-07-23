@@ -222,9 +222,26 @@ export class FixedWindowDiscoveryLimiter implements DiscoveryRateLimiter {
   constructor(
     private readonly limit = 30,
     private readonly windowMs = 60_000,
-  ) {}
+    private readonly maxBuckets = 10_000,
+  ) {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      !Number.isSafeInteger(windowMs) ||
+      windowMs < 1 ||
+      !Number.isSafeInteger(maxBuckets) ||
+      maxBuckets < 1
+    )
+      throw new Error('invalid_discovery_rate_limit');
+  }
   consume(key: string, now: Date): Promise<boolean> {
     const timestamp = now.getTime();
+    if (!this.buckets.has(key) && this.buckets.size >= this.maxBuckets) {
+      for (const [candidate, value] of this.buckets)
+        if (timestamp - value.start >= this.windowMs)
+          this.buckets.delete(candidate);
+      if (this.buckets.size >= this.maxBuckets) return Promise.resolve(false);
+    }
     const current = this.buckets.get(key);
     const bucket =
       !current || timestamp - current.start >= this.windowMs
@@ -232,8 +249,6 @@ export class FixedWindowDiscoveryLimiter implements DiscoveryRateLimiter {
         : current;
     if (bucket.count >= this.limit) return Promise.resolve(false);
     this.buckets.set(key, { ...bucket, count: bucket.count + 1 });
-    if (this.buckets.size > 10_000)
-      this.buckets.delete(this.buckets.keys().next().value ?? '');
     return Promise.resolve(true);
   }
 }

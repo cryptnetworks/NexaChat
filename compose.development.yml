@@ -1,0 +1,191 @@
+name: ${NEXA_DEVELOPMENT_PROJECT_NAME:-nexa-chat-development}
+
+x-development-build: &development-build
+  context: .
+  target: development-runtime
+
+x-development-runtime: &development-runtime
+  image: nexa-chat-development:${NEXA_DEVELOPMENT_IMAGE_TAG:-local}
+  build: *development-build
+  profiles: [applications]
+  init: true
+  user: '1000:1000'
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: 'no'
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=128m
+  pids_limit: 200
+  ulimits:
+    nofile: { soft: 1024, hard: 4096 }
+  deploy:
+    resources:
+      limits: { cpus: '2.00', memory: 2G, pids: 200 }
+      reservations: { cpus: '0.10', memory: 128M }
+
+x-server-source-volumes: &server-source-volumes
+  - type: bind
+    source: ./apps/server/src
+    target: /workspace/apps/server/src
+    read_only: true
+  - type: bind
+    source: ./apps/server/migrations
+    target: /workspace/apps/server/migrations
+    read_only: true
+  - type: bind
+    source: ./apps/server/tsconfig.json
+    target: /workspace/apps/server/tsconfig.json
+    read_only: true
+  - type: bind
+    source: ./apps/server/tsconfig.build.json
+    target: /workspace/apps/server/tsconfig.build.json
+    read_only: true
+  - type: bind
+    source: ./packages
+    target: /workspace/packages
+    read_only: true
+  - type: bind
+    source: ./tsconfig.base.json
+    target: /workspace/tsconfig.base.json
+    read_only: true
+
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  object-storage:
+    ports: !reset []
+
+  migrate:
+    <<: *development-runtime
+    working_dir: /workspace/apps/server
+    command: [node, ../../node_modules/tsx/dist/cli.mjs, src/migrate.ts]
+    environment:
+      NODE_ENV: development
+      NEXA_CONFIG_SCHEMA: '1'
+      MIGRATION_DATABASE_URL: postgresql://nexa:local-development-password@postgres:5432/nexa
+    volumes: *server-source-volumes
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  server:
+    <<: *development-runtime
+    working_dir: /workspace/apps/server
+    command: [node, ../../node_modules/tsx/dist/cli.mjs, watch, src/main.ts]
+    environment:
+      NODE_ENV: development
+      NEXA_CONFIG_SCHEMA: '1'
+      NEXA_SERVER_HOST: 0.0.0.0
+      NEXA_SERVER_PORT: '3000'
+      NEXA_SERVER_BODY_LIMIT_BYTES: '16384'
+      NEXA_SERVER_REQUEST_TIMEOUT_MS: '15000'
+      NEXA_SERVER_SHUTDOWN_TIMEOUT_MS: '10000'
+      NEXA_SERVER_RATE_LIMIT: '1000'
+      NEXA_SERVER_RATE_WINDOW_SECONDS: '60'
+      NEXA_LOG_LEVEL: ${NEXA_LOG_LEVEL:-info}
+      NEXA_TRACE_SAMPLE_RATE: ${NEXA_TRACE_SAMPLE_RATE:-0.01}
+      NEXA_WEB_ORIGIN: http://localhost:${NEXA_DEVELOPMENT_WEB_PORT:-5173}
+      NEXA_SECURE_COOKIES: 'false'
+      NEXA_ENABLE_DEV_AUTH: 'false'
+      DATABASE_URL: postgresql://nexa:local-development-password@postgres:5432/nexa
+      NEXA_COORDINATION_ENABLED: 'true'
+      REDIS_URL: redis://redis:6379
+      NEXA_OBJECT_STORAGE_ENABLED: 'true'
+      NEXA_OBJECT_STORAGE_CREATE_BUCKET: 'true'
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: nexa-local
+      S3_SECRET_KEY: change-this-local-secret
+      S3_BUCKET: nexa-attachments
+      S3_REGION: us-east-1
+    ports:
+      - target: 3000
+        published: '${NEXA_DEVELOPMENT_SERVER_PORT:-3000}'
+        host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
+        protocol: tcp
+    volumes: *server-source-volumes
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      object-storage: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        [
+          CMD,
+          wget,
+          --quiet,
+          --tries=1,
+          --spider,
+          http://127.0.0.1:3000/health/ready,
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+
+  web:
+    <<: *development-runtime
+    working_dir: /workspace/apps/web
+    command:
+      - node
+      - ../../node_modules/vite/bin/vite.js
+      - --host
+      - 0.0.0.0
+      - --port
+      - '5173'
+      - --strictPort
+      - --configLoader
+      - runner
+    environment:
+      NEXA_DEV_CACHE_DIR: /tmp/nexa-vite-cache
+      NEXA_DEV_PROXY_TARGET: http://server:3000
+    ports:
+      - target: 5173
+        published: '${NEXA_DEVELOPMENT_WEB_PORT:-5173}'
+        host_ip: '${NEXA_DEVELOPMENT_BIND_ADDRESS:-127.0.0.1}'
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ./apps/web/src
+        target: /workspace/apps/web/src
+        read_only: true
+      - type: bind
+        source: ./apps/web/public
+        target: /workspace/apps/web/public
+        read_only: true
+      - type: bind
+        source: ./apps/web/index.html
+        target: /workspace/apps/web/index.html
+        read_only: true
+      - type: bind
+        source: ./apps/web/vite.config.ts
+        target: /workspace/apps/web/vite.config.ts
+        read_only: true
+      - type: bind
+        source: ./apps/web/tsconfig.json
+        target: /workspace/apps/web/tsconfig.json
+        read_only: true
+      - type: bind
+        source: ./packages
+        target: /workspace/packages
+        read_only: true
+      - type: bind
+        source: ./tsconfig.base.json
+        target: /workspace/tsconfig.base.json
+        read_only: true
+    depends_on:
+      server: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, wget, --quiet, --tries=1, --spider, http://127.0.0.1:5173/]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    stop_signal: SIGTERM
+    stop_grace_period: 10s

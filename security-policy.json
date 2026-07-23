@@ -58,5 +58,16 @@
       }
     }
   },
-  "suppressions": []
+  "suppressions": [
+    {
+      "id": "SEC-22",
+      "scanner": "gitleaks",
+      "rule": "generic-api-key",
+      "path": ".github/workflows/release-candidate.yml",
+      "owner": "@cryptnetworks",
+      "rationale": "A historical release-candidate evidence record contains only public PostgreSQL and Valkey image versions but matches the generic assignment heuristic.",
+      "compensatingControl": "The allowlist requires the scanner rule, exact path, and exact full line; controlled scanner fixtures prove that credential findings in the same path remain blocking and redacted.",
+      "reviewAfter": "2026-10-22"
+    }
+  ]
 }

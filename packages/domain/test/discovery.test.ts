@@ -151,4 +151,14 @@ describe('member and space discovery', () => {
       'discovery_rate_limited',
     );
   });
+
+  it('fails closed at bounded limiter capacity and recovers expired buckets', async () => {
+    const limiter = new FixedWindowDiscoveryLimiter(2, 1_000, 1);
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    expect(await limiter.consume('one', start)).toBe(true);
+    expect(await limiter.consume('two', start)).toBe(false);
+    expect(
+      await limiter.consume('two', new Date('2026-01-01T00:00:01.000Z')),
+    ).toBe(true);
+  });
 });

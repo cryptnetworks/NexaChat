@@ -205,6 +205,42 @@ integration('PostgreSQL persistence', () => {
     expect((await store.messages.list(space.id, { limit: 10 })).items).toEqual([
       message,
     ]);
+    const laterMessages = await Promise.all(
+      [1, 2, 3].map(async (offset) => {
+        const createdAt = new Date(
+          Date.parse(now) + offset * 1_000,
+        ).toISOString();
+        const next = {
+          ...message,
+          id: randomUUID(),
+          idempotencyKey: `request-backward-${String(offset)}`,
+          createdEventId: randomUUID(),
+          body: `persist ${String(offset)}`,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        await store.messages.create(next);
+        return next;
+      }),
+    );
+    const latest = await store.messages.list(space.id, {
+      limit: 2,
+      direction: 'backward',
+    });
+    expect(latest.items.map((item) => item.id)).toEqual([
+      laterMessages[1]?.id,
+      laterMessages[2]?.id,
+    ]);
+    if (!latest.nextCursor) throw new Error('expected older cursor');
+    const older = await store.messages.list(space.id, {
+      limit: 2,
+      cursor: latest.nextCursor,
+      direction: 'backward',
+    });
+    expect(older.items.map((item) => item.id)).toEqual([
+      message.id,
+      laterMessages[0]?.id,
+    ]);
     const edited = await store.messages.update(
       message.id,
       'persisted edit',
@@ -228,6 +264,8 @@ integration('PostgreSQL persistence', () => {
     expect(
       (await store.sessions.findByTokenHash(session.tokenHash))?.revokedAt,
     ).toBe(later);
+    for (const laterMessage of laterMessages)
+      expect(await store.messages.remove(laterMessage.id)).toBe(true);
     expect(await store.messages.remove(message.id)).toBe(true);
     expect(await store.messages.remove(message.id)).toBe(false);
     expect(await store.spaces.remove(space.id)).toBe(true);
@@ -417,6 +455,49 @@ integration('PostgreSQL persistence', () => {
     await expect(persistence.messages.findById(message.id)).resolves.toEqual(
       message,
     );
+  });
+
+  it('serializes concurrent message retries before applying slow mode', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const service = new CommunityService(persistence);
+    const owner = await service.createAccount('Retry owner');
+    const member = await service.createAccount('Retry member');
+    const community = await service.createCommunity(owner.id, 'Retries');
+    const invitation = await service.createInvitation(owner.id, community.id, {
+      expiresInSeconds: 600,
+      maxUses: 1,
+    });
+    await service.acceptInvitation(member.id, invitation.token, 'retry-member');
+    const originalSpace = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'slow-chat',
+    );
+    const space = await service.updateSpace(owner.id, originalSpace.id, {
+      slowModeSeconds: 60,
+      expectedVersion: originalSpace.version,
+    });
+
+    const results = await Promise.all([
+      service.postMessageCommand(
+        space.id,
+        member.id,
+        'same payload',
+        'postgres-concurrent-retry-0001',
+      ),
+      service.postMessageCommand(
+        space.id,
+        member.id,
+        'same payload',
+        'postgres-concurrent-retry-0001',
+      ),
+    ]);
+
+    expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
+    expect(results.map((result) => result.existing).sort()).toEqual([
+      false,
+      true,
+    ]);
   });
 
   it('atomically persists invitation final-use acceptance and audit events', async () => {

@@ -133,7 +133,9 @@ describe('desktop notification polling', () => {
       privacyMode: true,
       checkpoint: checkpointOne,
     });
-    const requestBody = fetchMock.mock.calls.at(0)?.[1]?.body;
+    const requestOptions = fetchMock.mock.calls.at(0)?.[1];
+    expect(new Headers(requestOptions?.headers).get('x-nexa-csrf')).toBe('1');
+    const requestBody = requestOptions?.body;
     if (typeof requestBody !== 'string')
       throw new Error('missing request body');
     const request = JSON.parse(requestBody) as Record<string, unknown>;

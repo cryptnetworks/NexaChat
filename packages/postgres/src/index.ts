@@ -484,22 +484,34 @@ export class PostgresJobRecoveryStore implements JobRecoveryStore {
     update: string,
     timestampValue: string,
     expectedStatus: RecoverableJob['status'],
-    errorCode?: RecoverableJob['lastErrorCode'],
+    errorCode?: Exclude<RecoverableJob['lastErrorCode'], null>,
   ): Promise<RecoverableJob | undefined> {
+    const expectedStatusParameter = errorCode === undefined ? '$5' : '$6';
+    const parameters =
+      errorCode === undefined
+        ? [
+            input.id,
+            input.leaseToken,
+            input.expectedVersion,
+            timestampValue,
+            expectedStatus,
+          ]
+        : [
+            input.id,
+            input.leaseToken,
+            input.expectedVersion,
+            timestampValue,
+            errorCode,
+            expectedStatus,
+          ];
     const result = await this.pool.query<RecoverableJobRow>(
       `UPDATE background_jobs SET ${update},
          lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
          version=version+1
-       WHERE id=$1 AND lease_token=$2 AND version=$3 AND status=$6
+       WHERE id=$1 AND lease_token=$2 AND version=$3
+         AND status=${expectedStatusParameter}
        RETURNING ${RECOVERABLE_JOB_FIELDS}`,
-      [
-        input.id,
-        input.leaseToken,
-        input.expectedVersion,
-        timestampValue,
-        errorCode ?? null,
-        expectedStatus,
-      ],
+      parameters,
     );
     const row = result.rows[0];
     return row ? mapRecoverableJob(row) : undefined;
@@ -2123,6 +2135,12 @@ function messageRepository(db: Queryable): Persistence['messages'] {
   const fields =
     'id, space_id, author_id, body, reply_to_id, idempotency_key, request_fingerprint, created_event_id, created_at, updated_at, deleted_at, version';
   return {
+    async lockIdempotency(authorId, spaceId, key) {
+      await db.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+        [JSON.stringify([authorId, spaceId, key])],
+      );
+    },
     async create(message) {
       const result = await db.query<MessageRow>(
         `INSERT INTO messages
@@ -2172,6 +2190,35 @@ function messageRepository(db: Queryable): Persistence['messages'] {
         separator < 0
           ? '00000000-0000-0000-0000-000000000000'
           : decoded.slice(separator + 1);
+      if (page.direction === 'backward') {
+        const result = page.cursor
+          ? await db.query<MessageRow>(
+              `SELECT ${fields} FROM messages
+               WHERE space_id=$1 AND (created_at,id) < ($2::timestamptz,$3::uuid)
+               ORDER BY created_at DESC,id DESC LIMIT $4`,
+              [spaceId, afterTime, afterId, page.limit + 1],
+            )
+          : await db.query<MessageRow>(
+              `SELECT ${fields} FROM messages
+               WHERE space_id=$1
+               ORDER BY created_at DESC,id DESC LIMIT $2`,
+              [spaceId, page.limit + 1],
+            );
+        const items = result.rows
+          .slice(0, page.limit)
+          .reverse()
+          .map(mapMessage);
+        const first = items.at(0);
+        return {
+          items,
+          nextCursor:
+            result.rows.length > page.limit && first
+              ? Buffer.from(`${first.createdAt}:${first.id}`).toString(
+                  'base64url',
+                )
+              : null,
+        };
+      }
       const result = await db.query<MessageRow>(
         `SELECT ${fields} FROM messages
          WHERE space_id=$1 AND (created_at,id) > ($2::timestamptz,$3::uuid)

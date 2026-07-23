@@ -1,8 +1,36 @@
 name: Backup restore verification
 on:
   pull_request:
+    paths:
+      - '.github/workflows/backup-restore.yml'
+      - '.dockerignore'
+      - '.node-version'
+      - 'Dockerfile'
+      - 'apps/server/**'
+      - 'compose.production.yml'
+      - 'deploy/backup/**'
+      - 'package-lock.json'
+      - 'package.json'
+      - 'packages/**'
+      - 'scripts/backup/**'
+      - 'scripts/verify-backup-policy.mjs'
+      - 'scripts/verify-backup-restore.sh'
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/backup-restore.yml'
+      - '.dockerignore'
+      - '.node-version'
+      - 'Dockerfile'
+      - 'apps/server/**'
+      - 'compose.production.yml'
+      - 'deploy/backup/**'
+      - 'package-lock.json'
+      - 'package.json'
+      - 'packages/**'
+      - 'scripts/backup/**'
+      - 'scripts/verify-backup-policy.mjs'
+      - 'scripts/verify-backup-restore.sh'
   schedule:
     - cron: '41 5 * * 1'
   workflow_dispatch:
@@ -20,15 +48,25 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with: { node-version: 24, cache: npm }
-      - run: npm ci --ignore-scripts
+        with: { node-version: 24 }
       - run: npm run verify:backup-policy
       - name: Back up, destroy, restore, and compare disposable data
         env:
           NEXA_BACKUP_EVIDENCE_FILE: ${{ runner.temp }}/backup-restore-evidence.json
         run: npm run verify:backup-restore
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Detect retained restore evidence
+        id: restore_evidence
         if: always()
+        env:
+          EVIDENCE_FILE: ${{ runner.temp }}/backup-restore-evidence.json
+        run: |
+          if [[ -f "$EVIDENCE_FILE" ]]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.restore_evidence.outputs.available == 'true'
         with:
           name: backup-restore-${{ github.sha }}
           path: ${{ runner.temp }}/backup-restore-evidence.json

@@ -42,6 +42,84 @@ describe('message lifecycle', () => {
     ).rejects.toMatchObject({ code: 'conflict' });
   });
 
+  it('linearizes concurrent idempotency retries and rejects payload collisions', async () => {
+    const { service, owner, space } = await fixture();
+    const retried = await Promise.all([
+      service.postMessageCommand(
+        space.id,
+        owner.id,
+        'same',
+        'request-concurrent-0001',
+      ),
+      service.postMessageCommand(
+        space.id,
+        owner.id,
+        'same',
+        'request-concurrent-0001',
+      ),
+    ]);
+    expect(new Set(retried.map((result) => result.message.id)).size).toBe(1);
+    expect(retried.map((result) => result.existing).sort()).toEqual([
+      false,
+      true,
+    ]);
+
+    const collision = await Promise.allSettled([
+      service.postMessageCommand(
+        space.id,
+        owner.id,
+        'first',
+        'request-concurrent-0002',
+      ),
+      service.postMessageCommand(
+        space.id,
+        owner.id,
+        'second',
+        'request-concurrent-0002',
+      ),
+    ]);
+    expect(
+      collision.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      collision.find((result) => result.status === 'rejected'),
+    ).toMatchObject({ reason: { code: 'conflict' } });
+  });
+
+  it('replays accepted requests after limit changes and rejects archived scopes', async () => {
+    const { service, owner, community, space } = await fixture();
+    const first = await service.postMessageCommand(
+      space.id,
+      owner.id,
+      'accepted body',
+      'request-policy-change-0001',
+    );
+    await service.updateContentLimits(owner.id, community.id, {
+      messageBodyMax: 1,
+      reportDescriptionMax: 100,
+      moderationReasonMax: 50,
+      correlationId: '00000000-0000-4000-8000-000000000099',
+    });
+    await expect(
+      service.postMessageCommand(
+        space.id,
+        owner.id,
+        'accepted body',
+        'request-policy-change-0001',
+      ),
+    ).resolves.toEqual({ message: first.message, existing: true });
+
+    await service.archiveCommunity(owner.id, community.id, community.version);
+    await expect(
+      service.postMessage(
+        space.id,
+        owner.id,
+        'new body',
+        'request-archived-community-0001',
+      ),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
   it('validates reply references without exposing other spaces', async () => {
     const { service, owner, community, space } = await fixture();
     const other = await service.createTextSpace(
@@ -85,6 +163,34 @@ describe('message lifecycle', () => {
     expect(second.items).toHaveLength(3);
     expect(
       new Set([...first.items, ...second.items].map((v) => v.id)).size,
+    ).toBe(5);
+  });
+
+  it('returns the newest authorized page in chronological order when paging backward', async () => {
+    const { service, owner, space } = await fixture();
+    for (let index = 0; index < 5; index += 1)
+      await service.postMessage(
+        space.id,
+        owner.id,
+        `message ${String(index)}`,
+        `request-200${String(index)}`,
+      );
+    const all = await service.listMessages(space.id, owner.id, { limit: 5 });
+    const latest = await service.listMessages(space.id, owner.id, {
+      limit: 2,
+      direction: 'backward',
+    });
+    expect(latest.items).toEqual(all.items.slice(-2));
+    if (!latest.nextCursor) throw new Error('expected older cursor');
+    const older = await service.listMessages(space.id, owner.id, {
+      limit: 3,
+      cursor: latest.nextCursor,
+      direction: 'backward',
+    });
+    expect(older.items).toEqual(all.items.slice(0, 3));
+    expect(
+      new Set([...latest.items, ...older.items].map((message) => message.id))
+        .size,
     ).toBe(5);
   });
 

@@ -87,6 +87,8 @@ describe('notification HTTP integration', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
       {
         notifications,
       },
@@ -155,6 +157,8 @@ describe('notification HTTP integration', () => {
       now: new Date(Date.now() - 1_000),
     });
     const app = buildApp(
+      undefined,
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -285,6 +289,8 @@ describe('notification HTTP integration', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
       {
         notificationPreferences: preferences,
       },
@@ -340,6 +346,8 @@ describe('notification HTTP integration', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
       {
         notificationReadState: readState,
       },
@@ -365,6 +373,8 @@ describe('notification HTTP integration', () => {
     const accountId = randomUUID();
     const subscriptionId = randomUUID();
     const app = buildApp(
+      undefined,
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -443,6 +453,8 @@ describe('notification HTTP integration', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
       {
         presence,
       },
@@ -490,6 +502,8 @@ describe('notification HTTP integration', () => {
       { mayView: () => Promise.resolve(visible) },
     );
     const app = buildApp(
+      undefined,
+      undefined,
       undefined,
       undefined,
       undefined,

@@ -132,6 +132,8 @@ async function runWorkload(
         maxMs: round(trial.latency.maxMs),
         meanMs: round(trial.latency.meanMs),
         p50Ms: round(trial.latency.p50Ms),
+        p75Ms: round(trial.latency.p75Ms),
+        p90Ms: round(trial.latency.p90Ms),
         p95Ms: round(trial.latency.p95Ms),
         p99Ms: round(trial.latency.p99Ms),
         standardDeviationMs: round(trial.latency.standardDeviationMs),
@@ -176,6 +178,8 @@ async function ciRuntime(
     undefined,
     benchmarkServerConfig,
     undefined,
+    undefined,
+    undefined,
     { logging: false },
   );
   await app.ready();
@@ -214,6 +218,8 @@ const benchmarkServerConfig = {
   shutdownTimeoutMs: 5_000,
   rateLimit: 1_000_000,
   rateWindowMs: 60_000,
+  logLevel: 'error',
+  trustedProxyCidrs: [] as string[],
 } as const;
 
 async function postgresRuntime(
@@ -257,6 +263,8 @@ async function postgresRuntime(
       undefined,
       database.authorization,
       benchmarkServerConfig,
+      undefined,
+      undefined,
       database.experience,
       { logging: false },
     );

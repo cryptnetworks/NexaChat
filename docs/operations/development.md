@@ -12,7 +12,16 @@ development processes in the foreground. Stop the processes with Ctrl-C;
 
 ## Local services
 
-Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
+Copy `.env.example` to `.env`, change local secrets if the machine is shared, and run `docker compose up -d`. Provider ports bind to loopback by default; do not widen `NEXA_DEVELOPMENT_BIND_ADDRESS` on an untrusted network. PostgreSQL is authoritative durable data, Valkey is ephemeral coordination with local persistence enabled, and SeaweedFS is S3-compatible attachment storage. The application currently uses PostgreSQL; the other services remain adapter targets.
+
+The base Compose file intentionally runs providers only and publishes them to
+loopback. For an entirely containerized application stack, run `npm run
+dev:containers`; the `compose.development.yml` override adds the server and web
+processes while removing provider host ports. Use `npm run dev:containers:down`
+to stop that project without deleting its durable volumes. Source edits are
+read-only bind mounts, dependencies stay in the image, and only bounded cache
+and temporary paths are writable. The complete target, configuration, and
+platform matrix is in the [application container guide](container-applications.md).
 
 Run `npm ci` and `npm run dev`. `/health/live` reports process liveness,
 `/health/startup` reports completed initialization, and `/health/ready` returns
@@ -37,9 +46,10 @@ point this test at shared or production providers.
 - `toolchain_error`: activate Node 24.18.0 with the repository's version-manager
   file and install npm 11.16.0; do not bypass the check.
 - A published-port conflict: stop the process using 5432/6379/8333, or set
-  `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`,
-  `S3_PUBLISHED_PORT` before startup
-  and update matching application URLs in `.env`.
+  `POSTGRES_PUBLISHED_PORT`, `VALKEY_PUBLISHED_PORT`, and `S3_PUBLISHED_PORT`
+  to exact available ports before startup and update matching application URLs
+  in `.env`. Do not use a port range for a persistent application endpoint;
+  Docker can select a different member of the range after a service restart.
 - A service never becomes healthy: run `docker compose ps` and bounded
   `docker compose logs --tail=100 <service>`; logs must not be pasted publicly
   without checking for credentials or private content.
@@ -82,7 +92,7 @@ The former `/v1/dev/accounts` route is absent from the application route graph. 
 
 ## Migrations and rollback
 
-Database migrations are forward-only, reviewed SQL in `apps/server/migrations`. Run `npm run migrate` from the repository root to migrate an empty or existing compatible database. Startup runs the same migrations under a PostgreSQL advisory lock, records names and SHA-256 checksums in `nexa_schema_migrations`, and refuses missing or altered history.
+Database migrations are forward-only, reviewed SQL in `apps/server/migrations`. Run `npm run migrate` from the repository root to migrate an empty or existing compatible database. The migration process requires `MIGRATION_DATABASE_URL`; it does not accept or inherit `DATABASE_URL`. It runs under a PostgreSQL advisory lock, records names and SHA-256 checksums in `nexa_schema_migrations`, and refuses missing or altered history. Runtime startup only verifies that the schema is current; it never creates or changes database objects.
 
 Create the next migration with a zero-padded sequential prefix and descriptive lowercase name, for example `0002_add_invites.sql`. Never edit an applied migration. Review each migration for deterministic SQL, constraints and indexes, lock duration, data-loss risk, and compatibility with the currently deployed application before merging it.
 
@@ -100,7 +110,8 @@ A production backup must consistently cover PostgreSQL and object storage, encry
 
 Run containers as non-root with read-only filesystems where possible, terminate TLS at a maintained proxy, restrict service ports to a private network, rotate secrets, set explicit quotas, collect OpenTelemetry logs/metrics/traces without message content, and handle `SIGTERM` gracefully. Kubernetes is not required.
 
-The initial Compose file is for development services only. The production
-profile, migration automation, image scanning, SBOMs, and provenance checks are
+The base Compose file is for development providers only; the opt-in development
+override adds containerized application processes. The production profile,
+migration automation, image scanning, SBOMs, and provenance checks are
 documented separately. Artifact signing and release publication remain distinct,
 explicitly authorized operations.

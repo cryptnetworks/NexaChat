@@ -117,12 +117,18 @@ require_command openssl
 cd "$root"
 
 postgres_password="$(random_secret)"
+migration_password="$(random_secret)"
+runtime_password="$(random_secret)"
+backup_database_password="$(random_secret)"
 valkey_password="$(random_secret)"
 s3_secret_key="$(random_secret)"
 s3_access_key="nexaapp$$"
 backup_key="$(random_secret)$(random_secret)"
 sensitive_values=(
   "$postgres_password"
+  "$migration_password"
+  "$runtime_password"
+  "$backup_database_password"
   "$valkey_password"
   "$s3_access_key"
   "$s3_secret_key"
@@ -130,7 +136,13 @@ sensitive_values=(
 )
 
 write_secret postgres_password "$postgres_password"
-write_secret database_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+write_secret database_owner_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+write_secret database_migrator_password "$migration_password"
+write_secret database_runtime_password "$runtime_password"
+write_secret database_backup_password "$backup_database_password"
+write_secret migration_database_url "postgresql://nexa_migrator:${migration_password}@postgres:5432/nexa"
+write_secret runtime_database_url "postgresql://nexa_app:${runtime_password}@postgres:5432/nexa"
+write_secret backup_database_url "postgresql://nexa_backup:${backup_database_password}@postgres:5432/nexa"
 write_secret valkey_password "$valkey_password"
 write_secret redis_url "redis://default:${valkey_password}@valkey:6379"
 write_secret s3_access_key "$s3_access_key"
@@ -162,11 +174,40 @@ export NEXA_IMAGE_TAG="verify-$$"
 "${compose[@]}" config --quiet
 "${compose[@]}" up --detach --build --wait --wait-timeout 240 || fail 'stack did not become healthy'
 "${compose[@]}" run --rm --no-deps migrate || fail 'migration is not repeatable after startup'
+"${compose[@]}" run --rm --no-deps --entrypoint /bin/sh database-bootstrap -euc '
+  run_as() {
+    role="$1"
+    password_file="$2"
+    shift 2
+    PGPASSWORD="$(cat "$password_file")" \
+      psql "postgresql://${role}@postgres:5432/nexa?sslmode=disable" -X --set=ON_ERROR_STOP=1 "$@"
+  }
+
+  run_as nexa_migrator /run/secrets/database_migrator_password \
+    --command "CREATE TABLE nexa_role_permission_probe (id integer); DROP TABLE nexa_role_permission_probe;"
+  run_as nexa_app /run/secrets/database_runtime_password \
+    --command "SELECT count(*) FROM nexa_schema_migrations;" >/dev/null
+  run_as nexa_backup /run/secrets/database_backup_password \
+    --command "SELECT count(*) FROM nexa_schema_migrations;" >/dev/null
+  if run_as nexa_app /run/secrets/database_runtime_password \
+    --command "CREATE TABLE nexa_role_permission_probe (id integer);" >/dev/null 2>&1; then
+    exit 1
+  fi
+  if run_as nexa_app /run/secrets/database_runtime_password \
+    --command "UPDATE nexa_schema_migrations SET version=version;" >/dev/null 2>&1; then
+    exit 1
+  fi
+  if run_as nexa_backup /run/secrets/database_backup_password \
+    --command "CREATE TABLE nexa_role_permission_probe (id integer);" >/dev/null 2>&1; then
+    exit 1
+  fi
+' || fail 'database role permissions are not enforced'
 
 for service in postgres valkey object-storage server edge; do
   assert_hardened "$service" unless-stopped
 done
 assert_hardened migrate no
+assert_hardened database-bootstrap no
 
 assert_mounts postgres "${project}_postgres-data" \
   /var/lib/postgresql/data /run/postgresql /tmp /run/secrets/postgres_password
@@ -175,15 +216,18 @@ assert_mounts valkey "${project}_valkey-data" \
 assert_mounts object-storage "${project}_object-storage-data" \
   /data /tmp /run/secrets/s3_access_key /run/secrets/s3_secret_key
 assert_mounts migrate '' \
-  /tmp /run/secrets/database_url /run/secrets/redis_url \
+  /tmp /run/secrets/migration_database_url /run/secrets/redis_url \
   /run/secrets/s3_access_key /run/secrets/s3_secret_key
 assert_mounts server '' \
-  /tmp /run/secrets/database_url /run/secrets/redis_url \
+  /tmp /run/secrets/runtime_database_url /run/secrets/redis_url \
   /run/secrets/s3_access_key /run/secrets/s3_secret_key
+assert_mounts database-bootstrap '' \
+  /var/lib/postgresql/data /tmp /run/secrets/database_owner_url /run/secrets/database_migrator_password \
+  /run/secrets/database_runtime_password /run/secrets/database_backup_password
 assert_mounts edge '' \
   /tmp /run/secrets/tls_cert /run/secrets/tls_key
 
-for service in postgres valkey object-storage migrate server edge; do
+for service in postgres valkey object-storage database-bootstrap migrate server edge; do
   runtime_user="$(inspect_value "$service" '{{.Config.User}}')"
   case "$runtime_user" in
     '' | 0 | 0:* | root | root:*) fail "$service runs as root" ;;
@@ -206,7 +250,7 @@ done
 "${compose[@]}" exec -T postgres /bin/sh -euc 'test ! -e /usr/local/bin/gosu' || fail 'PostgreSQL image contains the unused privilege-transition helper'
 
 negative_secret_dir="$(mktemp -d "${TMPDIR:-/tmp}/nexa-chat-production-negative-secrets.XXXXXX")"
-cp "$secret_dir/database_url" "$secret_dir/s3_access_key" \
+cp "$secret_dir/runtime_database_url" "$secret_dir/s3_access_key" \
   "$secret_dir/s3_secret_key" "$negative_secret_dir/"
 mismatched_valkey_password="$(random_secret)"
 sensitive_values+=("$mismatched_valkey_password")
@@ -254,7 +298,7 @@ edge_networks="$(inspect_value edge '{{range $name, $_ := .NetworkSettings.Netwo
 server_networks="$(inspect_value server '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}')"
 [[ "$edge_networks" == *"${project}_frontend"* && "$edge_networks" != *"${project}_backend"* ]] || fail 'edge network isolation is invalid'
 [[ "$server_networks" == *"${project}_frontend"* && "$server_networks" == *"${project}_backend"* ]] || fail 'server network isolation is invalid'
-for service in postgres valkey object-storage migrate; do
+for service in postgres valkey object-storage database-bootstrap migrate; do
   service_networks="$(inspect_value "$service" '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}')"
   [[ "$service_networks" == *"${project}_backend"* && "$service_networks" != *"${project}_frontend"* ]] || fail "$service is attached outside the backend network"
 done
@@ -342,7 +386,7 @@ if [[ "${NEXA_VERIFY_SCAN:-0}" == 1 ]]; then
     "${NEXA_OBJECT_STORAGE_IMAGE:-nexa-chat-object-storage}:${NEXA_IMAGE_TAG}" \
     "${NEXA_POSTGRES_IMAGE:-nexa-chat-postgres}:${NEXA_IMAGE_TAG}" \
     "${NEXA_BACKUP_IMAGE:-nexa-chat-backup}:${NEXA_IMAGE_TAG}" \
-    'valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885' || fail 'production image scan or SBOM validation failed'
+    'valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec' || fail 'production image scan or SBOM validation failed'
 fi
 
 "${compose[@]}" logs --no-color > "$logs_file"

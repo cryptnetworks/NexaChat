@@ -55,9 +55,9 @@ export function registerAuthRoutes(
 
   app.get('/v1/account', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     return reply.send(
       authProfileSchema.parse(
@@ -68,9 +68,9 @@ export function registerAuthRoutes(
 
   app.patch('/v1/account', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     const input = updateProfileSchema.parse(request.body);
     return reply.send(
@@ -89,9 +89,9 @@ export function registerAuthRoutes(
 
   app.get('/v1/sessions', async (request, reply) => {
     const authenticated = await authenticateRequest(request, runtime);
-    await request.enforceAccountRateLimit?.(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     const sessions = await runtime.service.listSessions(
       authenticated.account.id,
@@ -112,9 +112,9 @@ export function registerAuthRoutes(
 
   app.delete('/v1/sessions/:handle', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     const { handle } = sessionHandleSchema.parse(request.params);
     const revoked = await runtime.service.revokeOwnedSession(
@@ -129,9 +129,9 @@ export function registerAuthRoutes(
 
   app.post('/v1/sessions/revoke-others', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    await request.enforceAccountRateLimit(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     await runtime.service.logoutOthers(
       authenticated.account.id,
@@ -145,6 +145,10 @@ export function registerAuthRoutes(
     enforceOrigin(request, runtime.config);
     enforceCsrf(request);
     const authenticated = await authenticateRequest(request, runtime);
+    await enforceAuthenticatedAccountRateLimit(
+      request,
+      authenticated.account.id,
+    );
     await runtime.service.logout(authenticated.session.id);
     clearSessionCookie(reply, runtime.config);
     return reply.code(204).send();
@@ -154,6 +158,10 @@ export function registerAuthRoutes(
     enforceOrigin(request, runtime.config);
     enforceCsrf(request);
     const authenticated = await authenticateRequest(request, runtime);
+    await enforceAuthenticatedAccountRateLimit(
+      request,
+      authenticated.account.id,
+    );
     await runtime.service.logoutAll(authenticated.account.id, request.id);
     clearSessionCookie(reply, runtime.config);
     return reply.code(204).send();
@@ -161,12 +169,9 @@ export function registerAuthRoutes(
 
   app.post('/v1/account/password', async (request, reply) => {
     const authenticated = await authenticateMutation(request, runtime);
-    if (!request.enforceAccountRateLimit) {
-      throw new Error('Account rate limiter is not configured');
-    }
-    await request.enforceAccountRateLimit(
+    await enforceAuthenticatedAccountRateLimit(
+      request,
       authenticated.account.id,
-      'authenticated',
     );
     const input = changePasswordSchema.parse(request.body);
     const session = await runtime.service.changePassword({
@@ -178,6 +183,15 @@ export function registerAuthRoutes(
     setSessionCookie(reply, session.token, runtime.config);
     return reply.code(204).send();
   });
+}
+
+async function enforceAuthenticatedAccountRateLimit(
+  request: FastifyRequest,
+  accountId: string,
+): Promise<void> {
+  if (!request.enforceAccountRateLimit)
+    throw new Error('Account rate limiter is not configured');
+  await request.enforceAccountRateLimit(accountId, 'authenticated');
 }
 
 export async function authenticateRequest(

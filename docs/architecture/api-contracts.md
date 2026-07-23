@@ -50,7 +50,11 @@ Collections use a maximum page size of 100 and opaque cursors no longer than 256
 characters. Cursors encode server-owned stable ordering tuples and are never
 accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
-`invalid_request`.
+`invalid_request`. Message history additionally accepts `direction=backward`.
+The first backward page is the newest authorized page, returned in chronological
+order; each following cursor returns the next older chronological page. The
+direction changes traversal only, never the authorization check or stable
+`createdAt`/identifier ordering.
 
 Authenticated session inventory returns only a distinct revocation handle,
 coarse lifecycle timestamps, and the current-session flag. Internal session
@@ -77,5 +81,5 @@ conditional updates are authoritative under concurrency.
 Operational recovery is forward-only: restore the required dependency, confirm
 `/health/ready`, and retry only according to the metadata above. Audit migration
 0007 and later audit extensions are forward-only; older applications must
-explicitly support schema version 10 before rollback. Clients that depend on version-1 audit records are part of
-compatibility review.
+explicitly support schema version 45 before rollback. Clients that depend on
+version-1 audit records are part of compatibility review.

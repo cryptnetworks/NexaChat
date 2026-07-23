@@ -72,7 +72,16 @@ done
 
 write_secret postgres_password "$(openssl rand -hex 24)"
 postgres_password="$(cat "$secret_dir/postgres_password")"
-write_secret database_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+migration_password="$(openssl rand -hex 24)"
+runtime_password="$(openssl rand -hex 24)"
+backup_database_password="$(openssl rand -hex 24)"
+write_secret database_owner_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+write_secret database_migrator_password "$migration_password"
+write_secret database_runtime_password "$runtime_password"
+write_secret database_backup_password "$backup_database_password"
+write_secret migration_database_url "postgresql://nexa_migrator:${migration_password}@postgres:5432/nexa"
+write_secret runtime_database_url "postgresql://nexa_app:${runtime_password}@postgres:5432/nexa"
+write_secret backup_database_url "postgresql://nexa_backup:${backup_database_password}@postgres:5432/nexa"
 write_secret valkey_password "$(openssl rand -hex 24)"
 valkey_password="$(cat "$secret_dir/valkey_password")"
 write_secret redis_url "redis://default:${valkey_password}@valkey:6379"
@@ -151,7 +160,7 @@ edge_networks="$(inspect_value edge '{{range $name, $_ := .NetworkSettings.Netwo
 [[ "$edge_networks" == *"${project}_tunnel"* && "$edge_networks" == *"${project}_frontend"* && "$edge_networks" != *"${project}_backend"* ]] || fail 'edge tunnel isolation is invalid'
 
 "${compose[@]}" logs --no-color > "$logs_file"
-for value in "$probe_secret" "$postgres_password" "$valkey_password" synthetic-local-token-not-valid; do
+for value in "$probe_secret" "$postgres_password" "$migration_password" "$runtime_password" "$backup_database_password" "$valkey_password" synthetic-local-token-not-valid; do
   if grep -Fq "$value" "$logs_file"; then
     fail 'a verification credential appeared in production logs'
   fi

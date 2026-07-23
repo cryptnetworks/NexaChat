@@ -349,6 +349,22 @@ describe('AuthenticationService', () => {
     ).rejects.toMatchObject({ code: 'rate_limited' });
   });
 
+  it('bounds rate-limit state, rejects over-capacity keys atomically, and recovers after expiry', async () => {
+    const limiter = new FixedWindowRateLimiter(2, 1_000, 2);
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    expect(await limiter.consume(['one'], start)).toBe(true);
+    expect(await limiter.consume(['two'], start)).toBe(true);
+    expect(await limiter.consume(['three'], start)).toBe(false);
+
+    const atomic = new FixedWindowRateLimiter(2, 1_000, 1);
+    expect(await atomic.consume(['one', 'two'], start)).toBe(false);
+    expect(await atomic.consume(['one'], start)).toBe(true);
+
+    expect(
+      await limiter.consume(['three'], new Date('2026-01-01T00:00:01.000Z')),
+    ).toBe(true);
+  });
+
   it('hashes with Argon2id without plaintext and detects parameter changes', async () => {
     const parameters = {
       memoryKiB: 19_456,

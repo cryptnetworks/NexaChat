@@ -47,6 +47,25 @@ run_logged() {
   return "$status"
 }
 
+wait_for_database_bootstrap() {
+  local container=''
+  local status=''
+  local exit_code=''
+  for _ in {1..60}; do
+    container="$("${compose[@]}" ps --all --quiet database-bootstrap)"
+    if [[ -n "$container" ]]; then
+      status="$(docker inspect --format '{{.State.Status}}' "$container")"
+      if [[ "$status" == exited ]]; then
+        exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container")"
+        [[ "$exit_code" == 0 ]] || fail 'database role bootstrap failed'
+        return
+      fi
+    fi
+    sleep 1
+  done
+  fail 'database role bootstrap did not complete'
+}
+
 assert_backup_hardened() {
   "${compose[@]}" create backup >/dev/null
   local container
@@ -74,12 +93,21 @@ for command in docker node openssl; do
 done
 
 postgres_password="$(openssl rand -hex 24)"
+migration_password="$(openssl rand -hex 24)"
+runtime_password="$(openssl rand -hex 24)"
+backup_database_password="$(openssl rand -hex 24)"
 s3_secret_key="$(openssl rand -hex 24)"
 s3_access_key="nexabackup$$"
 backup_key="$(openssl rand -hex 32)"
 valkey_password="$(openssl rand -hex 24)"
 write_secret postgres_password "$postgres_password"
-write_secret database_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+write_secret database_owner_url "postgresql://nexa:${postgres_password}@postgres:5432/nexa"
+write_secret database_migrator_password "$migration_password"
+write_secret database_runtime_password "$runtime_password"
+write_secret database_backup_password "$backup_database_password"
+write_secret migration_database_url "postgresql://nexa_migrator:${migration_password}@postgres:5432/nexa"
+write_secret runtime_database_url "postgresql://nexa_app:${runtime_password}@postgres:5432/nexa"
+write_secret backup_database_url "postgresql://nexa_backup:${backup_database_password}@postgres:5432/nexa"
 write_secret valkey_password "$valkey_password"
 write_secret redis_url "redis://default:${valkey_password}@valkey:6379"
 write_secret s3_access_key "$s3_access_key"
@@ -107,6 +135,8 @@ export NEXA_SERVER_ADDRESS="${NEXA_FRONTEND_SUBNET%0/28}3"
 
 "${compose[@]}" config --quiet
 "${compose[@]}" up --detach --build --wait --wait-timeout 240 postgres valkey object-storage
+"${compose[@]}" up --detach --build database-bootstrap
+wait_for_database_bootstrap
 assert_backup_hardened
 "${compose[@]}" run --rm migrate
 
@@ -125,8 +155,14 @@ INSERT INTO categories (id, community_id, name, position)
 VALUES ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Backup Category', 0);
 INSERT INTO spaces (id, community_id, category_id, name, kind, position)
 VALUES ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'Backup Space', 'text', 0);
-INSERT INTO messages (id, space_id, author_id, body, created_at, idempotency_key)
-VALUES ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'restore verification message', CURRENT_TIMESTAMP, 'backup-restore-verification');
+INSERT INTO messages
+  (id, space_id, author_id, body, created_at, idempotency_key,
+   request_fingerprint, created_event_id)
+VALUES
+  ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001',
+   '00000000-0000-4000-8000-000000000002', 'restore verification message',
+   CURRENT_TIMESTAMP, 'backup-restore-verification', repeat('b', 64),
+   '51000000-0000-4000-8000-000000000001');
 INSERT INTO invitations
   (id, community_id, creator_id, token_hash, created_at, expires_at, max_uses)
 VALUES
@@ -173,7 +209,7 @@ mkdir "$backup_dir/.partial-controlled"
 expect_rejection incomplete_backup "${compose[@]}" run --rm backup verify /backups/.partial-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-corrupt-controlled"
-printf '\001' | dd of="$backup_dir/backup-corrupt-controlled/postgres.dump.enc" bs=1 seek=64 conv=notrunc 2>/dev/null
+printf '\001' >> "$backup_dir/backup-corrupt-controlled/postgres.dump.enc"
 expect_rejection component_integrity_mismatch "${compose[@]}" run --rm backup verify /backups/backup-corrupt-controlled
 
 cp -R "$backup_path" "$backup_dir/backup-missing-controlled"
@@ -205,11 +241,13 @@ unset NEXA_BACKUP_RETENTION_COUNT NEXA_BACKUP_RETENTION_DAYS NEXA_BACKUP_INCOMPL
 
 "${compose[@]}" down --volumes --remove-orphans
 "${compose[@]}" up --detach --build --wait --wait-timeout 240 postgres object-storage
+"${compose[@]}" up --detach --build database-bootstrap
+wait_for_database_bootstrap
 export NEXA_RECOVERY_MODE=empty-only
-run_logged "${compose[@]}" run --rm backup restore "/backups/$backup_name"
+run_logged "${compose[@]}" run --rm restore restore "/backups/$backup_name"
 unset NEXA_RECOVERY_MODE
 "${compose[@]}" run --rm migrate
-expect_rejection restore_requires_recovery_mode "${compose[@]}" run --rm backup restore "/backups/$backup_name"
+expect_rejection restore_requires_recovery_mode "${compose[@]}" run --rm restore restore "/backups/$backup_name"
 
 database_match="$("${compose[@]}" exec -T postgres psql --username nexa --dbname nexa --tuples-only --no-align --command "SELECT (SELECT count(*) FROM accounts) = 2 AND (SELECT count(*) FROM communities) = 1 AND (SELECT count(*) FROM memberships) = 2 AND (SELECT count(*) FROM spaces) = 1 AND (SELECT count(*) FROM messages WHERE body = 'restore verification message') = 1;")"
 [[ "$database_match" == t ]] || fail 'representative PostgreSQL data did not match'
@@ -241,9 +279,9 @@ const client=new S3Client({endpoint:process.env.S3_ENDPOINT,region:process.env.S
 
 elapsed="$(( $(date +%s) - started_at ))"
 if [[ -n "${NEXA_BACKUP_EVIDENCE_FILE:-}" ]]; then
-  printf '{"status":"passed","schemaVersion":10,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
+  printf '{"status":"passed","schemaVersion":45,"accounts":2,"communities":1,"memberships":2,"spaces":1,"messages":1,"auditEvents":1,"auditCheckpoints":1,"objects":1,"elapsedSeconds":%s}\n' "$elapsed" > "$NEXA_BACKUP_EVIDENCE_FILE"
 fi
-for value in "$postgres_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
+for value in "$postgres_password" "$migration_password" "$runtime_password" "$backup_database_password" "$s3_secret_key" "$s3_access_key" "$backup_key" "$valkey_password"; do
   if grep -Fq "$value" "$logs_file"; then fail 'sensitive value appeared in verification logs'; fi
 done
 echo "Encrypted backup, rejection controls, isolated restore, migration compatibility, audit integrity/checkpoint, PostgreSQL data, object bytes, metadata, and tags verified in ${elapsed}s."

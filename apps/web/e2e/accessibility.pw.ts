@@ -64,6 +64,24 @@ const space = {
   version: 1,
 };
 
+function historyMessage(index: number) {
+  const createdAt = new Date(
+    Date.parse('2026-07-19T12:00:00.000Z') + index * 1_000,
+  ).toISOString();
+  return {
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    spaceId: ids.space,
+    authorId: ids.account,
+    body: `History message ${String(index)}`,
+    replyToId: null,
+    idempotencyKey: `history-${String(index)}`,
+    createdAt,
+    updatedAt: createdAt,
+    deletedAt: null,
+    version: 1,
+  };
+}
+
 async function fulfillJson(route: Route, json: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', json });
 }
@@ -72,6 +90,7 @@ async function mockApplicationApi(
   page: Page,
   failAccount = false,
   authenticatedProfile = false,
+  history = [] as ReturnType<typeof historyMessage>[],
 ) {
   let signedIn = authenticatedProfile;
   let sessions = [...sessionFixtures];
@@ -123,7 +142,20 @@ async function mockApplicationApi(
     } else if (path.endsWith('/spaces')) {
       await fulfillJson(route, space, 201);
     } else if (path.endsWith('/messages') && request.method() === 'GET') {
-      await fulfillJson(route, { items: [], nextCursor: null });
+      const query = new URL(request.url()).searchParams;
+      const direction = query.get('direction');
+      const cursor = query.get('cursor');
+      const end = cursor ? Number(cursor) : history.length;
+      const start = Math.max(0, end - 100);
+      await fulfillJson(
+        route,
+        direction === 'backward'
+          ? {
+              items: history.slice(start, end),
+              nextCursor: start > 0 ? String(start) : null,
+            }
+          : { items: history, nextCursor: null },
+      );
     } else if (path.endsWith('/messages')) {
       await fulfillJson(route, { accepted: true }, 201);
     } else if (path.endsWith('/invitations')) {
@@ -294,6 +326,33 @@ test('critical keyboard flows and rendered states pass WCAG A/AA rules', async (
   await page.keyboard.press('Enter');
   await expect(
     page.getByRole('status').filter({ hasText: 'Invitation created' }),
+  ).toBeVisible();
+  await expectNoAutomatedWcagViolations(page);
+});
+
+test('history pagination is bounded, keyboard operable, and announced', async ({
+  page,
+}) => {
+  await mockApplicationApi(
+    page,
+    false,
+    true,
+    Array.from({ length: 250 }, (_, index) => historyMessage(index + 1)),
+  );
+  await page.goto('/');
+  await enterDemoSpace(page);
+  const messages = page.locator('.messages article');
+  await expect(messages).toHaveCount(100);
+  const loadOlder = page.getByRole('button', { name: 'Load older messages' });
+  await expect(loadOlder).toBeEnabled();
+  await loadOlder.focus();
+  await page.keyboard.press('Enter');
+  await expect(messages).toHaveCount(200);
+  await expect(
+    page.locator('.history-controls').getByRole('status'),
+  ).toContainText('earlier window');
+  await expect(
+    page.getByRole('button', { name: 'Return to latest messages' }),
   ).toBeVisible();
   await expectNoAutomatedWcagViolations(page);
 });

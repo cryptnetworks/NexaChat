@@ -60,11 +60,11 @@ outside the supported artifact set.
 
 ## Durable and coordination dependencies
 
-| Dependency                   | Supported candidate range | Validated baseline                   | Role                                     |
-| ---------------------------- | ------------------------- | ------------------------------------ | ---------------------------------------- |
-| PostgreSQL                   | `>=17.9.0 <18.0.0`        | 17.9 Alpine                          | Authoritative durable state              |
-| Valkey                       | `>=8.1.3 <9.0.0`          | 8.1.3 Alpine                         | Optional, non-authoritative coordination |
-| S3-compatible object storage | Adapter preview only      | MinIO `RELEASE.2025-04-22T22-12-26Z` | Authoritative when enabled               |
+| Dependency                   | Supported candidate range | Validated baseline | Role                                     |
+| ---------------------------- | ------------------------- | ------------------ | ---------------------------------------- |
+| PostgreSQL                   | `>=17.10.0 <18.0.0`       | 17.10 Alpine 3.23  | Authoritative durable state              |
+| Valkey                       | `>=8.1.9 <9.0.0`          | 8.1.9 Alpine 3.24  | Optional, non-authoritative coordination |
+| S3-compatible object storage | Adapter preview only      | SeaweedFS 4.40     | Authoritative when enabled               |
 
 PostgreSQL patch releases in the declared major line are eligible, but each
 release candidate is tested against and records one exact immutable image.
@@ -83,7 +83,7 @@ boundary, scanner integration, and an exact provider test matrix.
 ## Protocol and client/server compatibility
 
 The only current transport contracts are HTTP v1 and real-time v1. Runtime
-configuration is schema 1 and PostgreSQL is schema 41. The only declared
+configuration is schema 1 and PostgreSQL is schema 45. The only declared
 client/server pair is client `0.1.0` with server `0.1.0`, and it remains
 candidate-only until the activation gate passes. Unknown protocol versions
 fail closed; there is no implicit version negotiation.
