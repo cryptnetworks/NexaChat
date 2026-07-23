@@ -2,6 +2,17 @@
 
 Use Node.js and npm versions declared in `package.json`. Before proposing a change, run formatting, linting, type checking, tests, and builds. Keep changes cohesive and update behavior documentation.
 
+## Documentation
+
+Keep [README.md](README.md) as a concise project entry point: status, features, prerequisites, minimal startup and deployment steps, and links to detailed guidance. Durable documentation belongs in [docs/](docs/), which is the source for the published [GitHub wiki](https://github.com/cryptnetworks/NexaChat/wiki).
+
+- Put design decisions, service boundaries, API contracts, and desktop guidance in [docs/architecture/](docs/architecture/).
+- Put development, deployment, container, data-service, backup, recovery, and observability guidance in [docs/operations/](docs/operations/).
+- Put security, privacy, moderation, and lifecycle guidance in [docs/security/](docs/security/) and [docs/privacy/](docs/privacy/).
+- Put release, upgrade, rollback, compatibility, and support policy in [docs/releases/](docs/releases/). Keep the accessibility baseline in [docs/accessibility.md](docs/accessibility.md).
+
+Do not edit the generated wiki directly. When documentation or the exporter changes, run the [wiki publishing checks](docs/operations/wiki-publishing.md#local-verification), inspect the generated navigation and links, and keep the README limited to an index instead of duplicating operational detail.
+
 Public HTTP or realtime contract changes must follow `docs/architecture/contract-evolution.md`, update the committed synthetic fixtures under `contracts/`, and pass `npm run test:contracts`. Existing version fixtures are immutable compatibility evidence; breaking changes require a parallel explicit version and migration guidance.
 
 Workspace dependency changes must comply with `docs/architecture/dependency-boundaries.md` and pass `npm run test:architecture`. Add an exception only when no boundary-safe design is practical, with a narrow edge, owner, rationale, and removal date.
