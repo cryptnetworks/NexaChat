@@ -10,6 +10,7 @@
 **/coverage
 **/playwright-report
 **/test-results
+**/target
 **/.DS_Store
 **/*.log
 **/*.pem
