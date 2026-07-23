@@ -30,6 +30,7 @@ import {
   publishSessionSignal,
   subscribeSessionSignals,
 } from './session-sync.js';
+import { upsertOrderedMessage } from './ordered-messages.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
@@ -358,14 +359,7 @@ function App() {
           const envelope = realtimeEnvelopeSchema.parse(next.event);
           setMessages((current) => {
             const message = envelope.payload.message;
-            const withoutCurrent = current.filter(
-              (item) => item.id !== message.id,
-            );
-            return [...withoutCurrent, message].sort(
-              (a, b) =>
-                a.createdAt.localeCompare(b.createdAt) ||
-                a.id.localeCompare(b.id),
-            );
+            return upsertOrderedMessage(current, message);
           });
           realtimeAnnouncer.current ??= createRateLimitedAnnouncer(
             setRealtimeAnnouncement,

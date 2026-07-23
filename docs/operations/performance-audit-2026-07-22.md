@@ -142,6 +142,48 @@ the next realtime candidates. The change was retained because tail latency,
 throughput, and memory all improved materially without an error, authorization,
 or backpressure regression.
 
+## Optimization result: bounded web realtime state
+
+The client duplicate-suppression set previously retained every event identifier
+for the lifetime of the selected space. It now retains at most 2,048 recent
+identifiers and evicts the oldest deterministically. An event older than that
+window can be accepted again, but sequence-gap reconciliation still runs and the
+message upsert remains idempotent by stable message identifier. Space changes
+continue to clear the entire cursor.
+
+Realtime message edits previously filtered and sorted the complete visible page
+for every event. A tested ordered upsert now replaces messages in place when the
+ordering key is stable and uses binary insertion only for new or repositioned
+messages. The ordering remains `createdAt` followed by stable message identifier,
+matching the existing client behavior.
+
+Three default-profile executions, each containing one warmup and five fresh
+measured Chromium contexts, showed the following median p95 results:
+
+| Measurement                |     Baseline | Bounded ordered state | Change |
+| -------------------------- | -----------: | --------------------: | -----: |
+| 2,000-event update elapsed |    751.37 ms |             750.60 ms |  -0.1% |
+| Retained JavaScript heap   | 12,771,972 B |          11,303,619 B | -11.5% |
+| DOM node growth            |           31 |                    31 |   0.0% |
+| Event-listener growth      |            0 |                     0 |   0.0% |
+| Long-task duration         |      0.00 ms |               0.00 ms |   0.0% |
+
+A separate 10,000-event stress profile used the same build, dataset, and browser
+with only the bounded update-cycle control changed. Median retained-heap p95 fell
+from 54,159,820 to 50,877,914 bytes (-6.1%), script p95 fell from 452.02 to
+426.10 ms (-5.7%), and main-thread task p95 fell from 868.17 to 850.55 ms
+(-2.0%). End-to-end update p95 moved from 10.77 to 10.93 seconds (+1.5%) and p99
+from 11.23 to 11.42 seconds (+1.7%). Both versions therefore exceeded the normal
+10-second update budget under this stress profile; that expected failure is
+retained rather than hidden by raising the threshold. The optimized run remains
+bounded and the ordinary workload passes every browser budget.
+
+The visible message page itself is still not capped because evicting accessible
+history without incremental-history controls would change user behavior and
+screen-reader ordering. That separate design requires pagination, scroll
+anchoring, focus behavior, and authorization-aware reconciliation before it is
+safe to implement.
+
 ## Ranked bottleneck inventory
 
 | Rank | Component                                 | Evidence                                                                                                                                                                                       | User/resource impact                                                                                                                    | Proposed remediation                                                                                                     | Risk        |
