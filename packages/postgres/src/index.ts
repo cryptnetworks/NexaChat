@@ -2190,6 +2190,35 @@ function messageRepository(db: Queryable): Persistence['messages'] {
         separator < 0
           ? '00000000-0000-0000-0000-000000000000'
           : decoded.slice(separator + 1);
+      if (page.direction === 'backward') {
+        const result = page.cursor
+          ? await db.query<MessageRow>(
+              `SELECT ${fields} FROM messages
+               WHERE space_id=$1 AND (created_at,id) < ($2::timestamptz,$3::uuid)
+               ORDER BY created_at DESC,id DESC LIMIT $4`,
+              [spaceId, afterTime, afterId, page.limit + 1],
+            )
+          : await db.query<MessageRow>(
+              `SELECT ${fields} FROM messages
+               WHERE space_id=$1
+               ORDER BY created_at DESC,id DESC LIMIT $2`,
+              [spaceId, page.limit + 1],
+            );
+        const items = result.rows
+          .slice(0, page.limit)
+          .reverse()
+          .map(mapMessage);
+        const first = items.at(0);
+        return {
+          items,
+          nextCursor:
+            result.rows.length > page.limit && first
+              ? Buffer.from(`${first.createdAt}:${first.id}`).toString(
+                  'base64url',
+                )
+              : null,
+        };
+      }
       const result = await db.query<MessageRow>(
         `SELECT ${fields} FROM messages
          WHERE space_id=$1 AND (created_at,id) > ($2::timestamptz,$3::uuid)

@@ -50,7 +50,11 @@ Collections use a maximum page size of 100 and opaque cursors no longer than 256
 characters. Cursors encode server-owned stable ordering tuples and are never
 accepted as authorization evidence. Responses contain `items` and nullable
 `nextCursor`; clients stop when it is null. Malformed cursors receive
-`invalid_request`.
+`invalid_request`. Message history additionally accepts `direction=backward`.
+The first backward page is the newest authorized page, returned in chronological
+order; each following cursor returns the next older chronological page. The
+direction changes traversal only, never the authorization check or stable
+`createdAt`/identifier ordering.
 
 Authenticated session inventory returns only a distinct revocation handle,
 coarse lifecycle timestamps, and the current-session flag. Internal session

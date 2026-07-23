@@ -19,10 +19,6 @@ import {
   summarizeDistribution,
 } from '../../../tools/performance/statistics.js';
 
-const repetitions = 6;
-const warmupRuns = 1;
-const historyMessages = 100;
-const insertedMessages = 100;
 function boundedEnvironmentInteger(
   name: string,
   fallback: number,
@@ -38,6 +34,39 @@ function boundedEnvironmentInteger(
   return value;
 }
 
+const repetitions = boundedEnvironmentInteger(
+  'NEXA_BROWSER_REPETITIONS',
+  6,
+  2,
+  10,
+);
+const warmupRuns = boundedEnvironmentInteger(
+  'NEXA_BROWSER_WARMUP_RUNS',
+  1,
+  1,
+  3,
+);
+if (warmupRuns >= repetitions)
+  throw new Error('NEXA_BROWSER_WARMUP_RUNS must be less than repetitions');
+const historyMessages = boundedEnvironmentInteger(
+  'NEXA_BROWSER_HISTORY_MESSAGES',
+  100,
+  1,
+  200,
+);
+const insertedMessages = boundedEnvironmentInteger(
+  'NEXA_BROWSER_INSERTED_MESSAGES',
+  100,
+  1,
+  50_000,
+);
+const maximumRenderedMessages = 200;
+const eventBatchSize = boundedEnvironmentInteger(
+  'NEXA_BROWSER_EVENT_BATCH_SIZE',
+  512,
+  1,
+  512,
+);
 const updateCycles = boundedEnvironmentInteger(
   'NEXA_BROWSER_UPDATE_CYCLES',
   20,
@@ -94,6 +123,7 @@ interface BrowserSnapshot {
   documents: number;
   nodes: number;
   eventListeners: number;
+  renderedMessages: number;
   jsHeapUsedBytes: number;
   jsHeapTotalBytes: number;
   taskDurationMs: number;
@@ -231,33 +261,36 @@ function metric(metrics: { name: string; value: number }[], name: string) {
 }
 
 async function snapshot(page: Page, cdp: CDPSession): Promise<BrowserSnapshot> {
-  const [performanceMetrics, dom, timeline] = await Promise.all([
-    cdp.send('Performance.getMetrics'),
-    cdp.send('Memory.getDOMCounters'),
-    page.evaluate(() => {
-      const value = (
-        window as Window & {
-          __nexaPerformanceMeasurements?: {
-            longTaskCount: number;
-            longTaskDurationMs: number;
-            layoutShiftScore: number;
-          };
-        }
-      ).__nexaPerformanceMeasurements;
-      return (
-        value ?? {
-          longTaskCount: 0,
-          longTaskDurationMs: 0,
-          layoutShiftScore: 0,
-        }
-      );
-    }),
-  ]);
+  const [performanceMetrics, dom, timeline, renderedMessages] =
+    await Promise.all([
+      cdp.send('Performance.getMetrics'),
+      cdp.send('Memory.getDOMCounters'),
+      page.evaluate(() => {
+        const value = (
+          window as Window & {
+            __nexaPerformanceMeasurements?: {
+              longTaskCount: number;
+              longTaskDurationMs: number;
+              layoutShiftScore: number;
+            };
+          }
+        ).__nexaPerformanceMeasurements;
+        return (
+          value ?? {
+            longTaskCount: 0,
+            longTaskDurationMs: 0,
+            layoutShiftScore: 0,
+          }
+        );
+      }),
+      page.locator('.messages article').count(),
+    ]);
   const metrics = performanceMetrics.metrics;
   return {
     documents: dom.documents,
     nodes: dom.nodes,
     eventListeners: dom.jsEventListeners,
+    renderedMessages,
     jsHeapUsedBytes: metric(metrics, 'JSHeapUsedSize'),
     jsHeapTotalBytes: metric(metrics, 'JSHeapTotalSize'),
     taskDurationMs: metric(metrics, 'TaskDuration') * 1_000,
@@ -346,10 +379,12 @@ test('records bounded production-client performance evidence', async ({
       let index = historyMessages + 1;
       index <= historyMessages + insertedMessages;
       index += 1
-    )
+    ) {
       sendDelivery(index, 0);
+      if (index % eventBatchSize === 0) await page.waitForTimeout(0);
+    }
     await expect(page.locator('.messages article')).toHaveCount(
-      historyMessages + insertedMessages,
+      Math.min(maximumRenderedMessages, historyMessages + insertedMessages),
     );
     const realtimeInsertMs = nodePerformance.now() - insertionStarted;
     const beforeUpdates = await snapshot(page, cdp);
@@ -360,8 +395,10 @@ test('records bounded production-client performance evidence', async ({
         let index = historyMessages + 1;
         index <= historyMessages + insertedMessages;
         index += 1
-      )
+      ) {
         sendDelivery(index, cycle);
+        if (index % eventBatchSize === 0) await page.waitForTimeout(0);
+      }
     await expect(
       page.getByText(
         `updated cycle ${String(updateCycles)} item ${String(historyMessages + insertedMessages)}`,
@@ -412,6 +449,7 @@ test('records bounded production-client performance evidence', async ({
     maxHeapGrowthBytes: 67_108_864,
     maxNodeGrowth: 500,
     maxEventListenerGrowth: 32,
+    maxRenderedMessages: maximumRenderedMessages,
     maxMainThreadTaskP95Ms: 5_000,
     maxLongTaskDurationMs: 5_000,
     maxLayoutShiftScore: 0.1,
@@ -472,6 +510,15 @@ test('records bounded production-client performance evidence', async ({
     failures.push('node_growth_exceeded');
   if (measurements.eventListenerGrowth.p95 > budget.maxEventListenerGrowth)
     failures.push('event_listener_growth_exceeded');
+  if (
+    runs.some(
+      (run) => run.beforeUpdates.renderedMessages > budget.maxRenderedMessages,
+    ) ||
+    runs.some(
+      (run) => run.afterUpdates.renderedMessages > budget.maxRenderedMessages,
+    )
+  )
+    failures.push('rendered_message_window_exceeded');
   if (p95(measurements.mainThreadTaskDuration) > budget.maxMainThreadTaskP95Ms)
     failures.push('main_thread_task_duration_exceeded');
   if (p95(measurements.longTaskDuration) > budget.maxLongTaskDurationMs)
@@ -493,6 +540,8 @@ test('records bounded production-client performance evidence', async ({
       insertedMessages,
       updateCycles,
       updateEvents: insertedMessages * updateCycles,
+      eventBatchSize,
+      maximumRenderedMessages,
     },
     budget,
     measurements,
