@@ -83,7 +83,6 @@ export async function initializeDatabase(
       cause: error,
     });
   }
-  const persistence = new PostgresPersistence(pool);
   const authorization = new AuthorizationService(
     new PostgresAuthorizationStore(pool),
     {
@@ -92,6 +91,7 @@ export async function initializeDatabase(
       },
     },
   );
+  const persistence = new PostgresPersistence(pool, pool, authorization);
   const notificationAuthorization = new PostgresNotificationAuthorization(pool);
   const notifications = new NotificationService(
     new PostgresNotificationStore(pool),

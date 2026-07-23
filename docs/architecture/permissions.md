@@ -35,4 +35,14 @@ Instance decisions can apply to every community but do not grant private-content
 
 Evaluation selects the most specific applicable explicit decision. At the same specificity, denial wins across all assigned roles. Owner authority is evaluated after actor/session validity and before role decisions. Preview and command enforcement call the same exported evaluator and return only the permission, outcome, safe reason, and contributing scope. HTTP authorization denial is intentionally normalized to `not_found` so callers cannot probe private resource existence.
 
-Role and permission mutations use idempotent keys and transactions. Role versions reject stale writes; PostgreSQL uses serializable transactions for sensitive authorization changes. Ownership transfer locks and validates an active successor, changes the single `communities.owner_id` value atomically, and rejects stale concurrent transfers. The owner cannot be removed through role assignment because ownership is not represented as an ordinary role.
+Role and permission mutations use idempotent keys and transactions. A domain mutation
+transaction carries a transaction-bound authorization gateway; revalidation therefore
+reads accounts, memberships, ownership, roles, assignments, and decisions through the
+same PostgreSQL client as the write. The authorization snapshot locks those authority
+rows before the mutation proceeds. PostgreSQL mutation transactions use serializable
+isolation and retry serialization failures at most twice; callers must reuse their
+idempotency key when retrying after an ambiguous failure. A rejected or exhausted
+transaction rolls back the mutation and its audit records together. Ownership transfer
+locks and validates an active successor, changes the single `communities.owner_id`
+value atomically, and rejects stale concurrent transfers. The owner cannot be removed
+through role assignment because ownership is not represented as an ordinary role.

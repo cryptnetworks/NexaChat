@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import type { AuthorizationService } from '@nexa/authorization';
+import { PostgresAuthorizationStore } from '@nexa/postgres';
 import {
   resolveMentions,
   type MentionDirectory,
@@ -19,6 +20,9 @@ export class MentionRuntime {
     let recipients: string[];
     try {
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      const transactionAuthorization = this.authorization.forStore(
+        new PostgresAuthorizationStore(this.pool, client),
+      );
       const context = await client.query<{ community_id: string }>(
         `SELECT s.community_id FROM messages m JOIN spaces s ON s.id=m.space_id
          JOIN memberships member ON member.community_id=s.community_id
@@ -30,7 +34,7 @@ export class MentionRuntime {
       const communityId = context.rows[0]?.community_id;
       if (!communityId) throw new Error('mention_message_not_found');
       const resolved = await resolveMentions(
-        this.directory(client, communityId),
+        this.directory(client, communityId, transactionAuthorization),
         {
           actorId: message.authorId,
           spaceId: message.spaceId,
@@ -65,7 +69,11 @@ export class MentionRuntime {
       });
   }
 
-  private directory(client: PoolClient, communityId: string): MentionDirectory {
+  private directory(
+    client: PoolClient,
+    communityId: string,
+    authorization: AuthorizationService,
+  ): MentionDirectory {
     const activeMembers = async (spaceId: string, limit: number) => {
       const result = await client.query<{ account_id: string }>(
         `SELECT m.account_id FROM memberships m JOIN spaces s
@@ -93,7 +101,7 @@ export class MentionRuntime {
       },
       mayMentionEveryone: async (actorId, spaceId) =>
         (
-          await this.authorization.preview(actorId, 'message.manage', [
+          await authorization.preview(actorId, 'message.manage', [
             { type: 'community', id: communityId },
             { type: 'space', id: spaceId },
           ])

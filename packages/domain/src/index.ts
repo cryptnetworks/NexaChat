@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 export * from './unread.js';
 export * from './spam.js';
@@ -294,6 +295,11 @@ export interface ListPage {
 }
 
 export interface Persistence {
+  /**
+   * A transaction-bound authorization gateway, supplied only by persistence
+   * adapters while a write transaction is active.
+   */
+  readonly authorization?: AuthorizationGateway;
   accounts: {
     create(account: Account): Promise<Account>;
     findById(id: string): Promise<Account | undefined>;
@@ -571,6 +577,8 @@ export interface AuthorizationGateway {
   ): Promise<void>;
 }
 
+const transactionPersistence = new AsyncLocalStorage<Persistence>();
+
 const normalizeName = (value: string): string =>
   value.trim().replace(/\s+/g, ' ').normalize('NFKC');
 function name(value: string): string {
@@ -736,6 +744,15 @@ export class CommunityService {
     ),
     private readonly appealReviewerSeparation = true,
   ) {}
+
+  private transaction<T>(
+    work: (persistence: Persistence) => Promise<T>,
+  ): Promise<T> {
+    return this.persistence.transaction((persistence) =>
+      transactionPersistence.run(persistence, () => work(persistence)),
+    );
+  }
+
   createAccount(displayName: string): Promise<Account> {
     return this.persistence.accounts.create({
       id: randomUUID(),
@@ -746,7 +763,7 @@ export class CommunityService {
   async createCommunity(ownerId: string, value: string): Promise<Community> {
     if (!(await this.persistence.accounts.findById(ownerId)))
       throw new DomainError('not_found');
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const community = await persistence.communities.create({
         id: randomUUID(),
         ownerId,
@@ -811,7 +828,7 @@ export class CommunityService {
       input.moderationReasonMax > 500
     )
       throw new DomainError('conflict');
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       await this.enforce(actorId, 'community.manage', [
         { type: 'community', id: communityId },
       ]);
@@ -877,7 +894,7 @@ export class CommunityService {
         communityId,
         'moderation.timeout',
       );
-      return await this.persistence.transaction(async (persistence) => {
+      return await this.transaction(async (persistence) => {
         const existing =
           await persistence.moderationRestrictions.findByIdempotencyKey(
             actorId,
@@ -907,6 +924,7 @@ export class CommunityService {
           targetAccountId,
           communityId,
           'moderation.timeout',
+          persistence,
         );
         const createdAt = new Date().toISOString();
         const restriction = await persistence.moderationRestrictions.create({
@@ -979,7 +997,7 @@ export class CommunityService {
         communityId,
         'moderation.ban',
       );
-      return await this.persistence.transaction(async (persistence) => {
+      return await this.transaction(async (persistence) => {
         const existing =
           await persistence.moderationRestrictions.findByIdempotencyKey(
             actorId,
@@ -1011,6 +1029,7 @@ export class CommunityService {
           targetAccountId,
           communityId,
           'moderation.ban',
+          persistence,
         );
         const createdAt = new Date().toISOString();
         const restriction = await persistence.moderationRestrictions.create({
@@ -1069,7 +1088,7 @@ export class CommunityService {
     correlationId: string,
   ): Promise<ModerationRestriction> {
     const reason = moderationReason(reasonValue);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const current =
         await persistence.moderationRestrictions.findById(restrictionId);
       if (!current) throw new DomainError('not_found');
@@ -1078,6 +1097,7 @@ export class CommunityService {
         current.targetAccountId,
         current.communityId,
         current.kind === 'ban' ? 'moderation.ban' : 'moderation.timeout',
+        persistence,
       );
       if (current.revokedAt) return current;
       const reversed = await persistence.moderationRestrictions.revoke(
@@ -1126,7 +1146,7 @@ export class CommunityService {
       initialSpace.communityId,
       'moderation.message.delete',
     );
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const existing =
         await persistence.moderationMessageDeletions.findByIdempotencyKey(
           actorId,
@@ -1150,6 +1170,7 @@ export class CommunityService {
         message.authorId,
         space.communityId,
         'moderation.message.delete',
+        persistence,
       );
       const createdAt = new Date().toISOString();
       const evidence = await persistence.moderationMessageEvidence.create({
@@ -1259,10 +1280,13 @@ export class CommunityService {
     }
     if (!(await this.reportLimiter.consume(`report:${reporterId}`, new Date())))
       throw new DomainError('rate_limited', 3600);
-    return this.persistence.transaction(async (persistence) => {
-      await this.enforce(reporterId, 'community.view', [
-        { type: 'community', id: communityId },
-      ]);
+    return this.transaction(async (persistence) => {
+      await this.enforce(
+        reporterId,
+        'community.view',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
       const retried = await persistence.safetyReports.findByIdempotencyKey(
         reporterId,
         communityId,
@@ -1346,7 +1370,7 @@ export class CommunityService {
     await this.enforce(actorId, 'moderation.case', [
       { type: 'community', id: report.communityId },
     ]);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const existing = await persistence.moderationCases.findByIdempotencyKey(
         report.communityId,
         key,
@@ -1355,9 +1379,12 @@ export class CommunityService {
         if (existing.reportId !== reportId) throw new DomainError('conflict');
         return existing;
       }
-      await this.enforce(actorId, 'moderation.case', [
-        { type: 'community', id: report.communityId },
-      ]);
+      await this.enforce(
+        actorId,
+        'moderation.case',
+        [{ type: 'community', id: report.communityId }],
+        persistence,
+      );
       const currentReport = await persistence.safetyReports.findById(reportId);
       if (!currentReport || currentReport.communityId !== report.communityId)
         throw new DomainError('not_found');
@@ -1399,12 +1426,15 @@ export class CommunityService {
       expectedVersion: number;
     },
   ): Promise<ModerationCase> {
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const current = await persistence.moderationCases.findById(caseId);
       if (!current) throw new DomainError('not_found');
-      await this.enforce(actorId, 'moderation.case', [
-        { type: 'community', id: current.communityId },
-      ]);
+      await this.enforce(
+        actorId,
+        'moderation.case',
+        [{ type: 'community', id: current.communityId }],
+        persistence,
+      );
       if (current.status === 'closed') throw new DomainError('conflict');
       const assigneeId =
         input.assigneeId === undefined ? current.assigneeId : input.assigneeId;
@@ -1514,7 +1544,7 @@ export class CommunityService {
   ): Promise<ModerationAppeal> {
     const statement = caseNote(statementValue);
     const key = idempotencyKey(keyValue);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const retried = await persistence.moderationAppeals.findByIdempotencyKey(
         appellantId,
         key,
@@ -1567,12 +1597,15 @@ export class CommunityService {
     correlationId: string,
   ): Promise<ModerationAppeal> {
     const reason = caseNote(reasonValue);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const appeal = await persistence.moderationAppeals.findById(appealId);
       if (!appeal) throw new DomainError('not_found');
-      await this.enforce(reviewerId, 'moderation.appeal', [
-        { type: 'community', id: appeal.communityId },
-      ]);
+      await this.enforce(
+        reviewerId,
+        'moderation.appeal',
+        [{ type: 'community', id: appeal.communityId }],
+        persistence,
+      );
       if (appeal.status !== 'submitted') return appeal;
       const restriction = await persistence.moderationRestrictions.findById(
         appeal.restrictionId,
@@ -1636,34 +1669,42 @@ export class CommunityService {
     value: string,
     expectedVersion: number,
   ): Promise<Community> {
-    await this.community(id);
-    await this.enforce(actorId, 'community.manage', [
-      { type: 'community', id },
-    ]);
-    return this.saved(
-      await this.persistence.communities.update(
-        id,
-        name(value),
-        expectedVersion,
-      ),
-    );
+    return this.transaction(async (persistence) => {
+      const current = await persistence.communities.findById(id);
+      if (!current || current.archivedAt) throw new DomainError('not_found');
+      await this.enforce(
+        actorId,
+        'community.manage',
+        [{ type: 'community', id }],
+        persistence,
+      );
+      return this.saved(
+        await persistence.communities.update(id, name(value), expectedVersion),
+      );
+    });
   }
   async archiveCommunity(
     actorId: string,
     id: string,
     expectedVersion: number,
   ): Promise<Community> {
-    await this.community(id);
-    await this.enforce(actorId, 'community.manage', [
-      { type: 'community', id },
-    ]);
-    return this.saved(
-      await this.persistence.communities.archive(
-        id,
-        expectedVersion,
-        new Date().toISOString(),
-      ),
-    );
+    return this.transaction(async (persistence) => {
+      const current = await persistence.communities.findById(id);
+      if (!current || current.archivedAt) throw new DomainError('not_found');
+      await this.enforce(
+        actorId,
+        'community.manage',
+        [{ type: 'community', id }],
+        persistence,
+      );
+      return this.saved(
+        await persistence.communities.archive(
+          id,
+          expectedVersion,
+          new Date().toISOString(),
+        ),
+      );
+    });
   }
 
   async changeMembership(
@@ -1673,44 +1714,47 @@ export class CommunityService {
     status: MembershipStatus,
     expectedVersion?: number,
   ): Promise<Membership> {
-    const community = await this.community(communityId);
-    const existing =
-      await this.persistence.memberships.findByCommunityAndAccount(
+    return this.transaction(async (persistence) => {
+      const community = await persistence.communities.findById(communityId);
+      if (!community || community.archivedAt)
+        throw new DomainError('not_found');
+      const existing = await persistence.memberships.findByCommunityAndAccount(
         communityId,
         accountId,
       );
-    if (actorId === accountId && status === 'left')
-      await this.enforce(actorId, 'membership.view', [
-        { type: 'community', id: communityId },
-      ]);
-    else
-      await this.enforce(actorId, 'membership.manage', [
-        { type: 'community', id: communityId },
-      ]);
-    if (community.ownerId === accountId && status !== 'active')
-      throw new DomainError('sole_owner');
-    const now = new Date().toISOString();
-    if (!existing) {
-      if (!(await this.persistence.accounts.findById(accountId)))
-        throw new DomainError('not_found');
-      return this.persistence.memberships.create({
-        id: randomUUID(),
-        communityId,
-        accountId,
-        status,
-        createdAt: now,
-        updatedAt: now,
-        version: 1,
-      });
-    }
-    return this.saved(
-      await this.persistence.memberships.updateStatus(
-        existing.id,
-        status,
-        expectedVersion ?? existing.version,
-        now,
-      ),
-    );
+      await this.enforce(
+        actorId,
+        actorId === accountId && status === 'left'
+          ? 'membership.view'
+          : 'membership.manage',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
+      if (community.ownerId === accountId && status !== 'active')
+        throw new DomainError('sole_owner');
+      const now = new Date().toISOString();
+      if (!existing) {
+        if (!(await persistence.accounts.findById(accountId)))
+          throw new DomainError('not_found');
+        return persistence.memberships.create({
+          id: randomUUID(),
+          communityId,
+          accountId,
+          status,
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+        });
+      }
+      return this.saved(
+        await persistence.memberships.updateStatus(
+          existing.id,
+          status,
+          expectedVersion ?? existing.version,
+          now,
+        ),
+      );
+    });
   }
   async listMemberships(
     actorId: string,
@@ -1728,19 +1772,25 @@ export class CommunityService {
     communityId: string,
     value: string,
   ): Promise<Category> {
-    await this.community(communityId);
-    await this.enforce(actorId, 'category.manage', [
-      { type: 'community', id: communityId },
-    ]);
-    const position = (await this.persistence.categories.list(communityId))
-      .length;
-    return this.persistence.categories.create({
-      id: randomUUID(),
-      communityId,
-      name: name(value),
-      position,
-      archivedAt: null,
-      version: 1,
+    return this.transaction(async (persistence) => {
+      const community = await persistence.communities.findById(communityId);
+      if (!community || community.archivedAt)
+        throw new DomainError('not_found');
+      await this.enforce(
+        actorId,
+        'category.manage',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
+      const position = (await persistence.categories.list(communityId)).length;
+      return persistence.categories.create({
+        id: randomUUID(),
+        communityId,
+        name: name(value),
+        position,
+        archivedAt: null,
+        version: 1,
+      });
     });
   }
   async listCategories(
@@ -1763,28 +1813,35 @@ export class CommunityService {
       expectedVersion: number;
     },
   ): Promise<Category> {
-    const current = await this.persistence.categories.findById(id);
-    if (!current) throw new DomainError('not_found');
-    await this.enforce(actorId, 'category.manage', [
-      { type: 'community', id: current.communityId },
-      { type: 'category', id },
-    ]);
-    return this.saved(
-      await this.persistence.categories.update(
-        id,
-        {
-          name: input.name === undefined ? current.name : name(input.name),
-          position:
-            input.position === undefined
-              ? current.position
-              : position(input.position),
-          archivedAt: input.archived
-            ? new Date().toISOString()
-            : current.archivedAt,
-        },
-        input.expectedVersion,
-      ),
-    );
+    return this.transaction(async (persistence) => {
+      const current = await persistence.categories.findById(id);
+      if (!current) throw new DomainError('not_found');
+      await this.enforce(
+        actorId,
+        'category.manage',
+        [
+          { type: 'community', id: current.communityId },
+          { type: 'category', id },
+        ],
+        persistence,
+      );
+      return this.saved(
+        await persistence.categories.update(
+          id,
+          {
+            name: input.name === undefined ? current.name : name(input.name),
+            position:
+              input.position === undefined
+                ? current.position
+                : position(input.position),
+            archivedAt: input.archived
+              ? new Date().toISOString()
+              : current.archivedAt,
+          },
+          input.expectedVersion,
+        ),
+      );
+    });
   }
 
   async createTextSpace(
@@ -1793,32 +1850,39 @@ export class CommunityService {
     value: string,
     categoryId: string | null = null,
   ): Promise<Space> {
-    await this.community(communityId);
-    await this.enforce(actorId, 'space.manage', [
-      { type: 'community', id: communityId },
-    ]);
-    if (categoryId) {
-      const category = await this.persistence.categories.findById(categoryId);
-      if (
-        !category ||
-        category.communityId !== communityId ||
-        category.archivedAt
-      )
+    return this.transaction(async (persistence) => {
+      const community = await persistence.communities.findById(communityId);
+      if (!community || community.archivedAt)
         throw new DomainError('not_found');
-    }
-    const position = (
-      await this.persistence.spaces.list(communityId, { limit: 100 })
-    ).items.length;
-    return this.persistence.spaces.create({
-      id: randomUUID(),
-      communityId,
-      categoryId,
-      name: name(value),
-      kind: 'text',
-      position,
-      archivedAt: null,
-      slowModeSeconds: 0,
-      version: 1,
+      await this.enforce(
+        actorId,
+        'space.manage',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
+      if (categoryId) {
+        const category = await persistence.categories.findById(categoryId);
+        if (
+          !category ||
+          category.communityId !== communityId ||
+          category.archivedAt
+        )
+          throw new DomainError('not_found');
+      }
+      const position = (
+        await persistence.spaces.list(communityId, { limit: 100 })
+      ).items.length;
+      return persistence.spaces.create({
+        id: randomUUID(),
+        communityId,
+        categoryId,
+        name: name(value),
+        kind: 'text',
+        position,
+        archivedAt: null,
+        slowModeSeconds: 0,
+        version: 1,
+      });
     });
   }
   async listSpaces(
@@ -1844,44 +1908,51 @@ export class CommunityService {
       expectedVersion: number;
     },
   ): Promise<Space> {
-    const current = await this.persistence.spaces.findById(id);
-    if (!current) throw new DomainError('not_found');
-    await this.enforce(actorId, 'space.manage', [
-      { type: 'community', id: current.communityId },
-      { type: 'space', id },
-    ]);
-    const categoryId =
-      input.categoryId === undefined ? current.categoryId : input.categoryId;
-    if (categoryId) {
-      const category = await this.persistence.categories.findById(categoryId);
-      if (
-        !category ||
-        category.communityId !== current.communityId ||
-        category.archivedAt
-      )
-        throw new DomainError('not_found');
-    }
-    return this.saved(
-      await this.persistence.spaces.update(
-        id,
-        {
-          name: input.name === undefined ? current.name : name(input.name),
-          position:
-            input.position === undefined
-              ? current.position
-              : position(input.position),
-          categoryId,
-          archivedAt: input.archived
-            ? new Date().toISOString()
-            : current.archivedAt,
-          slowModeSeconds:
-            input.slowModeSeconds === undefined
-              ? current.slowModeSeconds
-              : slowMode(input.slowModeSeconds),
-        },
-        input.expectedVersion,
-      ),
-    );
+    return this.transaction(async (persistence) => {
+      const current = await persistence.spaces.findById(id);
+      if (!current) throw new DomainError('not_found');
+      await this.enforce(
+        actorId,
+        'space.manage',
+        [
+          { type: 'community', id: current.communityId },
+          { type: 'space', id },
+        ],
+        persistence,
+      );
+      const categoryId =
+        input.categoryId === undefined ? current.categoryId : input.categoryId;
+      if (categoryId) {
+        const category = await persistence.categories.findById(categoryId);
+        if (
+          !category ||
+          category.communityId !== current.communityId ||
+          category.archivedAt
+        )
+          throw new DomainError('not_found');
+      }
+      return this.saved(
+        await persistence.spaces.update(
+          id,
+          {
+            name: input.name === undefined ? current.name : name(input.name),
+            position:
+              input.position === undefined
+                ? current.position
+                : position(input.position),
+            categoryId,
+            archivedAt: input.archived
+              ? new Date().toISOString()
+              : current.archivedAt,
+            slowModeSeconds:
+              input.slowModeSeconds === undefined
+                ? current.slowModeSeconds
+                : slowMode(input.slowModeSeconds),
+          },
+          input.expectedVersion,
+        ),
+      );
+    });
   }
 
   async postMessage(
@@ -1951,7 +2022,7 @@ export class CommunityService {
       if (!reply || reply.spaceId !== spaceId)
         throw new DomainError('not_found');
     }
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       await persistence.messages.lockIdempotency(
         authorId,
         spaceId,
@@ -2099,7 +2170,7 @@ export class CommunityService {
     key: string,
   ): Promise<ReactionAggregate[]> {
     const normalized = reactionKey(key);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const message = await this.messageForMutation(messageId, actorId, false);
       await persistence.reactions.add({
         messageId: message.id,
@@ -2116,8 +2187,13 @@ export class CommunityService {
     key: string,
   ): Promise<ReactionAggregate[]> {
     const normalized = reactionKey(key);
-    return this.persistence.transaction(async (persistence) => {
-      const message = await this.messageForMutation(messageId, actorId, false);
+    return this.transaction(async (persistence) => {
+      const message = await this.messageForMutation(
+        messageId,
+        actorId,
+        false,
+        persistence,
+      );
       await persistence.reactions.remove(message.id, actorId, normalized);
       return persistence.reactions.list(message.id, actorId);
     });
@@ -2127,12 +2203,15 @@ export class CommunityService {
     id: string,
     actorId: string,
     requireAuthor: boolean,
+    persistence?: Persistence,
   ): Promise<Message> {
-    const message = await this.persistence.messages.findById(id);
+    const activePersistence =
+      persistence ?? transactionPersistence.getStore() ?? this.persistence;
+    const message = await activePersistence.messages.findById(id);
     if (!message) throw new DomainError('not_found');
-    const space = await this.persistence.spaces.findById(message.spaceId);
+    const space = await activePersistence.spaces.findById(message.spaceId);
     if (!space || space.archivedAt) throw new DomainError('not_found');
-    await this.authorizeSpaceSubscription(space.id, actorId);
+    await this.authorizeSpaceSubscription(space.id, actorId, activePersistence);
     if (requireAuthor && message.authorId !== actorId)
       throw new DomainError('forbidden');
     return message;
@@ -2185,7 +2264,18 @@ export class CommunityService {
         revokedAt: null,
         version: 1,
       };
-      await this.persistence.transaction(async (persistence) => {
+      await this.transaction(async (persistence) => {
+        await this.enforce(
+          actorId,
+          'invitation.create',
+          [{ type: 'community', id: communityId }],
+          persistence,
+        );
+        if (
+          targetAccountId &&
+          !(await persistence.accounts.findById(targetAccountId))
+        )
+          throw new DomainError('not_found');
         await persistence.invitations.create(invitation);
         await persistence.auditEvents.create(
           this.audit(
@@ -2252,7 +2342,13 @@ export class CommunityService {
     await this.enforce(actorId, 'moderation.audit', [
       { type: 'community', id: communityId },
     ]);
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
+      await this.enforce(
+        actorId,
+        'moderation.audit',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
       const now = new Date().toISOString();
       const event = await persistence.auditEvents.create(
         this.audit(
@@ -2292,18 +2388,26 @@ export class CommunityService {
     ]);
     if (!/^[a-z][a-z0-9_]{1,63}$/.test(reasonCode))
       throw new DomainError('conflict');
-    return this.persistence.auditEvents.create(
-      this.audit(
+    return this.transaction(async (persistence) => {
+      await this.enforce(
         actorId,
-        communityId,
-        'community',
-        communityId,
-        held ? 'audit.legal_hold.apply' : 'audit.legal_hold.release',
-        'succeeded',
-        reasonCode,
-        correlationId,
-      ),
-    );
+        'moderation.audit',
+        [{ type: 'community', id: communityId }],
+        persistence,
+      );
+      return persistence.auditEvents.create(
+        this.audit(
+          actorId,
+          communityId,
+          'community',
+          communityId,
+          held ? 'audit.legal_hold.apply' : 'audit.legal_hold.release',
+          'succeeded',
+          reasonCode,
+          correlationId,
+        ),
+      );
+    });
   }
   async auditRetention(
     actorId: string,
@@ -2331,7 +2435,13 @@ export class CommunityService {
       await this.enforce(actorId, 'invitation.manage', [
         { type: 'community', id: invitation.communityId },
       ]);
-      return await this.persistence.transaction(async (persistence) => {
+      return await this.transaction(async (persistence) => {
+        await this.enforce(
+          actorId,
+          'invitation.manage',
+          [{ type: 'community', id: invitation.communityId }],
+          persistence,
+        );
         const revoked = await persistence.invitations.revoke(
           invitation.id,
           expectedVersion,
@@ -2390,7 +2500,7 @@ export class CommunityService {
     let communityId: string | null = null;
     try {
       const tokenHash = protectInvitationToken(token);
-      return await this.persistence.transaction(async (persistence) => {
+      return await this.transaction(async (persistence) => {
         const invitation =
           await persistence.invitations.findByTokenHash(tokenHash);
         if (
@@ -2563,7 +2673,7 @@ export class CommunityService {
     actorId: string,
     mutation: (message: Message, persistence: Persistence) => Promise<Message>,
   ): Promise<Message> {
-    return this.persistence.transaction(async (persistence) => {
+    return this.transaction(async (persistence) => {
       const message = await persistence.messages.findById(id);
       if (!message) throw new DomainError('not_found');
       const space = await persistence.spaces.findById(message.spaceId);
@@ -2584,9 +2694,13 @@ export class CommunityService {
     communityId: string,
     permission:
       'moderation.timeout' | 'moderation.ban' | 'moderation.message.delete',
+    persistence?: Persistence,
   ): Promise<void> {
-    if (this.authorization?.assertCanModerate) {
-      await this.authorization.assertCanModerate(
+    const activePersistence =
+      persistence ?? transactionPersistence.getStore() ?? this.persistence;
+    const authorization = activePersistence.authorization ?? this.authorization;
+    if (authorization?.assertCanModerate) {
+      await authorization.assertCanModerate(
         actorId,
         targetAccountId,
         communityId,
@@ -2594,16 +2708,19 @@ export class CommunityService {
       );
       return;
     }
-    const community = await this.persistence.communities.findById(communityId);
+    const community = await activePersistence.communities.findById(communityId);
     if (
       !community ||
       community.ownerId !== actorId ||
       actorId === targetAccountId
     )
       throw new DomainError('forbidden');
-    await this.enforce(actorId, permission, [
-      { type: 'community', id: communityId },
-    ]);
+    await this.enforce(
+      actorId,
+      permission,
+      [{ type: 'community', id: communityId }],
+      activePersistence,
+    );
   }
 
   private async writeModerationAudit(
@@ -2659,27 +2776,35 @@ export class CommunityService {
   async authorizeSpaceSubscription(
     spaceId: string,
     actorId: string,
+    persistence?: Persistence,
   ): Promise<void> {
-    const space = await this.persistence.spaces.findById(spaceId);
+    const activePersistence =
+      persistence ?? transactionPersistence.getStore() ?? this.persistence;
+    const space = await activePersistence.spaces.findById(spaceId);
     if (
       !space ||
       space.archivedAt ||
-      !(await this.persistence.accounts.findById(actorId))
+      !(await activePersistence.accounts.findById(actorId))
     )
       throw new DomainError('not_found');
     if (space.categoryId) {
-      const category = await this.persistence.categories.findById(
+      const category = await activePersistence.categories.findById(
         space.categoryId,
       );
       if (!category || category.archivedAt) throw new DomainError('not_found');
     }
-    await this.enforce(actorId, 'space.view', [
-      { type: 'community', id: space.communityId },
-      ...(space.categoryId
-        ? [{ type: 'category' as const, id: space.categoryId }]
-        : []),
-      { type: 'space', id: space.id },
-    ]);
+    await this.enforce(
+      actorId,
+      'space.view',
+      [
+        { type: 'community', id: space.communityId },
+        ...(space.categoryId
+          ? [{ type: 'category' as const, id: space.categoryId }]
+          : []),
+        { type: 'space', id: space.id },
+      ],
+      activePersistence,
+    );
   }
   private async community(id: string): Promise<Community> {
     const value = await this.persistence.communities.findById(id);
@@ -2690,28 +2815,31 @@ export class CommunityService {
     actorId: string,
     permission: Parameters<AuthorizationGateway['enforce']>[1],
     scopes: Parameters<AuthorizationGateway['enforce']>[2],
-    persistence: Persistence = this.persistence,
+    persistence?: Persistence,
   ): Promise<void> {
+    const activePersistence =
+      persistence ?? transactionPersistence.getStore() ?? this.persistence;
     const communityId = scopes.find((scope) => scope.type === 'community')?.id;
     if (
       communityId &&
       !permission.startsWith('moderation.') &&
-      (await persistence.moderationRestrictions.findEffective(
+      (await activePersistence.moderationRestrictions.findEffective(
         communityId,
         actorId,
         new Date().toISOString(),
       ))
     )
       throw new DomainError('forbidden');
-    if (this.authorization) {
-      await this.authorization.enforce(actorId, permission, scopes);
+    const authorization = activePersistence.authorization ?? this.authorization;
+    if (authorization) {
+      await authorization.enforce(actorId, permission, scopes);
       return;
     }
     const community = communityId
-      ? await persistence.communities.findById(communityId)
+      ? await activePersistence.communities.findById(communityId)
       : undefined;
     const membership = communityId
-      ? await persistence.memberships.findByCommunityAndAccount(
+      ? await activePersistence.memberships.findByCommunityAndAccount(
           communityId,
           actorId,
         )
