@@ -10,6 +10,12 @@ Automated and manual dependency changes follow `docs/operations/dependency-updat
 
 Security and supply-chain changes follow `docs/operations/supply-chain-security.md`. Reproduce the relevant policy, secret, static, dependency, SBOM, provenance, and container gates locally. Suppressions require a named owner, technical rationale, compensating control, and expiration or review date.
 
+Application-container changes follow
+`docs/operations/container-applications.md` and pass `npm run
+verify:container-policy`. When Docker is available, also run the bounded
+development topology smoke test; production behavior requires the production
+verification lane.
+
 Durable-data, migration, storage, image, and deployment changes must follow
 `docs/operations/backup-and-restore.md` and pass `npm run verify:backup-policy`
 plus the complete disposable restore verification.

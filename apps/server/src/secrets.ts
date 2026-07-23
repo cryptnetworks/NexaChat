@@ -15,6 +15,7 @@ const composeSecretsDirectory = '/run/secrets';
 
 const fileSources = [
   ['DATABASE_URL', 'DATABASE_URL_FILE'],
+  ['MIGRATION_DATABASE_URL', 'MIGRATION_DATABASE_URL_FILE'],
   ['REDIS_URL', 'REDIS_URL_FILE'],
   ['S3_ACCESS_KEY', 'S3_ACCESS_KEY_FILE'],
   ['S3_SECRET_KEY', 'S3_SECRET_KEY_FILE'],

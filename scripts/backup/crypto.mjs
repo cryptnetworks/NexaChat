@@ -51,7 +51,8 @@ function finishDestination(destination) {
     };
     const onFinish = () => settle(resolve);
     const onClose = () => {
-      if (destination.writableFinished) settle(resolve);
+      if (destination.writableFinished || destination.writableEnded)
+        settle(resolve);
       else settle(reject, new Error('destination_closed_before_finish'));
     };
     const onError = (error) => settle(reject, error);

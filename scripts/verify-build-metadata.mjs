@@ -1,21 +1,41 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-const [directory, expectedRevision, expectedVersion] = process.argv.slice(2);
+const [directory, expectedRevision, expectedVersion, ...selectedTargets] =
+  process.argv.slice(2);
 if (!directory || !expectedRevision || !expectedVersion) {
   console.error(
-    'usage: verify-build-metadata.mjs DIRECTORY EXPECTED_REVISION EXPECTED_VERSION',
+    'usage: verify-build-metadata.mjs DIRECTORY EXPECTED_REVISION EXPECTED_VERSION [TARGET ...]',
   );
   process.exit(2);
 }
 
-const expectedTargets = new Set([
+const allowedTargets = new Set([
   'backup-runtime',
   'edge-runtime',
   'object-storage-runtime',
   'postgres-runtime',
   'server-runtime',
+  'web-runtime',
 ]);
+const requestedTargets =
+  selectedTargets.length > 0
+    ? selectedTargets
+    : [
+        'backup-runtime',
+        'edge-runtime',
+        'object-storage-runtime',
+        'postgres-runtime',
+        'server-runtime',
+      ];
+if (
+  new Set(requestedTargets).size !== requestedTargets.length ||
+  requestedTargets.some((target) => !allowedTargets.has(target))
+) {
+  console.error('build_provenance_error: requested target set is invalid');
+  process.exit(1);
+}
+const expectedTargets = new Set(requestedTargets);
 const files = (await readdir(directory)).filter((file) =>
   file.endsWith('.json'),
 );
