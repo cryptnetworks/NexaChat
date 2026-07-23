@@ -1,0 +1,36 @@
+# Repository ownership is intentionally explicit for every path that can affect
+# trust boundaries, release integrity, durable data, or deployment. The default
+# entry keeps ordinary changes accountable; the entries above it make sensitive
+# review ownership visible in GitHub's pull-request interface.
+
+# Authentication, authorization, and public contract boundaries
+/packages/auth/ @cryptnetworks
+/packages/authorization/ @cryptnetworks
+/packages/api-contracts/ @cryptnetworks
+/packages/realtime-contracts/ @cryptnetworks
+/apps/server/src/auth* @cryptnetworks
+/apps/server/src/authorization* @cryptnetworks
+/apps/server/src/config* @cryptnetworks
+
+# Durable data and recovery
+/apps/server/migrations/ @cryptnetworks
+/packages/postgres/ @cryptnetworks
+/packages/object-storage/ @cryptnetworks
+/scripts/backup/ @cryptnetworks
+/compose.production.yml @cryptnetworks
+/Dockerfile @cryptnetworks
+
+# CI, supply chain, and release paths
+/.github/workflows/ @cryptnetworks
+/.github/dependabot.yml @cryptnetworks
+/security-policy.json @cryptnetworks
+/scripts/verify-* @cryptnetworks
+/scripts/security-* @cryptnetworks
+/tools/release/ @cryptnetworks
+/release/ @cryptnetworks
+/docs/releases/ @cryptnetworks
+/docs/security/ @cryptnetworks
+/SECURITY.md @cryptnetworks
+
+# All remaining repository content
+* @cryptnetworks
