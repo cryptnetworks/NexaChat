@@ -25,6 +25,8 @@ describe('API performance policy', () => {
       minMs: 1,
       maxMs: 3,
       meanMs: 2,
+      p75Ms: 2.5,
+      p90Ms: 2.8,
     });
   });
 
