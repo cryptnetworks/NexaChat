@@ -52,18 +52,18 @@ Compose merge reference, and the repository security policy. Patch updates use
 the procedure in [Supply-chain and security verification](supply-chain-security.md);
 they are not mixed into application-container changes.
 
-| Component           | Reviewed pin or requirement                                     | Selection reason                                        |
-| ------------------- | --------------------------------------------------------------- | ------------------------------------------------------- |
-| Dockerfile frontend | `docker/dockerfile:1.7` by SHA-256 digest                       | Stable declared syntax with immutable resolution        |
-| Node.js             | 24.18.0 Alpine 3.23 by multi-platform digest                    | Repository-supported LTS runtime                        |
-| npm                 | 11.16.0 from the Node image and root lockfile                   | Exact frozen workspace install                          |
-| PostgreSQL          | 17.9 Alpine 3.23 by digest                                      | Supported major and verified migration/restore baseline |
-| Valkey              | 8.1.8 Alpine 3.23 by digest                                     | Supported 8.1 line and verified coordination baseline   |
-| Object storage      | SeaweedFS 4.40 runtime by digest                                | Verified S3 adapter baseline                            |
-| Object build        | Go 1.25.12 plus gRPC-Go 1.82.1 with source and module checksums | Reproducible patched binary                             |
-| Web server          | nginx 1.31.3 Alpine 3.24 by digest                              | Minimal non-root static/proxy runtime                   |
-| Docker Compose      | 2.24.4 or newer                                                 | Required for the reviewed `!reset` override semantics   |
-| GitHub Actions      | Checkout, Node setup, and artifact upload v7 by commit SHA      | Immutable supported workflow actions                    |
+| Component           | Reviewed pin or requirement                                          | Selection reason                                                          |
+| ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Dockerfile frontend | `docker/dockerfile:1.7` by SHA-256 digest                            | Stable declared syntax with immutable resolution                          |
+| Node.js             | 24.18.0 Alpine 3.23 by multi-platform digest                         | Repository-supported LTS runtime                                          |
+| npm                 | 11.18.0 installed from the official npm registry in `node-toolchain` | Fixes the bundled npm CLI dependency tree; exact frozen workspace install |
+| PostgreSQL          | 17.9 Alpine 3.23 by digest                                           | Supported major and verified migration/restore baseline                   |
+| Valkey              | 8.1.8 Alpine 3.23 by digest                                          | Supported 8.1 line and verified coordination baseline                     |
+| Object storage      | SeaweedFS 4.40 runtime by digest                                     | Verified S3 adapter baseline                                              |
+| Object build        | Go 1.25.12 plus gRPC-Go 1.82.1 with source and module checksums      | Reproducible patched binary                                               |
+| Web server          | nginx 1.31.3 Alpine 3.24 by digest                                   | Minimal non-root static/proxy runtime                                     |
+| Docker Compose      | 2.24.4 or newer                                                      | Required for the reviewed `!reset` override semantics                     |
+| GitHub Actions      | Checkout, Node setup, and artifact upload v7 by commit SHA           | Immutable supported workflow actions                                      |
 
 Use a maintained Docker Engine with BuildKit and the Compose plugin. The legacy
 standalone `docker-compose` executable is not supported. Confirm prerequisites:

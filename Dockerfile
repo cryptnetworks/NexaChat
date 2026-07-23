@@ -3,6 +3,7 @@
 ARG NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat
 ARG NEXA_IMAGE_REVISION=unknown
 ARG NEXA_IMAGE_VERSION=0.1.0
+ARG NPM_VERSION=11.18.0
 
 FROM postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4 AS postgres-runtime
 ARG NEXA_IMAGE_SOURCE
@@ -23,7 +24,13 @@ COPY deploy/postgres/nexa-bootstrap-roles /usr/local/bin/nexa-bootstrap-roles
 RUN chmod 0555 /usr/local/bin/nexa-bootstrap-roles
 USER 70:70
 
-FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS build-dependencies
+FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS node-toolchain
+ARG NPM_VERSION
+RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
+  && npm cache clean --force \
+  && node -e "const expected = { tar: '7.5.19', undici: '6.27.0', 'brace-expansion': '5.0.7' }; for (const [name, version] of Object.entries(expected)) { const actual = require('/usr/local/lib/node_modules/npm/node_modules/' + name + '/package.json').version; if (actual !== version) throw new Error(name + ' must be ' + version + '; found ' + actual); }"
+
+FROM node-toolchain AS build-dependencies
 WORKDIR /workspace
 
 COPY package.json package-lock.json ./
@@ -63,14 +70,14 @@ USER node
 EXPOSE 3000 5173
 STOPSIGNAL SIGTERM
 
-FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS server-dependencies
+FROM node-toolchain AS server-dependencies
 ENV NODE_ENV=production
 WORKDIR /app
 COPY apps/server/runtime/package.json apps/server/runtime/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts \
   && npm cache clean --force
 
-FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS server-runtime
+FROM node-toolchain AS server-runtime
 ARG NEXA_IMAGE_SOURCE
 ARG NEXA_IMAGE_REVISION
 ARG NEXA_IMAGE_VERSION
@@ -103,7 +110,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD wget --quiet --spider http://127.0.0.1:3000/health/live || exit 1
 CMD ["node", "main.mjs"]
 
-FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS backup-runtime
+FROM node-toolchain AS backup-runtime
 ARG NEXA_IMAGE_SOURCE
 ARG NEXA_IMAGE_REVISION
 ARG NEXA_IMAGE_VERSION
