@@ -314,6 +314,38 @@ describe('secure real WebSocket integration', () => {
     second.close(1000);
   });
 
+  it('validates and serializes one fanout payload once for every local recipient', async () => {
+    const owner = await identity('shared-serialization');
+    const community = await service.createCommunity(
+      owner.account.id,
+      'Shared serialization',
+    );
+    const space = await service.createTextSpace(
+      community.id,
+      owner.account.id,
+      'shared',
+    );
+    const first = connect(owner.session.token);
+    const second = connect(owner.session.token);
+    await Promise.all([opened(first), opened(second)]);
+    await Promise.all([
+      subscribe(first, space.id),
+      subscribe(second, space.id),
+    ]);
+    const firstDelivery = nextMessage(first);
+    const secondDelivery = nextMessage(second);
+    app.websocketHub?.broadcast(
+      space.id,
+      envelope(space.id, owner.account.id, 'shared payload'),
+    );
+    await Promise.all([firstDelivery, secondDelivery]);
+    expect(telemetry.metrics.render()).toContain(
+      'nexa_websocket_events_total{event="realtime_payload_serialized",outcome="event"} 1',
+    );
+    first.close(1000);
+    second.close(1000);
+  });
+
   it('returns coarse presence without exposing expiry or activity details', async () => {
     await app.websocketHub?.close();
     const targetId = randomUUID();

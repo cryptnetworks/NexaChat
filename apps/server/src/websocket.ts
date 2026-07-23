@@ -113,6 +113,11 @@ interface ConnectionState {
   outboundBytes: number;
 }
 
+interface SerializedServerMessage {
+  payload: string;
+  bytes: number;
+}
+
 type PendingConnection = AuthenticatedSession & {
   token: string;
   address: string;
@@ -568,11 +573,32 @@ export function attachWebsocketHub(
     state: ConnectionState,
     message: WebsocketServerMessage | RealtimeDelivery,
   ): boolean {
-    if (socket.readyState !== WebSocket.OPEN) return false;
-    const payload = JSON.stringify(
-      websocketServerMessageSchema.or(realtimeDeliverySchema).parse(message),
+    const validated = websocketServerMessageSchema
+      .or(realtimeDeliverySchema)
+      .parse(message);
+    return sendSerialized(
+      socket,
+      state,
+      serializeValidated(validated, 'control'),
     );
-    const bytes = Buffer.byteLength(payload);
+  }
+
+  function serializeValidated(
+    message: WebsocketServerMessage | RealtimeDelivery,
+    kind: 'account' | 'control' | 'event',
+  ): SerializedServerMessage {
+    const payload = JSON.stringify(message);
+    metrics.increment('realtime_payload_serialized', { reason: kind });
+    return { payload, bytes: Buffer.byteLength(payload) };
+  }
+
+  function sendSerialized(
+    socket: WebSocket,
+    state: ConnectionState,
+    message: SerializedServerMessage,
+  ): boolean {
+    if (socket.readyState !== WebSocket.OPEN) return false;
+    const { payload, bytes } = message;
     if (
       socket.bufferedAmount + state.outboundBytes + bytes >
       limits.maxBufferedBytes
@@ -824,11 +850,12 @@ export function attachWebsocketHub(
       sequence,
       event,
     });
+    const serialized = serializeValidated(delivery, 'event');
     let delivered = false;
     for (const [socket, state] of connections)
       if (
         state.subscriptions.has(spaceId) &&
-        safeSend(socket, state, delivery)
+        sendSerialized(socket, state, serialized)
       ) {
         delivered = true;
         metrics.increment('realtime_delivery');
@@ -852,11 +879,12 @@ export function attachWebsocketHub(
         const message = websocketServerMessageSchema.parse(parsed.message);
         if (message.type !== 'notification_read') return;
         if (!remember(message.state.eventId)) return;
+        const serialized = serializeValidated(message, 'account');
         for (const [socket, state] of connections) {
           if (state.actorId !== parsed.accountId) continue;
           try {
             await options.auth.service.authenticate(state.token);
-            safeSend(socket, state, message);
+            sendSerialized(socket, state, serialized);
           } catch {
             socket.close(1008, 'unauthenticated');
           }
@@ -908,8 +936,10 @@ export function attachWebsocketHub(
       const message = websocketServerMessageSchema.parse(rawMessage);
       if (message.type !== 'notification_read') return;
       if (!remember(message.state.eventId)) return;
+      const serialized = serializeValidated(message, 'account');
       for (const [socket, state] of connections)
-        if (state.actorId === accountId) safeSend(socket, state, message);
+        if (state.actorId === accountId)
+          sendSerialized(socket, state, serialized);
       publishFanout(JSON.stringify({ instanceId, accountId, message }));
     },
     async close() {
