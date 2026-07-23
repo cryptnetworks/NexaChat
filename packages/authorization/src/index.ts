@@ -186,6 +186,15 @@ export class AuthorizationService {
     private readonly store: AuthorizationStore,
     private readonly observer?: AuthorizationObserver,
   ) {}
+
+  /**
+   * Rebind authorization reads and writes to an already-open mutation
+   * transaction. The returned service keeps the same privacy-safe observer
+   * while ensuring every decision uses the supplied store/client.
+   */
+  forStore(store: AuthorizationStore): AuthorizationService {
+    return new AuthorizationService(store, this.observer);
+  }
   async preview(
     actorId: string,
     permission: Permission,

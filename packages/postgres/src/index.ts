@@ -43,6 +43,7 @@ import type {
   MemberStatusStore,
   RecoverableJob,
   JobRecoveryStore,
+  AuthorizationGateway,
 } from '@nexa/domain';
 import { auditEventHash, zeroAuditHash } from '@nexa/domain';
 import type {
@@ -52,6 +53,7 @@ import type {
   CredentialSecurityEvent,
 } from '@nexa/auth';
 import {
+  AuthorizationService,
   StaleAuthorizationWriteError,
   type AuthorizationSnapshot,
   type AuthorizationStore,
@@ -231,6 +233,7 @@ interface Queryable {
 }
 
 export class PostgresPersistence implements Persistence {
+  readonly authorization?: AuthorizationGateway;
   readonly accounts;
   readonly communities;
   readonly memberships;
@@ -255,7 +258,16 @@ export class PostgresPersistence implements Persistence {
   constructor(
     private readonly pool: Pool,
     private readonly queryable: Queryable = pool,
+    private readonly authorizationService?: AuthorizationService,
   ) {
+    if (queryable !== pool && authorizationService) {
+      this.authorization = authorizationService.forStore(
+        new PostgresAuthorizationStore(
+          pool,
+          queryable as unknown as PoolClient,
+        ),
+      );
+    }
     this.accounts = accountRepository(queryable);
     this.communities = communityRepository(queryable);
     this.memberships = membershipRepository(queryable);
@@ -284,18 +296,25 @@ export class PostgresPersistence implements Persistence {
     work: (persistence: Persistence) => Promise<T>,
   ): Promise<T> {
     if (this.queryable !== this.pool) return work(this);
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const result = await work(new PostgresPersistence(this.pool, client));
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+        const result = await work(
+          new PostgresPersistence(this.pool, client, this.authorizationService),
+        );
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        if (isSerializationFailure(error) && attempt < maxAttempts) continue;
+        throw error;
+      } finally {
+        client.release();
+      }
     }
+    throw new Error('transaction retry budget exhausted');
   }
 }
 
@@ -1391,33 +1410,36 @@ export class PostgresAuthorizationStore implements AuthorizationStore {
     scopes: readonly { type: ScopeType; id: string }[],
   ): Promise<AuthorizationSnapshot> {
     const communityId = scopes.find((scope) => scope.type === 'community')?.id;
-    const [account, ownership, roles, assignments, decisions] =
+    const [account, membership, ownership, roles, assignments, decisions] =
       await Promise.all([
         this.db.query<{
           account_status: 'active' | 'suspended';
-          membership_status: Membership['status'] | null;
         }>(
-          `SELECT a.status AS account_status, m.status AS membership_status
-           FROM accounts a LEFT JOIN memberships m ON m.account_id=a.id AND m.community_id=$2
-           WHERE a.id=$1`,
-          [actorId, communityId ?? null],
+          'SELECT status AS account_status FROM accounts WHERE id=$1 FOR UPDATE',
+          [actorId],
         ),
         communityId
+          ? this.db.query<{ membership_status: Membership['status'] }>(
+              'SELECT status AS membership_status FROM memberships WHERE account_id=$1 AND community_id=$2 FOR UPDATE',
+              [actorId, communityId],
+            )
+          : Promise.resolve({ rows: [] }),
+        communityId
           ? this.db.query<{ id: string }>(
-              'SELECT id FROM communities WHERE id = $1 AND owner_id = $2',
+              'SELECT id FROM communities WHERE id = $1 AND owner_id = $2 FOR UPDATE',
               [communityId, actorId],
             )
           : Promise.resolve({ rows: [] }),
         this.db.query<RoleRow>(
-          'SELECT id, community_id, name, position, protected, version FROM authorization_roles WHERE community_id IS NULL OR community_id = $1 ORDER BY position, id',
+          'SELECT id, community_id, name, position, protected, version FROM authorization_roles WHERE community_id IS NULL OR community_id = $1 ORDER BY position, id FOR UPDATE',
           [communityId ?? null],
         ),
         this.db.query<RoleAssignmentRow>(
-          'SELECT role_id, actor_id, community_id, version FROM authorization_role_assignments WHERE actor_id = $1 AND ($2::uuid IS NULL OR community_id = $2)',
+          'SELECT role_id, actor_id, community_id, version FROM authorization_role_assignments WHERE actor_id = $1 AND ($2::uuid IS NULL OR community_id = $2) FOR UPDATE',
           [actorId, communityId ?? null],
         ),
         this.db.query<DecisionRow>(
-          'SELECT role_id, permission, scope_type, scope_id, effect FROM authorization_decisions WHERE scope_type = ANY($1::text[]) AND scope_id = ANY($2::uuid[])',
+          'SELECT role_id, permission, scope_type, scope_id, effect FROM authorization_decisions WHERE scope_type = ANY($1::text[]) AND scope_id = ANY($2::uuid[]) FOR UPDATE',
           [scopes.map((scope) => scope.type), scopes.map((scope) => scope.id)],
         ),
       ]);
@@ -1428,7 +1450,7 @@ export class PostgresAuthorizationStore implements AuthorizationStore {
         suspended:
           account.rows[0]?.account_status === 'suspended' ||
           (communityId !== undefined &&
-            account.rows[0]?.membership_status !== 'active'),
+            membership.rows[0]?.membership_status !== 'active'),
         ownerOf: ownership.rows.map((row) => row.id),
       },
       roles: roles.rows.map(mapRole),

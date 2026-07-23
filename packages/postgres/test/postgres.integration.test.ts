@@ -21,6 +21,7 @@ import {
   verifyPostgresSchema,
   type PostgresConfig,
 } from '../src/index.js';
+import { AuthorizationService } from '@nexa/authorization';
 
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
@@ -719,6 +720,77 @@ integration('PostgreSQL authorization persistence', () => {
     expect(
       outcomes.filter((outcome) => outcome.status === 'rejected'),
     ).toHaveLength(1);
+  });
+
+  it('rejects a message when membership authority is revoked during its mutation', async () => {
+    const authorization = new PostgresAuthorizationStore(pool);
+    const authorizationService = new AuthorizationService(authorization);
+    const persistence = new PostgresPersistence(
+      pool,
+      pool,
+      authorizationService,
+    );
+    const service = new CommunityService(persistence, authorizationService);
+    const owner = await service.createAccount('Race owner');
+    const member = await service.createAccount('Race member');
+    const community = await service.createCommunity(owner.id, 'Race');
+    await service.changeMembership(owner.id, community.id, member.id, 'active');
+    const space = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'General',
+    );
+    const role = await authorization.putRole({
+      id: randomUUID(),
+      communityId: community.id,
+      name: 'member',
+      position: 1,
+      protected: false,
+      version: 0,
+    });
+    await authorization.assignRole({
+      roleId: role.id,
+      actorId: member.id,
+      communityId: community.id,
+      version: 1,
+    });
+    await authorization.putDecision({
+      roleId: role.id,
+      permission: 'message.create',
+      scope: { type: 'community', id: community.id },
+      effect: 'grant',
+    });
+
+    const lockClient = await pool.connect();
+    try {
+      await lockClient.query('BEGIN');
+      await lockClient.query(
+        'SELECT 1 FROM memberships WHERE community_id=$1 AND account_id=$2 FOR UPDATE',
+        [community.id, member.id],
+      );
+      const attempt = service.postMessage(
+        space.id,
+        member.id,
+        'must not commit',
+        'race-message-0001',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await lockClient.query(
+        "UPDATE memberships SET status='removed', version=version+1 WHERE community_id=$1 AND account_id=$2",
+        [community.id, member.id],
+      );
+      await lockClient.query('COMMIT');
+      await expect(attempt).rejects.toMatchObject({ publicCode: 'not_found' });
+    } finally {
+      lockClient.release();
+    }
+    await expect(
+      persistence.messages.findByIdempotencyKey(
+        member.id,
+        space.id,
+        'race-message-0001',
+      ),
+    ).resolves.toBeUndefined();
   });
 });
 

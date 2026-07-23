@@ -233,6 +233,19 @@ describe('deny-by-default decision table', () => {
 });
 
 describe('authorization mutations', () => {
+  it('can rebind decisions to the caller transaction store', async () => {
+    const outer = new InMemoryAuthorizationStore();
+    const transaction = allowedStore();
+    const service = new AuthorizationService(outer);
+
+    await expect(
+      service.enforce('actor', 'space.view', [community]),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(
+      service.forStore(transaction).enforce('actor', 'space.view', [community]),
+    ).resolves.toMatchObject({ allowed: true });
+  });
+
   it('uses the same evaluator for preview and enforcement', async () => {
     const store = allowedStore();
     const service = new AuthorizationService(store);
