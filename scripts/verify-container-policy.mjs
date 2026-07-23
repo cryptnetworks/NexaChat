@@ -1,15 +1,22 @@
 import { readFile } from 'node:fs/promises';
 
-const [dockerfile, development, providers, production, vite, workflow, runbook] =
-  await Promise.all([
-    readFile('Dockerfile', 'utf8'),
-    readFile('compose.development.yml', 'utf8'),
-    readFile('docker-compose.yml', 'utf8'),
-    readFile('compose.production.yml', 'utf8'),
-    readFile('apps/web/vite.config.ts', 'utf8'),
-    readFile('.github/workflows/container-verification.yml', 'utf8'),
-    readFile('docs/operations/container-applications.md', 'utf8'),
-  ]);
+const [
+  dockerfile,
+  development,
+  providers,
+  production,
+  vite,
+  workflow,
+  runbook,
+] = await Promise.all([
+  readFile('Dockerfile', 'utf8'),
+  readFile('compose.development.yml', 'utf8'),
+  readFile('docker-compose.yml', 'utf8'),
+  readFile('compose.production.yml', 'utf8'),
+  readFile('apps/web/vite.config.ts', 'utf8'),
+  readFile('.github/workflows/container-verification.yml', 'utf8'),
+  readFile('docs/operations/container-applications.md', 'utf8'),
+]);
 
 const failures = [];
 const requireText = (source, values, label) => {
@@ -29,8 +36,11 @@ requireText(
   'Dockerfile',
 );
 if (
-  [...dockerfile.matchAll(/LICENSE NOTICE \/usr\/share\/licenses\/nexa-chat\//gu)]
-    .length !== 2
+  [
+    ...dockerfile.matchAll(
+      /LICENSE NOTICE \/usr\/share\/licenses\/nexa-chat\//gu,
+    ),
+  ].length !== 2
 )
   failures.push('application runtime images must contain license files');
 
@@ -71,7 +81,7 @@ requireText(
     'target: web-runtime',
     'target: server-runtime',
     'internal: true',
-    'DATABASE_URL_FILE: /run/secrets/database_url',
+    'DATABASE_URL_FILE: /run/secrets/runtime_database_url',
   ],
   'production Compose model',
 );
@@ -99,7 +109,7 @@ requireText(
 requireText(
   runbook,
   [
-    '| Variable | Service | Required | Secret | Default | Validation | Production guidance |',
+    '| Variable                                  | Service                         | Required | Secret | Default                    | Validation                              | Production guidance                                      |',
     'docker compose -f docker-compose.yml -f compose.development.yml',
     'server-runtime',
     'web-runtime',

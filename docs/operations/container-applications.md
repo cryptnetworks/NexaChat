@@ -27,8 +27,8 @@ server :3000
 
 | Image target          | Responsibility                                      | Runtime user | Internal ports |
 | --------------------- | --------------------------------------------------- | ------------ | -------------- |
-| `server-runtime`      | API, WebSocket, health, metrics, and migrations      | `node`       | 3000           |
-| `web-runtime`         | Static web assets, HTTPS, HTTP proxy, and WSS proxy  | `nginx`      | 8443           |
+| `server-runtime`      | API, WebSocket, health, metrics, and migrations     | `node`       | 3000           |
+| `web-runtime`         | Static web assets, HTTPS, HTTP proxy, and WSS proxy | `nginx`      | 8443           |
 | `edge-runtime`        | Compatibility alias for `web-runtime`               | `nginx`      | 8443           |
 | `development-runtime` | Server and web toolchain used by two isolated tasks | `node`       | 3000, 5173     |
 
@@ -52,18 +52,18 @@ Compose merge reference, and the repository security policy. Patch updates use
 the procedure in [Supply-chain and security verification](supply-chain-security.md);
 they are not mixed into application-container changes.
 
-| Component            | Reviewed pin or requirement                                      | Selection reason |
-| -------------------- | ---------------------------------------------------------------- | ---------------- |
-| Dockerfile frontend  | `docker/dockerfile:1.7` by SHA-256 digest                         | Stable declared syntax with immutable resolution |
-| Node.js              | 24.18.0 Alpine 3.23 by multi-platform digest                      | Repository-supported LTS runtime |
-| npm                  | 11.16.0 from the Node image and root lockfile                     | Exact frozen workspace install |
-| PostgreSQL           | 17.9 Alpine 3.23 by digest                                        | Supported major and verified migration/restore baseline |
-| Valkey               | 8.1.8 Alpine 3.23 by digest                                       | Supported 8.1 line and verified coordination baseline |
-| Object storage       | SeaweedFS 4.40 runtime by digest                                  | Verified S3 adapter baseline |
-| Object build         | Go 1.25.12 plus gRPC-Go 1.82.1 with source and module checksums   | Reproducible patched binary |
-| Web server           | nginx 1.31.3 Alpine 3.24 by digest                                | Minimal non-root static/proxy runtime |
-| Docker Compose       | 2.24.4 or newer                                                   | Required for the reviewed `!reset` override semantics |
-| GitHub Actions       | Checkout, Node setup, and artifact upload v7 by commit SHA        | Immutable supported workflow actions |
+| Component           | Reviewed pin or requirement                                     | Selection reason                                        |
+| ------------------- | --------------------------------------------------------------- | ------------------------------------------------------- |
+| Dockerfile frontend | `docker/dockerfile:1.7` by SHA-256 digest                       | Stable declared syntax with immutable resolution        |
+| Node.js             | 24.18.0 Alpine 3.23 by multi-platform digest                    | Repository-supported LTS runtime                        |
+| npm                 | 11.16.0 from the Node image and root lockfile                   | Exact frozen workspace install                          |
+| PostgreSQL          | 17.9 Alpine 3.23 by digest                                      | Supported major and verified migration/restore baseline |
+| Valkey              | 8.1.8 Alpine 3.23 by digest                                     | Supported 8.1 line and verified coordination baseline   |
+| Object storage      | SeaweedFS 4.40 runtime by digest                                | Verified S3 adapter baseline                            |
+| Object build        | Go 1.25.12 plus gRPC-Go 1.82.1 with source and module checksums | Reproducible patched binary                             |
+| Web server          | nginx 1.31.3 Alpine 3.24 by digest                              | Minimal non-root static/proxy runtime                   |
+| Docker Compose      | 2.24.4 or newer                                                 | Required for the reviewed `!reset` override semantics   |
+| GitHub Actions      | Checkout, Node setup, and artifact upload v7 by commit SHA      | Immutable supported workflow actions                    |
 
 Use a maintained Docker Engine with BuildKit and the Compose plugin. The legacy
 standalone `docker-compose` executable is not supported. Confirm prerequisites:
@@ -148,48 +148,48 @@ labels, or client-side configuration. “Required” below means Compose rejects
 production render without the value. Defaults are development or safe operator
 defaults, not permission to skip review.
 
-| Variable | Service | Required | Secret | Default | Validation | Production guidance |
-| --- | --- | ---: | ---: | --- | --- | --- |
-| `NEXA_COMPOSE_PROJECT_NAME` | all production | no | no | `nexa-chat-production` | Compose name | Use one stable host-local name |
-| `NEXA_SECRET_DIR` | all production | yes | no | none | absolute readable directory | Root-owned `0700`; files are `0444` for isolated UIDs |
-| `NEXA_PUBLIC_ORIGIN` | server, web | yes | no | none | exact HTTPS origin, non-local host | Match public DNS and certificate SAN |
-| `NEXA_HTTPS_BIND_ADDRESS` | web | no | no | `0.0.0.0` | valid host bind address | Restrict with host firewall or tunnel profile |
-| `NEXA_HTTPS_PORT` | web | no | no | `443` | valid published port | Publish only this application port |
-| `NEXA_FRONTEND_SUBNET` | server, web | no | no | `172.30.0.0/24` | valid non-overlapping CIDR | Reserve a private host subnet |
-| `NEXA_BACKEND_SUBNET` | server, providers | no | no | `172.31.0.0/24` | valid non-overlapping CIDR | Keep internal and unattached to unrelated services |
-| `NEXA_EDGE_ADDRESS` | web, server trust | no | no | `172.30.0.10` | usable frontend IPv4 | Must match the server’s trusted proxy `/32` |
-| `NEXA_SERVER_ADDRESS` | server | no | no | `172.30.0.11` | distinct usable frontend IPv4 | Keep stable across recreations |
-| `NEXA_IMAGE_TAG` | custom production images | yes | no | none | non-empty immutable release identifier | Never use `latest`, `local`, or a moving branch |
-| `NEXA_IMAGE_VERSION` | custom production images | yes | no | none | non-empty OCI version | Use the reviewed application version |
-| `NEXA_IMAGE_REVISION` | custom production images | yes | no | none | full deployed commit in release process | Record the exact source commit |
-| `NEXA_IMAGE_SOURCE` | custom production images | no | no | repository URL | public URL | Keep the canonical source repository |
-| `NEXA_SERVER_IMAGE` | server, migrate | no | no | `nexa-chat-server` | image reference | Override only with a verified private registry path |
-| `NEXA_EDGE_IMAGE` | web | no | no | `nexa-chat-edge` | image reference | Compatibility name for the `web-runtime` artifact |
-| `NEXA_POSTGRES_IMAGE` | PostgreSQL | no | no | `nexa-chat-postgres` | image reference | Use the verified patched target |
-| `NEXA_OBJECT_STORAGE_IMAGE` | object storage | no | no | `nexa-chat-object-storage` | image reference | Use the verified source-built target |
-| `NEXA_BACKUP_IMAGE` | backup job | no | no | `nexa-chat-backup` | image reference | Keep revision aligned with server migrations |
-| `NEXA_LOG_LEVEL` | server | no | no | `info` | `debug`, `info`, `warn`, or `error` | Avoid debug outside a bounded incident window |
-| `NEXA_TRACE_SAMPLE_RATE` | server | no | no | `0.01` | decimal from 0 through 1 | Size for traffic while preserving privacy bounds |
-| `NEXA_S3_BUCKET` | server, storage, backup | no | no | `nexa-attachments` | lowercase S3 bucket, 3–63 characters | Use one private bucket per deployment |
-| `NEXA_S3_REGION` | server, backup | no | no | `us-east-1` | non-empty region | Match the selected S3 provider behavior |
-| `NEXA_BACKUP_DIR` | backup job | no | no | `/srv/nexa-chat/backups` | host bind path | Use encrypted durable storage off the application volume |
-| `NEXA_BACKUP_UID` / `NEXA_BACKUP_GID` | backup job | no | no | `1000` / `1000` | numeric IDs | Match ownership of the backup destination |
-| `NEXA_BACKUP_KEY_ID` | backup job | no | no | `operator-managed` | non-secret identifier | Identify the separately stored encryption key |
-| `NEXA_BACKUP_RETENTION_DAYS` | backup job | no | no | `30` | bounded positive integer | Align with legal and recovery policy |
-| `NEXA_BACKUP_RETENTION_COUNT` | backup job | no | no | `7` | bounded positive integer | Retain several independently restorable generations |
-| `NEXA_BACKUP_INCOMPLETE_HOURS` | backup job | no | no | `24` | bounded positive integer | Remove only expired incomplete checkpoints |
-| `NEXA_BACKUP_MAX_OBJECT_BYTES` | backup job | no | no | `67108864` | bounded byte count | Raise only after streaming and capacity review |
-| `NEXA_BACKUP_MODE` | backup job | no | no | none | supported operation choice | Set only for an explicit operations invocation |
-| `NEXA_RECOVERY_MODE` | backup job | no | no | none | supported recovery choice | Use only in an isolated recovery procedure |
-| `NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION` | backup job | no | no | unset | strict boolean | Enable only with documented compatibility evidence |
-| `NEXA_DEVELOPMENT_PROJECT_NAME` | development | no | no | `nexa-chat-development` | Compose name | Change to isolate simultaneous checkouts |
-| `NEXA_DEVELOPMENT_IMAGE_TAG` | development | no | no | `local` | local tag | Not a production release identifier |
-| `NEXA_DEVELOPMENT_BIND_ADDRESS` | development | no | no | `127.0.0.1` | valid host bind address | Do not use `0.0.0.0` on an untrusted network |
-| `NEXA_DEVELOPMENT_SERVER_PORT` | development server | no | no | `3000` | valid host port | Loopback debugging only |
-| `NEXA_DEVELOPMENT_WEB_PORT` | development web | no | no | `5173` | valid host port and trusted origin | Access with the exact `localhost` origin |
-| `POSTGRES_PUBLISHED_PORT` | standalone development provider | no | no | `5432` | valid host port | Loopback only; removed in the application profile |
-| `VALKEY_PUBLISHED_PORT` | standalone development provider | no | no | `6379` | valid host port | Loopback only; removed in the application profile |
-| `S3_PUBLISHED_PORT` | standalone development provider | no | no | `8333` | valid host port | Loopback only; removed in the application profile |
+| Variable                                  | Service                         | Required | Secret | Default                    | Validation                              | Production guidance                                      |
+| ----------------------------------------- | ------------------------------- | -------: | -----: | -------------------------- | --------------------------------------- | -------------------------------------------------------- |
+| `NEXA_COMPOSE_PROJECT_NAME`               | all production                  |       no |     no | `nexa-chat-production`     | Compose name                            | Use one stable host-local name                           |
+| `NEXA_SECRET_DIR`                         | all production                  |      yes |     no | none                       | absolute readable directory             | Root-owned `0700`; files are `0444` for isolated UIDs    |
+| `NEXA_PUBLIC_ORIGIN`                      | server, web                     |      yes |     no | none                       | exact HTTPS origin, non-local host      | Match public DNS and certificate SAN                     |
+| `NEXA_HTTPS_BIND_ADDRESS`                 | web                             |       no |     no | `0.0.0.0`                  | valid host bind address                 | Restrict with host firewall or tunnel profile            |
+| `NEXA_HTTPS_PORT`                         | web                             |       no |     no | `443`                      | valid published port                    | Publish only this application port                       |
+| `NEXA_FRONTEND_SUBNET`                    | server, web                     |       no |     no | `172.30.0.0/24`            | valid non-overlapping CIDR              | Reserve a private host subnet                            |
+| `NEXA_BACKEND_SUBNET`                     | server, providers               |       no |     no | `172.31.0.0/24`            | valid non-overlapping CIDR              | Keep internal and unattached to unrelated services       |
+| `NEXA_EDGE_ADDRESS`                       | web, server trust               |       no |     no | `172.30.0.10`              | usable frontend IPv4                    | Must match the server’s trusted proxy `/32`              |
+| `NEXA_SERVER_ADDRESS`                     | server                          |       no |     no | `172.30.0.11`              | distinct usable frontend IPv4           | Keep stable across recreations                           |
+| `NEXA_IMAGE_TAG`                          | custom production images        |      yes |     no | none                       | non-empty immutable release identifier  | Never use `latest`, `local`, or a moving branch          |
+| `NEXA_IMAGE_VERSION`                      | custom production images        |      yes |     no | none                       | non-empty OCI version                   | Use the reviewed application version                     |
+| `NEXA_IMAGE_REVISION`                     | custom production images        |      yes |     no | none                       | full deployed commit in release process | Record the exact source commit                           |
+| `NEXA_IMAGE_SOURCE`                       | custom production images        |       no |     no | repository URL             | public URL                              | Keep the canonical source repository                     |
+| `NEXA_SERVER_IMAGE`                       | server, migrate                 |       no |     no | `nexa-chat-server`         | image reference                         | Override only with a verified private registry path      |
+| `NEXA_EDGE_IMAGE`                         | web                             |       no |     no | `nexa-chat-edge`           | image reference                         | Compatibility name for the `web-runtime` artifact        |
+| `NEXA_POSTGRES_IMAGE`                     | PostgreSQL                      |       no |     no | `nexa-chat-postgres`       | image reference                         | Use the verified patched target                          |
+| `NEXA_OBJECT_STORAGE_IMAGE`               | object storage                  |       no |     no | `nexa-chat-object-storage` | image reference                         | Use the verified source-built target                     |
+| `NEXA_BACKUP_IMAGE`                       | backup job                      |       no |     no | `nexa-chat-backup`         | image reference                         | Keep revision aligned with server migrations             |
+| `NEXA_LOG_LEVEL`                          | server                          |       no |     no | `info`                     | `debug`, `info`, `warn`, or `error`     | Avoid debug outside a bounded incident window            |
+| `NEXA_TRACE_SAMPLE_RATE`                  | server                          |       no |     no | `0.01`                     | decimal from 0 through 1                | Size for traffic while preserving privacy bounds         |
+| `NEXA_S3_BUCKET`                          | server, storage, backup         |       no |     no | `nexa-attachments`         | lowercase S3 bucket, 3–63 characters    | Use one private bucket per deployment                    |
+| `NEXA_S3_REGION`                          | server, backup                  |       no |     no | `us-east-1`                | non-empty region                        | Match the selected S3 provider behavior                  |
+| `NEXA_BACKUP_DIR`                         | backup job                      |       no |     no | `/srv/nexa-chat/backups`   | host bind path                          | Use encrypted durable storage off the application volume |
+| `NEXA_BACKUP_UID` / `NEXA_BACKUP_GID`     | backup job                      |       no |     no | `1000` / `1000`            | numeric IDs                             | Match ownership of the backup destination                |
+| `NEXA_BACKUP_KEY_ID`                      | backup job                      |       no |     no | `operator-managed`         | non-secret identifier                   | Identify the separately stored encryption key            |
+| `NEXA_BACKUP_RETENTION_DAYS`              | backup job                      |       no |     no | `30`                       | bounded positive integer                | Align with legal and recovery policy                     |
+| `NEXA_BACKUP_RETENTION_COUNT`             | backup job                      |       no |     no | `7`                        | bounded positive integer                | Retain several independently restorable generations      |
+| `NEXA_BACKUP_INCOMPLETE_HOURS`            | backup job                      |       no |     no | `24`                       | bounded positive integer                | Remove only expired incomplete checkpoints               |
+| `NEXA_BACKUP_MAX_OBJECT_BYTES`            | backup job                      |       no |     no | `67108864`                 | bounded byte count                      | Raise only after streaming and capacity review           |
+| `NEXA_BACKUP_MODE`                        | backup job                      |       no |     no | none                       | supported operation choice              | Set only for an explicit operations invocation           |
+| `NEXA_RECOVERY_MODE`                      | backup job                      |       no |     no | none                       | supported recovery choice               | Use only in an isolated recovery procedure               |
+| `NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION` | backup job                      |       no |     no | unset                      | strict boolean                          | Enable only with documented compatibility evidence       |
+| `NEXA_DEVELOPMENT_PROJECT_NAME`           | development                     |       no |     no | `nexa-chat-development`    | Compose name                            | Change to isolate simultaneous checkouts                 |
+| `NEXA_DEVELOPMENT_IMAGE_TAG`              | development                     |       no |     no | `local`                    | local tag                               | Not a production release identifier                      |
+| `NEXA_DEVELOPMENT_BIND_ADDRESS`           | development                     |       no |     no | `127.0.0.1`                | valid host bind address                 | Do not use `0.0.0.0` on an untrusted network             |
+| `NEXA_DEVELOPMENT_SERVER_PORT`            | development server              |       no |     no | `3000`                     | valid host port                         | Loopback debugging only                                  |
+| `NEXA_DEVELOPMENT_WEB_PORT`               | development web                 |       no |     no | `5173`                     | valid host port and trusted origin      | Access with the exact `localhost` origin                 |
+| `POSTGRES_PUBLISHED_PORT`                 | standalone development provider |       no |     no | `5432`                     | valid host port                         | Loopback only; removed in the application profile        |
+| `VALKEY_PUBLISHED_PORT`                   | standalone development provider |       no |     no | `6379`                     | valid host port                         | Loopback only; removed in the application profile        |
+| `S3_PUBLISHED_PORT`                       | standalone development provider |       no |     no | `8333`                     | valid host port                         | Loopback only; removed in the application profile        |
 
 The required production secret files and rotation procedure are maintained in
 the [production deployment guide](production-deployment.md#secrets). They

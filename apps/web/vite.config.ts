@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const proxyTarget = process.env.NEXA_DEV_PROXY_TARGET ?? 'http://localhost:3000';
+const proxyTarget =
+  process.env.NEXA_DEV_PROXY_TARGET ?? 'http://localhost:3000';
 const parsedProxyTarget = new URL(proxyTarget);
 if (
   !['http:', 'https:'].includes(parsedProxyTarget.protocol) ||
