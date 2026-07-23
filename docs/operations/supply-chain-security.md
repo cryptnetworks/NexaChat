@@ -94,10 +94,12 @@ npm run typecheck
 npm run test:architecture
 npm run test:contracts
 npm run verify:security-policy
+npm run verify:container-policy
 npm test
 npm run build
 npm audit --audit-level=high
 docker compose config --quiet
+docker compose -f docker-compose.yml -f compose.development.yml config --quiet
 bash scripts/run-secret-scan.sh /tmp/nexa-secret-reports
 bash scripts/run-static-analysis.sh /tmp/nexa-static-reports
 npm run test:security-tools
@@ -114,6 +116,13 @@ fail closed. It never stores a credential fixture in repository history.
 Use `NEXA_VERIFY_SCAN=1 bash scripts/verify-production.sh` for the complete
 production container, image SBOM, vulnerability, HTTPS/WSS, isolation, and
 shutdown verification described by the production deployment guide.
+
+Container-related pull requests also run the path-filtered application-container
+lane. It builds only the server and web artifacts, validates their metadata,
+licenses, runtime contents, and vulnerability/SBOM reports, then exercises the
+full development topology. This consolidates expensive Docker work into one
+bounded job and avoids consuming hosted minutes for unrelated changes. Run
+`bash scripts/verify-development-containers.sh` locally when Docker is available.
 
 ## Updating actions and scanners
 

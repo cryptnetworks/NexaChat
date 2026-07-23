@@ -20,6 +20,8 @@
     "desktop:dev": "npm run dev --workspace @nexa/desktop",
     "desktop:package": "npm run package --workspace @nexa/desktop",
     "dev": "npm run dev --workspace @nexa/server & npm run dev --workspace @nexa/web",
+    "dev:containers": "docker compose -f docker-compose.yml -f compose.development.yml --profile applications up --build",
+    "dev:containers:down": "docker compose -f docker-compose.yml -f compose.development.yml --profile applications down",
     "dev:up": "bash scripts/dev-up.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -65,6 +67,8 @@
     "verify:backup-restore": "bash scripts/verify-backup-restore.sh",
     "verify:cloudflare-policy": "node scripts/verify-cloudflare-policy.mjs",
     "verify:cloudflare-tunnel": "bash scripts/verify-cloudflare-tunnel.sh",
+    "verify:container-policy": "node scripts/verify-container-policy.mjs",
+    "verify:development-containers": "bash scripts/verify-development-containers.sh",
     "verify:security-policy": "node scripts/verify-security-policy.mjs",
     "verify:sbom": "node scripts/verify-sbom.mjs",
     "test:security-tools": "bash scripts/test-security-tools.sh"

@@ -30,6 +30,13 @@ the API and web processes. It never replaces an existing `.env` or volume.
 
 Open `http://localhost:5173`. The API listens on `http://localhost:3000`; Vite proxies `/v1`, `/health`, and WebSocket traffic to it. Server startup applies forward-only PostgreSQL migrations before accepting traffic. To apply them separately, run `npm run migrate`. The API exposes separate liveness, startup, and readiness probes plus internal Prometheus-compatible metrics; see the [observability guide](docs/operations/observability.md).
 
+To run the API and web client in hardened development containers instead of
+host Node processes, use `npm run dev:containers`. This opt-in profile keeps
+provider ports private, publishes application ports to loopback only, and
+preserves PostgreSQL and object-storage volumes across application restarts.
+See the [application container guide](docs/operations/container-applications.md)
+for targets, configuration, platform scope, and destructive-cleanup warnings.
+
 ## Verification
 
 Every project command runs from the repository root:
@@ -48,6 +55,7 @@ npm run test:config
 npm run test:architecture
 npm run test:contracts
 npm run verify:security-policy
+npm run verify:container-policy
 npm run test:performance
 npm run test:realtime-capacity
 npm run test:resilience
@@ -77,6 +85,7 @@ The hardened single-host profile builds pinned, non-root server and HTTPS edge
 images, publishes only the edge, keeps providers on an internal network, injects
 credentials as file-backed secrets, gates startup on private-bucket creation and
 forward-only migration, and bounds runtime resources and shutdown. Follow the
+[application container guide](docs/operations/container-applications.md) and
 [production deployment runbook](docs/operations/production-deployment.md) before
 using `compose.production.yml`; the development Compose file is not a production
 configuration.
