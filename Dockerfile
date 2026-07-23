@@ -19,6 +19,8 @@ RUN apk add --no-cache --upgrade \
   libxml2=2.13.9-r1 \
   xz-libs=5.8.3-r0 \
   && rm -f /usr/local/bin/gosu
+COPY deploy/postgres/nexa-bootstrap-roles /usr/local/bin/nexa-bootstrap-roles
+RUN chmod 0555 /usr/local/bin/nexa-bootstrap-roles
 USER 70:70
 
 FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS build-dependencies

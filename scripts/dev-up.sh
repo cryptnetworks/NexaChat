@@ -12,5 +12,9 @@ fi
 
 npm ci
 docker compose up -d --wait
+if [[ -z "${MIGRATION_DATABASE_URL:-}" ]]; then
+  export MIGRATION_DATABASE_URL="${DATABASE_URL:-postgresql://nexa:local-development-password@127.0.0.1:5432/nexa}"
+fi
+(unset DATABASE_URL; npm run migrate)
 echo 'Dependencies are healthy; starting the API and web development servers.'
 exec npm run dev

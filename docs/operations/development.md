@@ -83,7 +83,7 @@ The former `/v1/dev/accounts` route is absent from the application route graph. 
 
 ## Migrations and rollback
 
-Database migrations are forward-only, reviewed SQL in `apps/server/migrations`. Run `npm run migrate` from the repository root to migrate an empty or existing compatible database. Startup runs the same migrations under a PostgreSQL advisory lock, records names and SHA-256 checksums in `nexa_schema_migrations`, and refuses missing or altered history.
+Database migrations are forward-only, reviewed SQL in `apps/server/migrations`. Run `npm run migrate` from the repository root to migrate an empty or existing compatible database. The migration process requires `MIGRATION_DATABASE_URL`; it does not accept or inherit `DATABASE_URL`. It runs under a PostgreSQL advisory lock, records names and SHA-256 checksums in `nexa_schema_migrations`, and refuses missing or altered history. Runtime startup only verifies that the schema is current; it never creates or changes database objects.
 
 Create the next migration with a zero-padded sequential prefix and descriptive lowercase name, for example `0002_add_invites.sql`. Never edit an applied migration. Review each migration for deterministic SQL, constraints and indexes, lock duration, data-loss risk, and compatibility with the currently deployed application before merging it.
 
