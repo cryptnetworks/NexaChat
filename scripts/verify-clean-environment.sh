@@ -139,9 +139,10 @@ expect_published_port postgres 5432 "$postgres_port"
 expect_published_port redis 6379 "$valkey_port"
 expect_published_port object-storage 8333 "$s3_port"
 export DATABASE_URL="postgresql://nexa:local-development-password@127.0.0.1:${postgres_port}/nexa"
+export MIGRATION_DATABASE_URL="$DATABASE_URL"
 export REDIS_URL="redis://127.0.0.1:${valkey_port}"
 export S3_ENDPOINT="http://127.0.0.1:${s3_port}"
-npm run migrate
+(unset DATABASE_URL; npm run migrate)
 node --import tsx apps/server/src/main.ts > "$log_file" 2>&1 &
 server_pid="$!"
 

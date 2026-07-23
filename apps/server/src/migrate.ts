@@ -24,7 +24,13 @@ async function run(): Promise<void> {
       },
     );
     await pool.query(
-      'REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE nexa_schema_migrations FROM nexa_app',
+      `DO $$
+       BEGIN
+         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nexa_app') THEN
+           REVOKE INSERT, UPDATE, DELETE, TRUNCATE
+           ON TABLE nexa_schema_migrations FROM nexa_app;
+         END IF;
+       END $$`,
     );
     process.stdout.write(
       `${JSON.stringify({ event: 'migration.complete', schemaVersion: version })}\n`,
