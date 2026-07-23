@@ -47,6 +47,25 @@ run_logged() {
   return "$status"
 }
 
+wait_for_database_bootstrap() {
+  local container=''
+  local status=''
+  local exit_code=''
+  for _ in {1..60}; do
+    container="$("${compose[@]}" ps --all --quiet database-bootstrap)"
+    if [[ -n "$container" ]]; then
+      status="$(docker inspect --format '{{.State.Status}}' "$container")"
+      if [[ "$status" == exited ]]; then
+        exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container")"
+        [[ "$exit_code" == 0 ]] || fail 'database role bootstrap failed'
+        return
+      fi
+    fi
+    sleep 1
+  done
+  fail 'database role bootstrap did not complete'
+}
+
 assert_backup_hardened() {
   "${compose[@]}" create backup >/dev/null
   local container
@@ -117,7 +136,7 @@ export NEXA_SERVER_ADDRESS="${NEXA_FRONTEND_SUBNET%0/28}3"
 "${compose[@]}" config --quiet
 "${compose[@]}" up --detach --build --wait --wait-timeout 240 postgres valkey object-storage
 "${compose[@]}" up --detach --build database-bootstrap
-"${compose[@]}" wait database-bootstrap
+wait_for_database_bootstrap
 assert_backup_hardened
 "${compose[@]}" run --rm migrate
 
@@ -223,7 +242,7 @@ unset NEXA_BACKUP_RETENTION_COUNT NEXA_BACKUP_RETENTION_DAYS NEXA_BACKUP_INCOMPL
 "${compose[@]}" down --volumes --remove-orphans
 "${compose[@]}" up --detach --build --wait --wait-timeout 240 postgres object-storage
 "${compose[@]}" up --detach --build database-bootstrap
-"${compose[@]}" wait database-bootstrap
+wait_for_database_bootstrap
 export NEXA_RECOVERY_MODE=empty-only
 run_logged "${compose[@]}" run --rm restore restore "/backups/$backup_name"
 unset NEXA_RECOVERY_MODE
