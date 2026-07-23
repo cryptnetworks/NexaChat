@@ -56,15 +56,15 @@
   },
   "dependencies": {
     "postgresql": {
-      "minimum": "17.9.0",
+      "minimum": "17.10.0",
       "maximumExclusive": "18.0.0",
-      "validatedImage": "17.9-alpine",
+      "validatedImage": "17.10-alpine3.23",
       "role": "authoritative"
     },
     "valkey": {
-      "minimum": "8.1.8",
+      "minimum": "8.1.9",
       "maximumExclusive": "9.0.0",
-      "validatedImage": "8.1.8-alpine3.23",
+      "validatedImage": "8.1.9-alpine3.24",
       "role": "optional-coordination-fail-closed"
     },
     "objectStorage": {

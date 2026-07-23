@@ -16,7 +16,7 @@ jobs:
       DATABASE_TEST_URL: postgresql://nexa:ci-only-password@127.0.0.1:5432/nexa
     services:
       postgres:
-        image: postgres:17.9-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+        image: postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
         env:
           POSTGRES_DB: nexa
           POSTGRES_USER: nexa
@@ -57,6 +57,8 @@ jobs:
         run: npm run test:accessibility
       - run: npm run test:update-recovery
       - run: npm run build
+      - name: Enforce deterministic web bundle budgets
+        run: npm run test:bundle-budget
       - run: docker compose config --quiet
       - name: Validate development application Compose model
         run: docker compose -f docker-compose.yml -f compose.development.yml config --quiet

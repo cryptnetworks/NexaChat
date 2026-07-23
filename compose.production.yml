@@ -44,7 +44,7 @@ x-backup-build: &backup-build
     NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}
     NEXA_IMAGE_VERSION: ${NEXA_IMAGE_VERSION:?set NEXA_IMAGE_VERSION to an immutable release identifier}
 
-x-server-environment: &server-environment
+x-runtime-environment: &runtime-environment
   NODE_ENV: production
   NEXA_DEPLOYMENT_PROFILE: single-host-private
   NEXA_PUBLIC_URL: ${NEXA_PUBLIC_ORIGIN:?set NEXA_PUBLIC_ORIGIN to the exact public HTTPS origin}
@@ -58,7 +58,6 @@ x-server-environment: &server-environment
   NEXA_ENABLE_DEV_AUTH: 'false'
   NEXA_LOG_LEVEL: ${NEXA_LOG_LEVEL:-info}
   NEXA_TRACE_SAMPLE_RATE: ${NEXA_TRACE_SAMPLE_RATE:-0.01}
-  DATABASE_URL_FILE: /run/secrets/database_url
   NEXA_COORDINATION_ENABLED: 'true'
   REDIS_URL_FILE: /run/secrets/redis_url
   NEXA_OBJECT_STORAGE_ENABLED: 'true'
@@ -68,6 +67,14 @@ x-server-environment: &server-environment
   S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
   S3_BUCKET: ${NEXA_S3_BUCKET:-nexa-attachments}
   S3_REGION: ${NEXA_S3_REGION:-us-east-1}
+
+x-server-environment: &server-environment
+  <<: *runtime-environment
+  DATABASE_URL_FILE: /run/secrets/runtime_database_url
+
+x-migrate-environment: &migrate-environment
+  <<: *runtime-environment
+  MIGRATION_DATABASE_URL_FILE: /run/secrets/migration_database_url
 
 services:
   postgres:
@@ -103,7 +110,7 @@ services:
 
   valkey:
     <<: *runtime-defaults
-    image: valkey/valkey:8.1.8-alpine3.23@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    image: valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
     user: '999:999'
     entrypoint: [/bin/sh, -euc]
     command:
@@ -212,19 +219,55 @@ services:
         limits: { cpus: '1.00', memory: 1G, pids: 200 }
         reservations: { cpus: '0.10', memory: 128M }
 
+  database-bootstrap:
+    <<: *runtime-defaults
+    image: ${NEXA_POSTGRES_IMAGE:-nexa-chat-postgres}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
+    build: *postgres-build
+    user: '70:70'
+    restart: 'no'
+    entrypoint: [/usr/local/bin/nexa-bootstrap-roles]
+    environment:
+      DATABASE_OWNER_URL_FILE: /run/secrets/database_owner_url
+      NEXA_MIGRATION_PASSWORD_FILE: /run/secrets/database_migrator_password
+      NEXA_RUNTIME_PASSWORD_FILE: /run/secrets/database_runtime_password
+      NEXA_BACKUP_PASSWORD_FILE: /run/secrets/database_backup_password
+    secrets:
+      [
+        database_owner_url,
+        database_migrator_password,
+        database_runtime_password,
+        database_backup_password,
+      ]
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,uid=70,gid=70,mode=0700,size=1m
+      - /tmp:rw,noexec,nosuid,nodev,uid=70,gid=70,mode=0700,size=16m
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+    pids_limit: 100
+    ulimits:
+      nofile: { soft: 1024, hard: 4096 }
+    deploy:
+      resources:
+        limits: { cpus: '0.50', memory: 256M, pids: 100 }
+        reservations: { cpus: '0.05', memory: 32M }
+
   migrate:
     <<: *runtime-defaults
     image: ${NEXA_SERVER_IMAGE:-nexa-chat-server}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
     build: *server-build
     restart: 'no'
     command: [node, /app/server/migrate.mjs]
-    environment: *server-environment
-    secrets: [database_url, redis_url, s3_access_key, s3_secret_key]
+    environment: *migrate-environment
+    secrets: [migration_database_url, redis_url, s3_access_key, s3_secret_key]
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=16m
     networks: [backend]
     depends_on:
       postgres: { condition: service_healthy }
+      database-bootstrap: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       object-storage: { condition: service_healthy }
     stop_signal: SIGTERM
@@ -242,7 +285,7 @@ services:
     image: ${NEXA_SERVER_IMAGE:-nexa-chat-server}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
     build: *server-build
     environment: *server-environment
-    secrets: [database_url, redis_url, s3_access_key, s3_secret_key]
+    secrets: [runtime_database_url, redis_url, s3_access_key, s3_secret_key]
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=64m
     networks:
@@ -331,7 +374,7 @@ services:
     user: ${NEXA_BACKUP_UID:-1000}:${NEXA_BACKUP_GID:-1000}
     restart: 'no'
     environment:
-      DATABASE_URL_FILE: /run/secrets/database_url
+      DATABASE_URL_FILE: /run/secrets/backup_database_url
       S3_ENDPOINT: http://object-storage:8333
       S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
       S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
@@ -350,7 +393,57 @@ services:
       NEXA_BACKUP_RETENTION_COUNT: ${NEXA_BACKUP_RETENTION_COUNT:-7}
       NEXA_BACKUP_INCOMPLETE_HOURS: ${NEXA_BACKUP_INCOMPLETE_HOURS:-24}
       NEXA_BACKUP_MAX_OBJECT_BYTES: ${NEXA_BACKUP_MAX_OBJECT_BYTES:-67108864}
-    secrets: [database_url, s3_access_key, s3_secret_key, backup_encryption_key]
+    secrets:
+      [backup_database_url, s3_access_key, s3_secret_key, backup_encryption_key]
+    volumes:
+      - type: bind
+        source: ${NEXA_BACKUP_DIR:-/srv/nexa-chat/backups}
+        target: /backups
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      object-storage: { condition: service_healthy }
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+    pids_limit: 100
+    ulimits:
+      nofile: { soft: 1024, hard: 4096 }
+    deploy:
+      resources:
+        limits: { cpus: '1.00', memory: 512M, pids: 100 }
+        reservations: { cpus: '0.05', memory: 64M }
+
+  restore:
+    <<: *runtime-defaults
+    profiles: [operations]
+    image: ${NEXA_BACKUP_IMAGE:-nexa-chat-backup}:${NEXA_IMAGE_TAG:?set NEXA_IMAGE_TAG to an immutable release identifier}
+    build: *backup-build
+    user: ${NEXA_BACKUP_UID:-1000}:${NEXA_BACKUP_GID:-1000}
+    restart: 'no'
+    environment:
+      DATABASE_URL_FILE: /run/secrets/migration_database_url
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+      S3_BUCKET: ${NEXA_S3_BUCKET:-nexa-attachments}
+      S3_REGION: ${NEXA_S3_REGION:-us-east-1}
+      NEXA_BACKUP_KEY_FILE: /run/secrets/backup_encryption_key
+      NEXA_BACKUP_KEY_ID: ${NEXA_BACKUP_KEY_ID:-operator-managed}
+      NEXA_BACKUP_DIR: /backups
+      NEXA_RECOVERY_MODE: ${NEXA_RECOVERY_MODE:-}
+      NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION: ${NEXA_RECOVERY_ALLOW_COMPATIBLE_REVISION:-}
+      NEXA_IMAGE_REVISION: ${NEXA_IMAGE_REVISION:?set NEXA_IMAGE_REVISION to the deployed commit}
+      NEXA_IMAGE_VERSION: ${NEXA_IMAGE_VERSION:?set NEXA_IMAGE_VERSION to an immutable release identifier}
+      NEXA_MAX_SCHEMA_VERSION: '45'
+    secrets:
+      [
+        migration_database_url,
+        s3_access_key,
+        s3_secret_key,
+        backup_encryption_key,
+      ]
     volumes:
       - type: bind
         source: ${NEXA_BACKUP_DIR:-/srv/nexa-chat/backups}
@@ -392,8 +485,20 @@ volumes:
 secrets:
   postgres_password:
     file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/postgres_password
-  database_url:
-    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/database_url
+  database_owner_url:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/database_owner_url
+  database_migrator_password:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/database_migrator_password
+  database_runtime_password:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/database_runtime_password
+  database_backup_password:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/database_backup_password
+  migration_database_url:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/migration_database_url
+  runtime_database_url:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/runtime_database_url
+  backup_database_url:
+    file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/backup_database_url
   valkey_password:
     file: ${NEXA_SECRET_DIR:?set NEXA_SECRET_DIR to an absolute directory}/valkey_password
   redis_url:

@@ -3,6 +3,7 @@ import {
   type DesktopNotificationDelivery,
 } from '@nexa/api-contracts';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { jsonMutationHeaders } from './http.js';
 
 const preferencePrefix = 'nexa:desktop-notifications:v1:';
 const pollIntervalMilliseconds = 30_000;
@@ -288,7 +289,7 @@ async function pollServer(
 ) {
   const response = await fetcher('/v1/desktop-notification-deliveries/query', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify({ actorId: accountId, checkpoint, initialize }),
     credentials: 'same-origin',
     ...(signal ? { signal } : {}),

@@ -39,3 +39,73 @@ signal rather than a production capacity claim. Release evidence must include
 the PostgreSQL profile on an otherwise idle, versioned runner, at least one
 repeat after a failure, and an explanation for any variance or baseline change.
 Capacity and soak testing are separate from these latency budgets.
+
+## Server endurance and resource budgets
+
+`npm run test:server-endurance` runs a five-second deterministic pull-request
+profile after a bounded warmup. It records request latency at p50, p75, p90,
+p95, p99, and maximum; throughput; errors; process CPU; event-loop delay;
+garbage-collection pauses; RSS, heap, external, and array-buffer memory; and
+post-run resource handles. The release profile runs for 60 seconds, while
+`npm run test:server-endurance:soak` runs for at least 15 minutes and refuses a
+shorter duration.
+
+Peak RSS and post-recovery growth have separate ceilings. V8 can retain
+committed heap pages after live objects are collected, so the gate also limits
+the minimum live-heap growth observed in the final 20% of the run,
+external-memory growth, and active-resource growth. The endpoint and peak stay
+in the report, but an arbitrary garbage-collection sawtooth endpoint does not
+become a false leak failure. A high retained RSS value is visible and bounded
+without being mislabeled as a live-object leak. Longer release and soak
+profiles are required to establish a memory-growth slope; the short
+pull-request profile is only a ceiling and resource-cleanup regression signal.
+Reported slopes exclude the first 20% of measured load so V8's initial heap
+reservation does not masquerade as sustained growth. Runs shorter than 60
+seconds report the timeline but deliberately omit a slope estimate.
+
+These profiles use production server configuration with logging disabled, but
+in-memory persistence. They are event-loop and application-allocation evidence,
+not substitutes for the PostgreSQL profile, live Valkey capacity, or container
+resource measurements. Every latency sample array is bounded. Environment
+overrides reject unsafe connection, duration, and dataset sizes.
+
+## Web bundle budgets
+
+Run a production build before `npm run test:bundle-budget`. The gate measures
+the built JavaScript, compressed JavaScript, CSS, total assets, largest chunk,
+and chunk counts. The absolute envelope allows limited growth over the reviewed
+baseline while a comparable saved baseline rejects an unexplained increase
+above ten percent. The pull-request workflow runs this deterministic gate after
+the existing production build; it does not add a noisy latency benchmark to
+every pull request.
+
+The manually dispatched release-candidate workflow records API, PostgreSQL,
+server-endurance, bundle, local-realtime, and Valkey-realtime reports in its
+existing compact evidence artifact. This reuses one already-required runner and
+does not add a scheduled workflow to free-account Actions usage.
+
+## Browser production workload
+
+`npm run test:browser-performance` builds and serves the production web client,
+then runs one warmup and five measured Chromium sessions. Network responses and
+the WebSocket peer are deterministic local fixtures so the report isolates
+client startup, rendering, validation, and state-management work. It records
+cold and warm interface readiness, a 100-message history render, 100 realtime
+insertions, 2,000 realtime updates, main-thread and layout work, long tasks,
+DOM and listener counts, and JavaScript heap change.
+
+The command is retained for local and manual release evidence rather than the
+pull-request workflow. Chromium installation and repeated browser timing are
+both costly and noisy on shared hosted runners; the deterministic bundle gate
+remains the fast per-pull-request client regression check.
+
+For an explicit long-session stress comparison,
+`NEXA_BROWSER_UPDATE_CYCLES` may increase the update cycles from the default 20
+to a bounded value from 1 through 200. The normal latency and memory budgets
+still apply, so a stress run that exceeds a normal-user threshold remains a
+reported failure while its machine-readable result is retained. Do not raise a
+budget merely to make the stress workload pass.
+
+The implementation-backed baseline, objectives, bottleneck ranking, and
+environment limitations are recorded in
+[`performance-audit-2026-07-22.md`](performance-audit-2026-07-22.md).

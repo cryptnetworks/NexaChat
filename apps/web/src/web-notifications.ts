@@ -1,3 +1,5 @@
+import { jsonMutationHeaders } from './http.js';
+
 export async function requestWebNotificationOptIn(
   permission: NotificationPermission,
   request: () => Promise<NotificationPermission>,
@@ -40,7 +42,7 @@ export async function enableWebNotifications(
   });
   const response = await fetch('/v1/web-push/subscriptions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify({
       actorId: accountId,
       subscription: subscription.toJSON(),
@@ -62,7 +64,7 @@ export async function disableWebNotifications(
   const subscription = await registration?.pushManager.getSubscription();
   const response = await fetch(`/v1/web-push/subscriptions/${subscriptionId}`, {
     method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify({ actorId: accountId }),
   });
   if (!response.ok && response.status !== 404) return false;

@@ -4,7 +4,7 @@ ARG NEXA_IMAGE_SOURCE=https://github.com/cryptnetworks/NexaChat
 ARG NEXA_IMAGE_REVISION=unknown
 ARG NEXA_IMAGE_VERSION=0.1.0
 
-FROM postgres:17.9-alpine3.23@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609 AS postgres-runtime
+FROM postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4 AS postgres-runtime
 ARG NEXA_IMAGE_SOURCE
 ARG NEXA_IMAGE_REVISION
 ARG NEXA_IMAGE_VERSION
@@ -19,6 +19,8 @@ RUN apk add --no-cache --upgrade \
   libxml2=2.13.9-r1 \
   xz-libs=5.8.3-r0 \
   && rm -f /usr/local/bin/gosu
+COPY deploy/postgres/nexa-bootstrap-roles /usr/local/bin/nexa-bootstrap-roles
+RUN chmod 0555 /usr/local/bin/nexa-bootstrap-roles
 USER 70:70
 
 FROM node:24.18.0-alpine3.23@sha256:595398b0081eacda8e1c4c5b97b76cd1020e4d58a8ebcb4843b9bca1e79e7436 AS build-dependencies

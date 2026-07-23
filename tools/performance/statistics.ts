@@ -4,6 +4,8 @@ export interface DistributionSummary {
   maxMs: number;
   meanMs: number;
   p50Ms: number;
+  p75Ms: number;
+  p90Ms: number;
   p95Ms: number;
   p99Ms: number;
   standardDeviationMs: number;
@@ -74,9 +76,30 @@ export function summarizeDistribution(
     maxMs: sorted.at(-1) ?? 0,
     meanMs: mean,
     p50Ms: percentile(sorted, 0.5),
+    p75Ms: percentile(sorted, 0.75),
+    p90Ms: percentile(sorted, 0.9),
     p95Ms: percentile(sorted, 0.95),
     p99Ms: percentile(sorted, 0.99),
     standardDeviationMs: Math.sqrt(variance),
+  };
+}
+
+export function roundDistribution(
+  summary: DistributionSummary,
+  fractionDigits = 4,
+): DistributionSummary {
+  const rounded = (value: number) => Number(value.toFixed(fractionDigits));
+  return {
+    count: summary.count,
+    minMs: rounded(summary.minMs),
+    maxMs: rounded(summary.maxMs),
+    meanMs: rounded(summary.meanMs),
+    p50Ms: rounded(summary.p50Ms),
+    p75Ms: rounded(summary.p75Ms),
+    p90Ms: rounded(summary.p90Ms),
+    p95Ms: rounded(summary.p95Ms),
+    p99Ms: rounded(summary.p99Ms),
+    standardDeviationMs: rounded(summary.standardDeviationMs),
   };
 }
 

@@ -818,12 +818,7 @@ export function buildApp(
 
   app.post('/v1/communities', async (request, reply) => {
     const input = createCommunitySchema.parse(request.body);
-    const actorId = await verifiedActor(
-      request,
-      authorization ? auth : undefined,
-      input.ownerId,
-      true,
-    );
+    const actorId = await verifiedActor(request, auth, input.ownerId, true);
     return reply
       .code(201)
       .send(
@@ -1204,12 +1199,7 @@ export function buildApp(
     '/v1/communities/:communityId/spaces',
     async (request, reply) => {
       const input = createSpaceSchema.parse(request.body);
-      const actorId = await verifiedActor(
-        request,
-        authorization ? auth : undefined,
-        input.actorId,
-        true,
-      );
+      const actorId = await verifiedActor(request, auth, input.actorId, true);
       return reply
         .code(201)
         .send(
@@ -1242,33 +1232,20 @@ export function buildApp(
     '/v1/spaces/:spaceId/messages',
     async (request, reply) => {
       const input = createMessageSchema.parse(request.body);
-      const actorId = await verifiedActor(
-        request,
-        authorization ? auth : undefined,
-        input.authorId,
-        true,
-      );
+      const actorId = await verifiedActor(request, auth, input.authorId, true);
       const key = input.idempotencyKey ?? request.id;
       const { existing, message } = await telemetry.withSpan(
         'message.command',
-        async () => {
-          const existing =
-            await service.persistence.messages.findByIdempotencyKey(
-              actorId,
-              request.params.spaceId,
-              key,
-            );
-          const message = await service.postMessage(
+        () =>
+          service.postMessageCommand(
             request.params.spaceId,
             actorId,
             input.body,
             key,
             input.replyToId ?? null,
-          );
-          return { existing, message };
-        },
+          ),
       );
-      await experience.mentions?.process(message);
+      if (!existing) await experience.mentions?.process(message);
       const event: RealtimeEnvelope = {
         version: 1,
         id: message.createdEventId,
@@ -1898,8 +1875,10 @@ async function verifiedActor(
   claimedActorId: string,
   mutation = false,
 ): Promise<string> {
+  if (!request.enforceAccountRateLimit)
+    throw new Error('Account rate limiter is not configured');
   if (!auth) {
-    await request.enforceAccountRateLimit?.(claimedActorId, 'development');
+    await request.enforceAccountRateLimit(claimedActorId, 'development');
     return claimedActorId;
   }
   const actorId = (
@@ -1908,7 +1887,7 @@ async function verifiedActor(
       : authenticateRequest(request, auth))
   ).account.id;
   if (actorId !== claimedActorId) throw new AuthorizationError('deny');
-  await request.enforceAccountRateLimit?.(actorId, 'authenticated');
+  await request.enforceAccountRateLimit(actorId, 'authenticated');
   return actorId;
 }
 

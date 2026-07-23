@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from 'react';
+import type { ReactNode, SubmitEvent } from 'react';
 
 export function DirectConversationPanel(props: {
   title: string;
@@ -11,7 +11,7 @@ export function DirectConversationPanel(props: {
   }[];
   onSend: (body: string) => void;
 }): ReactNode {
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const value = form.get('body');

@@ -68,7 +68,7 @@ jobs:
       SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}
     services:
       postgres:
-        image: postgres:17.9-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
+        image: postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
         env:
           POSTGRES_DB: nexa
           POSTGRES_USER: nexa
@@ -80,7 +80,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       valkey:
-        image: valkey/valkey:8.1.3-alpine@sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571
+        image: valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
         ports: ['6379:6379']
         options: >-
           --health-cmd "valkey-cli ping"
@@ -149,12 +149,19 @@ jobs:
           npm run test:resilience:integration
 
       - name: Enforce API performance budgets
-        run: npm run test:performance
+        env:
+          NEXA_PERF_DATABASE_URL: postgresql://nexa:ci-only-password@127.0.0.1:5432/nexa
+        run: |
+          mkdir -p candidate-evidence/source
+          npm run test:performance -- --output=candidate-evidence/source/api-performance.json
+          npm run test:performance:postgres -- --output=candidate-evidence/source/postgres-performance.json
+          npm run test:server-endurance:release -- --output=candidate-evidence/source/server-endurance.json
+          npm run test:bundle-budget -- --output=candidate-evidence/source/web-bundle.json
 
       - name: Exercise real-time capacity and replica coordination
         run: |
-          npm run test:realtime-capacity
-          npm run test:realtime-capacity:valkey
+          npm run test:realtime-capacity -- --output=candidate-evidence/source/realtime-local.json
+          npm run test:realtime-capacity:valkey -- --output=candidate-evidence/source/realtime-valkey.json
 
       - name: Verify clean install and dependency recovery
         run: npm run verify:clean-env
@@ -183,7 +190,10 @@ jobs:
               sourceDateEpoch: Number(process.env.SOURCE_DATE_EPOCH),
               runner: { os: process.env.RUNNER_OS, arch: process.env.RUNNER_ARCH, image: process.env.ImageOS ?? "unknown", imageVersion: process.env.ImageVersion ?? "unknown" },
               environment: { osRelease: release(), osVersion: version(), node: captured("node"), npm: captured("npm"), rust: captured("rust"), cargo: captured("cargo") },
-              services: { postgres: "17.9-alpine", valkey: "8.1.3-alpine" },
+              services: {
+                postgres: "17.10-alpine3.23",
+                coordination: { provider: "Valkey", image: "8.1.9-alpine3.24" }
+              },
               locks: [
                 { path: "apps/desktop/src-tauri/Cargo.lock", sha256: digest("apps/desktop/src-tauri/Cargo.lock") },
                 { path: "package-lock.json", sha256: digest("package-lock.json") }

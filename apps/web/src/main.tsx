@@ -20,7 +20,7 @@ import {
 import './styles.css';
 import { acceptDelivery, reconnectDelay } from './realtime.js';
 import { invitationTokenFromHash } from './invitations.js';
-import { publicRequestError } from './http.js';
+import { jsonMutationHeaders, publicRequestError } from './http.js';
 import {
   accessibleTimestamp,
   createRateLimitedAnnouncer,
@@ -30,13 +30,14 @@ import {
   publishSessionSignal,
   subscribeSessionSignals,
 } from './session-sync.js';
+import { upsertOrderedMessage } from './ordered-messages.js';
 
 type Message = RealtimeEnvelope['payload']['message'];
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -60,7 +61,7 @@ async function get<T>(path: string): Promise<T> {
 async function patch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'PATCH',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -74,7 +75,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 async function mutate(path: string, body: unknown): Promise<void> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-nexa-csrf': '1' },
+    headers: jsonMutationHeaders(),
     body: JSON.stringify(body),
   });
   if (!response.ok)
@@ -358,14 +359,7 @@ function App() {
           const envelope = realtimeEnvelopeSchema.parse(next.event);
           setMessages((current) => {
             const message = envelope.payload.message;
-            const withoutCurrent = current.filter(
-              (item) => item.id !== message.id,
-            );
-            return [...withoutCurrent, message].sort(
-              (a, b) =>
-                a.createdAt.localeCompare(b.createdAt) ||
-                a.id.localeCompare(b.id),
-            );
+            return upsertOrderedMessage(current, message);
           });
           realtimeAnnouncer.current ??= createRateLimitedAnnouncer(
             setRealtimeAnnouncement,
@@ -439,7 +433,7 @@ function App() {
     }
   }
 
-  async function send(form: React.FormEvent<HTMLFormElement>) {
+  async function send(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     const formElement = form.currentTarget;
     const data = new FormData(formElement);
@@ -459,7 +453,7 @@ function App() {
     }
   }
 
-  async function createInvite(form: React.FormEvent<HTMLFormElement>) {
+  async function createInvite(form: React.SubmitEvent<HTMLFormElement>) {
     form.preventDefault();
     if (!account || !community) return;
     setInviteStatus('Creating invitation…');
@@ -493,7 +487,7 @@ function App() {
     }
   }
 
-  async function saveProfile(event: React.FormEvent<HTMLFormElement>) {
+  async function saveProfile(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!profile) return;
     const data = new FormData(event.currentTarget);
@@ -522,7 +516,7 @@ function App() {
     }
   }
 
-  async function changePassword(event: React.FormEvent<HTMLFormElement>) {
+  async function changePassword(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -556,7 +550,7 @@ function App() {
     }
   }
 
-  async function registerAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function registerAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setAuthBusy(true);
@@ -579,7 +573,7 @@ function App() {
     }
   }
 
-  async function loginAccount(event: React.FormEvent<HTMLFormElement>) {
+  async function loginAccount(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);

@@ -419,6 +419,49 @@ integration('PostgreSQL persistence', () => {
     );
   });
 
+  it('serializes concurrent message retries before applying slow mode', async () => {
+    const persistence = new PostgresPersistence(pool);
+    const service = new CommunityService(persistence);
+    const owner = await service.createAccount('Retry owner');
+    const member = await service.createAccount('Retry member');
+    const community = await service.createCommunity(owner.id, 'Retries');
+    const invitation = await service.createInvitation(owner.id, community.id, {
+      expiresInSeconds: 600,
+      maxUses: 1,
+    });
+    await service.acceptInvitation(member.id, invitation.token, 'retry-member');
+    const originalSpace = await service.createTextSpace(
+      community.id,
+      owner.id,
+      'slow-chat',
+    );
+    const space = await service.updateSpace(owner.id, originalSpace.id, {
+      slowModeSeconds: 60,
+      expectedVersion: originalSpace.version,
+    });
+
+    const results = await Promise.all([
+      service.postMessageCommand(
+        space.id,
+        member.id,
+        'same payload',
+        'postgres-concurrent-retry-0001',
+      ),
+      service.postMessageCommand(
+        space.id,
+        member.id,
+        'same payload',
+        'postgres-concurrent-retry-0001',
+      ),
+    ]);
+
+    expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
+    expect(results.map((result) => result.existing).sort()).toEqual([
+      false,
+      true,
+    ]);
+  });
+
   it('atomically persists invitation final-use acceptance and audit events', async () => {
     const persistence = new PostgresPersistence(pool);
     const service = new CommunityService(persistence);

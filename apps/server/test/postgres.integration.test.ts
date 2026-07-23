@@ -6,7 +6,11 @@ import { buildApp } from '../src/app.js';
 import { initializeDatabase, postgresReadiness } from '../src/database.js';
 import { parseRuntimeConfig } from '../src/config.js';
 import { Telemetry } from '../src/telemetry.js';
-import { createPostgresPool, type PostgresConfig } from '@nexa/postgres';
+import {
+  createPostgresPool,
+  migratePostgres,
+  type PostgresConfig,
+} from '@nexa/postgres';
 
 const traceId = '0af7651916cd43dd8448eb211c80319c';
 const parentSpanId = 'b7ad6b7169203331';
@@ -70,6 +74,12 @@ beforeAll(async () => {
     await admin.query(`CREATE DATABASE "${databaseName}"`);
     databaseCreated = true;
   });
+  const migrationPool = createPostgresPool(config);
+  try {
+    await migratePostgres(migrationPool, config.migrationsDirectory);
+  } finally {
+    await migrationPool.end();
+  }
 });
 
 afterAll(async () => {
@@ -223,7 +233,10 @@ integration('PostgreSQL-backed API', () => {
       database.readiness,
       {
         service: {
-          authenticate: vi.fn(),
+          authenticate: vi.fn().mockResolvedValue({
+            account: { id: owner.id },
+            session: { id: randomUUID() },
+          }),
         } as never,
         config: {
           trustedOrigin: runtimeConfig.authentication.trustedOrigin,
@@ -249,7 +262,10 @@ integration('PostgreSQL-backed API', () => {
         method: 'POST',
         url: `/v1/spaces/${space.id}/messages`,
         headers: {
+          cookie: 'nexa_session=trace-session-token',
+          origin: 'http://localhost:5173',
           traceparent: `00-${traceId}-${parentSpanId}-01`,
+          'x-nexa-csrf': '1',
         },
         payload: {
           authorId: owner.id,
