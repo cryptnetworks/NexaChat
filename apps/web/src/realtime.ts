@@ -3,6 +3,8 @@ export interface RealtimeCursor {
   seenEventIds: Set<string>;
 }
 
+export const maximumSeenEventIds = 2_048;
+
 export function acceptDelivery(
   cursor: RealtimeCursor,
   eventId: string,
@@ -12,6 +14,11 @@ export function acceptDelivery(
   const gap = cursor.sequence > 0 && sequence !== cursor.sequence + 1;
   cursor.sequence = Math.max(cursor.sequence, sequence);
   cursor.seenEventIds.add(eventId);
+  while (cursor.seenEventIds.size > maximumSeenEventIds) {
+    const oldest = cursor.seenEventIds.values().next().value;
+    if (oldest === undefined) break;
+    cursor.seenEventIds.delete(oldest);
+  }
   return { accepted: true, gap };
 }
 
