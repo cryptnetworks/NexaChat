@@ -95,7 +95,7 @@ import {
   type MemberStatusService,
 } from '@nexa/domain';
 import type { RealtimeEnvelope } from '@nexa/realtime-contracts';
-import { AuthenticationError } from '@nexa/auth';
+import { AuthenticationError, RecoveryError } from '@nexa/auth';
 import type { EphemeralCoordination } from '@nexa/coordination';
 import {
   AuthorizationError,
@@ -1722,6 +1722,21 @@ export function buildApp(
         status === 429 ? 60 : undefined,
       );
     }
+    if (error instanceof RecoveryError) {
+      const code =
+        error.code === 'recovery_rate_limited'
+          ? 'rate_limited'
+          : error.code === 'invalid_recovery_request'
+            ? 'invalid_request'
+            : 'recovery_failed';
+      return sendApiError(
+        reply,
+        error.code === 'recovery_rate_limited' ? 429 : 400,
+        code,
+        request.id,
+        error.code === 'recovery_rate_limited' ? 60 : undefined,
+      );
+    }
     if (error instanceof AuthorizationError) {
       if (!error.observed) telemetry.authorizationDecision('deny');
       return sendApiError(reply, 404, 'not_found', request.id);
@@ -1945,6 +1960,8 @@ function safeErrorDiagnostic(error: unknown): {
     };
   if (error instanceof AuthenticationError)
     return { type: 'authentication', code: error.code, unexpected: false };
+  if (error instanceof RecoveryError)
+    return { type: 'recovery', code: error.code, unexpected: false };
   if (error instanceof AuthorizationError)
     return { type: 'authorization', code: 'denied', unexpected: false };
   if (error instanceof HttpSecurityError)

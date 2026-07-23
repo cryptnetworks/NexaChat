@@ -14,6 +14,7 @@ import {
   PostgresAuthorizationStore,
   PostgresJobRecoveryStore,
   PostgresPersistence,
+  PostgresRecoveryStore,
   createPostgresPool,
   migratePostgres,
   planPostgresUpgrade,
@@ -22,6 +23,7 @@ import {
   type PostgresConfig,
 } from '../src/index.js';
 import { AuthorizationService } from '@nexa/authorization';
+import { FixedWindowRateLimiter, RecoveryService } from '@nexa/auth';
 
 const adminUrl =
   process.env.DATABASE_TEST_URL ??
@@ -791,6 +793,56 @@ integration('PostgreSQL authorization persistence', () => {
         'race-message-0001',
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it('persists purpose-bound recovery state and atomically rotates credentials', async () => {
+    const accountId = randomUUID();
+    await pool.query(
+      `INSERT INTO accounts
+       (id,display_name,username,normalized_username,password_hash,status,
+        credential_version,profile_version,created_at,updated_at)
+       VALUES ($1,'Recovery','RecoveryUser','recoveryuser','old-hash','active',1,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+      [accountId],
+    );
+    const recovery = new RecoveryService(
+      new PostgresRecoveryStore(pool),
+      {
+        hash: (value) => Promise.resolve(`hash:${value}`),
+        verify: () => Promise.resolve(true),
+        needsRehash: () => false,
+        dummyHash: () => 'dummy',
+      },
+      new FixedWindowRateLimiter(100, 60_000),
+      { now: () => new Date('2026-01-01T00:00:00.000Z') },
+    );
+    const issued = await recovery.requestRecovery({
+      username: 'RecoveryUser',
+      source: '127.0.0.1',
+    });
+    if (!issued.token) throw new Error('recovery token missing');
+    await recovery.completeRecovery({
+      token: issued.token,
+      newPassword: 'new password',
+      correlationId: randomUUID(),
+    });
+    const account = await pool.query(
+      'SELECT credential_version,recovery_epoch FROM accounts WHERE id=$1',
+      [accountId],
+    );
+    expect(account.rows[0]).toMatchObject({
+      credential_version: 2,
+      recovery_epoch: 2,
+    });
+    const challenge = await pool.query(
+      'SELECT state,epoch FROM account_recovery_challenges WHERE account_id=$1',
+      [accountId],
+    );
+    expect(challenge.rows[0]).toMatchObject({ state: 'used', epoch: 1 });
+    const audit = await pool.query(
+      "SELECT action FROM audit_events WHERE actor_id=$1 AND action='account.recovery.complete'",
+      [accountId],
+    );
+    expect(audit.rows).toHaveLength(1);
   });
 });
 

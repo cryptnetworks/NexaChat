@@ -71,6 +71,49 @@ export const authSessionSchema = z.object({
   expiresAt: z.string().datetime(),
   current: z.boolean(),
 });
+export const recoveryRequestSchema = z
+  .object({ username: usernameSchema })
+  .strict();
+export const recoveryCompleteSchema = z
+  .object({
+    token: z
+      .string()
+      .length(43)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    newPassword: passwordSchema,
+  })
+  .strict();
+export const recoveryMethodKindSchema = z.enum([
+  'email',
+  'phone',
+  'security_key',
+]);
+export const recoveryMethodSchema = z
+  .object({
+    id,
+    kind: recoveryMethodKindSchema,
+    state: z.enum(['pending', 'verified', 'revoked']),
+    createdAt: z.string().datetime(),
+    lastVerifiedAt: z.string().datetime().nullable(),
+    version: z.number().int().positive(),
+  })
+  .strict();
+export const recoveryMethodCreateSchema = z
+  .object({
+    kind: recoveryMethodKindSchema,
+    destinationRef: z.string().min(1).max(8192),
+    destinationDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+export const recoveryMethodVerifySchema = z
+  .object({
+    token: z
+      .string()
+      .length(43)
+      .regex(/^[A-Za-z0-9_-]+$/),
+  })
+  .strict();
+export const recoveryMethodIdSchema = z.object({ id }).strict();
 export const sessionHandleSchema = z
   .object({ handle: z.string().regex(/^sess_[A-Za-z0-9_-]{16,27}$/) })
   .strict();
@@ -704,6 +747,13 @@ export const auditEventSchema = z
       'account.session.revoke',
       'account.sessions.revoke_all',
       'account.sessions.revoke_others',
+      'account.recovery.request',
+      'account.recovery.complete',
+      'account.recovery.method.verify',
+      'account.recovery.method.revoke',
+      'account.recovery.operator.lock',
+      'account.recovery.operator.unlock',
+      'account.recovery.operator.invalidate',
     ]),
     outcome: z.enum(['succeeded', 'rejected']),
     reasonCode: z
@@ -778,6 +828,7 @@ export const errorResponseSchema = z.object({
     'invitation_unavailable',
     'payload_too_large',
     'dependency_unavailable',
+    'recovery_failed',
   ]),
   correlationId: id,
   retryable: z.boolean(),

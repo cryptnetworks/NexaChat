@@ -6,6 +6,8 @@ import {
 } from 'node:crypto';
 import * as nodeCrypto from 'node:crypto';
 
+export * from './recovery.js';
+
 export interface AuthAccount {
   id: string;
   username: string;

@@ -6,6 +6,12 @@ import {
   changePasswordSchema,
   loginSchema,
   registrationSchema,
+  recoveryCompleteSchema,
+  recoveryMethodCreateSchema,
+  recoveryMethodIdSchema,
+  recoveryMethodSchema,
+  recoveryMethodVerifySchema,
+  recoveryRequestSchema,
   sessionHandleSchema,
   updateProfileSchema,
 } from '@nexa/api-contracts';
@@ -13,6 +19,8 @@ import {
   AuthenticationError,
   type AuthenticatedSession,
   type AuthenticationService,
+  RecoveryError,
+  type RecoveryService,
 } from '@nexa/auth';
 
 export interface AuthHttpConfig {
@@ -23,6 +31,7 @@ export interface AuthHttpConfig {
 
 export interface AuthRuntime {
   service: AuthenticationService;
+  recovery?: RecoveryService;
   config: AuthHttpConfig;
   logStream?: { write(message: string): void };
 }
@@ -31,6 +40,137 @@ export function registerAuthRoutes(
   app: FastifyInstance,
   runtime: AuthRuntime,
 ): void {
+  const recovery = runtime.recovery;
+  app.post('/v1/auth/recovery/request', async (request, reply) => {
+    if (!recovery) throw new Error('recovery_not_configured');
+    enforceOrigin(request, runtime.config);
+    const input = recoveryRequestSchema.parse(request.body);
+    try {
+      await recovery.requestRecovery({
+        username: input.username,
+        source: request.clientAddress,
+      });
+    } catch (error) {
+      if (!(error instanceof RecoveryError)) throw error;
+    }
+    return reply.code(202).send();
+  });
+
+  app.post('/v1/auth/recovery/complete', async (request, reply) => {
+    if (!recovery) throw new Error('recovery_not_configured');
+    enforceOrigin(request, runtime.config);
+    const input = recoveryCompleteSchema.parse(request.body);
+    await recovery.completeRecovery({
+      token: input.token,
+      newPassword: input.newPassword,
+      correlationId: request.id,
+    });
+    return reply.code(204).send();
+  });
+
+  app.get('/v1/account/recovery-methods', async (request, reply) => {
+    if (!recovery) throw new Error('recovery_not_configured');
+    const authenticated = await authenticateRequest(request, runtime);
+    const methods = await recovery.listMethods(authenticated.account.id);
+    return reply.send(
+      methods.map((method) =>
+        recoveryMethodSchema.parse({
+          id: method.id,
+          kind: method.kind,
+          state: method.state,
+          createdAt: method.createdAt,
+          lastVerifiedAt: method.lastVerifiedAt,
+          version: method.version,
+        }),
+      ),
+    );
+  });
+
+  app.post('/v1/account/recovery-methods', async (request, reply) => {
+    if (!recovery) throw new Error('recovery_not_configured');
+    const authenticated = await authenticateMutation(request, runtime);
+    const input = recoveryMethodCreateSchema.parse(request.body);
+    const result = await recovery.startMethod({
+      accountId: authenticated.account.id,
+      kind: input.kind,
+      destinationCiphertext: input.destinationRef,
+      destinationDigest: input.destinationDigest,
+    });
+    return reply.code(201).send(
+      recoveryMethodSchema.parse({
+        id: result.method.id,
+        kind: result.method.kind,
+        state: result.method.state,
+        createdAt: result.method.createdAt,
+        lastVerifiedAt: result.method.lastVerifiedAt,
+        version: result.method.version,
+      }),
+    );
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/account/recovery-methods/:id/replace',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      const input = recoveryMethodCreateSchema.parse(request.body);
+      const result = await recovery.replaceMethod({
+        accountId: authenticated.account.id,
+        oldMethodId: id,
+        kind: input.kind,
+        destinationCiphertext: input.destinationRef,
+        destinationDigest: input.destinationDigest,
+      });
+      return reply.code(201).send(
+        recoveryMethodSchema.parse({
+          id: result.method.id,
+          kind: result.method.kind,
+          state: result.method.state,
+          createdAt: result.method.createdAt,
+          lastVerifiedAt: result.method.lastVerifiedAt,
+          version: result.method.version,
+        }),
+      );
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/account/recovery-methods/:id/verify',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      const input = recoveryMethodVerifySchema.parse(request.body);
+      const method = await recovery.verifyMethod(
+        authenticated.account.id,
+        input.token,
+        id,
+      );
+      return reply.send(
+        recoveryMethodSchema.parse({
+          id: method.id,
+          kind: method.kind,
+          state: method.state,
+          createdAt: method.createdAt,
+          lastVerifiedAt: method.lastVerifiedAt,
+          version: method.version,
+        }),
+      );
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/v1/account/recovery-methods/:id/revoke',
+    async (request, reply) => {
+      if (!recovery) throw new Error('recovery_not_configured');
+      const authenticated = await authenticateMutation(request, runtime);
+      const { id } = recoveryMethodIdSchema.parse(request.params);
+      await recovery.revokeMethod(authenticated.account.id, id);
+      return reply.code(204).send();
+    },
+  );
+
   app.post('/v1/auth/register', async (request, reply) => {
     enforceOrigin(request, runtime.config);
     const input = registrationSchema.parse(request.body);
