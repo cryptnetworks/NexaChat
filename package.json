@@ -45,6 +45,7 @@
     "test:contracts": "vitest run packages/api-contracts/src/error-contract.test.ts packages/realtime-contracts/src/contracts.test.ts packages/realtime-contracts/src/compatibility-fixtures.test.ts",
     "test:coordination": "vitest run packages/coordination/test",
     "test:desktop": "vitest run apps/desktop/test",
+    "test:e2e": "bash scripts/run-browser-e2e.sh",
     "test:http": "vitest run apps/server/test/http.integration.test.ts apps/server/test/community-lifecycle.integration.test.ts",
     "test:object-storage": "vitest run packages/object-storage/test",
     "test:performance": "tsx tools/performance/api-benchmark.ts --profile=ci",

@@ -56,6 +56,7 @@ npm run test:architecture
 npm run test:contracts
 npm run verify:security-policy
 npm run verify:container-policy
+npm run test:e2e
 npm run test:performance
 npm run test:realtime-capacity
 npm run test:resilience
@@ -78,6 +79,13 @@ Compose project and per-run API, PostgreSQL, Valkey, and SeaweedFS ports, then
 removes only that project's containers, network, and volumes. It verifies empty-database
 migration, generic health semantics, metrics, required and optional dependency
 outage/recovery, private-value exclusion, and bounded shutdown.
+
+`npm run test:e2e` starts a uniquely named disposable PostgreSQL Compose project,
+migrates it from zero, runs the API and Vite proxy on per-run loopback ports,
+and verifies registration, authenticated profile access, and logout in Chromium.
+It runs with one worker, keeps no Playwright trace, video, screenshot, or server
+log artifact, and removes its containers, volume, processes, and temporary
+files on completion.
 
 ## Production deployment
 

@@ -55,6 +55,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run browser accessibility gate
         run: npm run test:accessibility
+      - name: Run isolated browser end-to-end verification
+        run: npm run test:e2e
       - run: npm run test:update-recovery
       - run: npm run build
       - name: Enforce deterministic web bundle budgets
