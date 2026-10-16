@@ -35,7 +35,7 @@ jobs:
         run: |
           npm sbom --sbom-format cyclonedx > "$RUNNER_TEMP/security-reports/nexa-chat.cdx.json"
           npm run verify:sbom -- "$RUNNER_TEMP/security-reports/nexa-chat.cdx.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: source-security-${{ github.sha }}
@@ -76,7 +76,7 @@ jobs:
             nexa-chat-postgres:security \
             nexa-chat-backup:security \
             valkey/valkey:8.1.9-alpine3.24@sha256:a038175878d66b9d274fbf8be73c0305e93798b83917647f167e18cef3c71eec
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: production-security-${{ github.sha }}
